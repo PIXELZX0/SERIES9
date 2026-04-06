@@ -22,6 +22,7 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
     error InvalidFeeConfiguration();
 
     event FeeBpsUpdated(uint16 feeBps);
+    event FeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
     event FeeExemptUpdated(address indexed account, bool isExempt);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -74,6 +75,16 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
         _setFeeBps(newFeeBps);
     }
 
+    function setFeeRecipient(address newFeeRecipient) external onlyOwner {
+        if (newFeeRecipient == address(0)) {
+            revert InvalidFeeRecipient();
+        }
+
+        address previousRecipient = feeRecipient;
+        feeRecipient = newFeeRecipient;
+        emit FeeRecipientUpdated(previousRecipient, newFeeRecipient);
+    }
+
     function setFeeExempt(address account, bool exempt) external onlyOwner {
         isFeeExempt[account] = exempt;
         emit FeeExemptUpdated(account, exempt);
@@ -109,5 +120,5 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[50] private __gap;
+    uint256[48] private __gap;
 }

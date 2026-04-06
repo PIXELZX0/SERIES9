@@ -272,6 +272,11 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit TokenFeeBpsUpdated(token, newFeeBps);
     }
 
+    function setTokenFeeRecipient(address token, address newFeeRecipient) external onlyOwner {
+        _requireManagedToken(token);
+        Series9ManagedToken(token).setFeeRecipient(newFeeRecipient);
+    }
+
     function setFeeExempt(address token, address account, bool isExempt) external onlyOwner {
         TokenConfig storage config = _requireManagedToken(token);
         if (!config.feeEnabled) {
@@ -674,5 +679,5 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[50] private __gap;
+    uint256[29] private __gap;
 }
