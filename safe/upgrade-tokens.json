@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "chainId": "143",
+  "meta": {
+    "name": "Series9 - Upgrade Tokens",
+    "description": "Upgrade SER9 and managed token implementations via UUPS"
+  },
+  "transactions": [
+    {
+      "to": "0xFa76a92716D9fE7DF902266651Ca64014c4dC35A",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "address",
+            "name": "newSer9Implementation",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "newManagedTokenImplementation",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes",
+            "name": "ser9Data",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes",
+            "name": "managedData",
+            "type": "bytes"
+          }
+        ],
+        "name": "upgradeTokens",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "newSer9Implementation": "",
+        "newManagedTokenImplementation": "",
+        "ser9Data": "0x",
+        "managedData": "0x"
+      }
+    }
+  ]
+}

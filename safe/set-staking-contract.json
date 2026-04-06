@@ -1,0 +1,29 @@
+{
+  "version": "1.0",
+  "chainId": "143",
+  "meta": {
+    "name": "Series9 - Set SER9 Staking Contract",
+    "description": "Update the staking contract address on SER9 token (controls minting)"
+  },
+  "transactions": [
+    {
+      "to": "0xFa76a92716D9fE7DF902266651Ca64014c4dC35A",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "address",
+            "name": "newStakingContract",
+            "type": "address"
+          }
+        ],
+        "name": "setSer9StakingContract",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "newStakingContract": ""
+      }
+    }
+  ]
+}

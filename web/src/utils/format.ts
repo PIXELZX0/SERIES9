@@ -1,0 +1,37 @@
+import { formatUnits, type Address } from 'viem';
+
+export function formatTokenAmount(
+  value: bigint | undefined,
+  decimals = 18,
+  maximumFractionDigits = 6,
+): string {
+  if (value === undefined) {
+    return '-';
+  }
+
+  const numeric = Number(formatUnits(value, decimals));
+
+  if (!Number.isFinite(numeric)) {
+    return formatUnits(value, decimals);
+  }
+
+  return new Intl.NumberFormat('en-US', {
+    maximumFractionDigits,
+  }).format(numeric);
+}
+
+export function shortenAddress(address: Address | undefined, size = 4): string {
+  if (!address) {
+    return '-';
+  }
+
+  return `${address.slice(0, size + 2)}...${address.slice(-size)}`;
+}
+
+export function equalsAddress(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) {
+    return false;
+  }
+
+  return a.toLowerCase() === b.toLowerCase();
+}

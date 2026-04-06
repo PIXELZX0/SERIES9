@@ -1,0 +1,29 @@
+{
+  "version": "1.0",
+  "chainId": "143",
+  "meta": {
+    "name": "Series9 - Set Reward Rate",
+    "description": "Update SER9 staking reward rate per block"
+  },
+  "transactions": [
+    {
+      "to": "0xFa76a92716D9fE7DF902266651Ca64014c4dC35A",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "newRate",
+            "type": "uint256"
+          }
+        ],
+        "name": "setRewardRatePerBlock",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "newRate": ""
+      }
+    }
+  ]
+}

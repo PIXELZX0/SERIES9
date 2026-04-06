@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "chainId": "143",
+  "meta": {
+    "name": "Series9 Staking Admin",
+    "description": "Admin operations for Series9 Staking contract"
+  },
+  "transactions": []
+}

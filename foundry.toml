@@ -14,6 +14,6 @@ monad = "${MONAD_RPC_URL}"
 
 [etherscan]
 monad_testnet = { key = "test", chain = 10143, url = "https://api.socialscan.io/monad-testnet/v1/explorer/command_api/contract" }
-monad = { key = "test", chain = 10143, url = "https://api.socialscan.io/monad/v1/explorer/command_api/contract" }
+monad = { key = "test", chain = 143, url = "https://api.socialscan.io/monad/v1/explorer/command_api/contract" }
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

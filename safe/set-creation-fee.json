@@ -1,0 +1,29 @@
+{
+  "version": "1.0",
+  "chainId": "143",
+  "meta": {
+    "name": "Series9 - Set Token Creation Fee",
+    "description": "Update the SER9 fee required to create a managed token"
+  },
+  "transactions": [
+    {
+      "to": "0xFa76a92716D9fE7DF902266651Ca64014c4dC35A",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "newFee",
+            "type": "uint256"
+          }
+        ],
+        "name": "setTokenCreationFee",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "newFee": ""
+      }
+    }
+  ]
+}

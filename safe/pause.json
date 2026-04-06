@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "chainId": "143",
+  "meta": {
+    "name": "Series9 - Pause",
+    "description": "Pause all user operations on Series9 Staking"
+  },
+  "transactions": [
+    {
+      "to": "0xFa76a92716D9fE7DF902266651Ca64014c4dC35A",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [],
+        "name": "pause",
+        "payable": false
+      },
+      "contractInputsValues": {}
+    }
+  ]
+}

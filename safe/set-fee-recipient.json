@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "chainId": "143",
+  "meta": {
+    "name": "Series9 - Set Fee Recipient",
+    "description": "Update fee recipient for a managed token"
+  },
+  "transactions": [
+    {
+      "to": "0xFa76a92716D9fE7DF902266651Ca64014c4dC35A",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "address",
+            "name": "token",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "newFeeRecipient",
+            "type": "address"
+          }
+        ],
+        "name": "setTokenFeeRecipient",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "token": "",
+        "newFeeRecipient": ""
+      }
+    }
+  ]
+}
