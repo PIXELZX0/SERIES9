@@ -9,7 +9,7 @@ import {
   useReadContracts,
   useSwitchChain,
 } from 'wagmi';
-import { getAddress, isAddress, zeroAddress, type Address } from 'viem';
+import { getAddress, isAddress, maxUint256, zeroAddress, type Address } from 'viem';
 
 import { explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
@@ -711,6 +711,10 @@ export default function App() {
   }
 
   async function runQuickStakeFlow() {
+    await runStakeWithAutoApprove(quickStakeAmount);
+  }
+
+  async function runStakeWithAutoApprove(rawAmount: string) {
     resetErrors();
 
     if (!normalizedConnectedAddress) {
@@ -719,7 +723,7 @@ export default function App() {
     }
 
     try {
-      const amount = parsePositiveTokenAmount(quickStakeAmount);
+      const amount = parsePositiveTokenAmount(rawAmount);
       const allowance = ser9AllowanceRead.data ?? 0n;
 
       if (allowance < amount) {
@@ -727,7 +731,7 @@ export default function App() {
           address: contracts.ser9Proxy,
           abi: ser9Abi,
           functionName: 'approve',
-          args: [contracts.stakingProxy, amount],
+          args: [contracts.stakingProxy, maxUint256],
         });
       }
 
@@ -950,61 +954,6 @@ export default function App() {
                   <MetricCard label={t('unusedLocked')} value={formatTokenAmount(userUnusedRead.data)} />
                   <MetricCard label={t('usedLocked')} value={formatTokenAmount(userUsedRead.data)} />
                 </div>
-
-                <div className="section-title">{t('userActions')}</div>
-                <div className="action-grid">
-                  <form onSubmit={(event) => onSubmit(event, runQuickStakeFlow)}>
-                    <h3>{t('quickStakeSection')}</h3>
-                    <input
-                      value={quickStakeAmount}
-                      onChange={(event) => setQuickStakeAmount(event.target.value)}
-                      placeholder={t('amount')}
-                    />
-                    <button type="submit" disabled={!isConnected || onWrongChain}>
-                      {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
-                    </button>
-                    <p className="muted">
-                      {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
-                    </p>
-                  </form>
-
-                  <form
-                    onSubmit={(event) =>
-                      onSubmit(event, () =>
-                        runWrite('unstake', () => ({
-                          address: contracts.stakingProxy,
-                          abi: stakingAbi,
-                          functionName: 'unstake',
-                          args: [parsePositiveTokenAmount(unstakeAmount)],
-                        })),
-                      )
-                    }
-                  >
-                    <h3>{t('unstake')}</h3>
-                    <input value={unstakeAmount} onChange={(e) => setUnstakeAmount(e.target.value)} placeholder={t('amount')} />
-                    <button type="submit" disabled={!isConnected || onWrongChain}>
-                      {t('unstake')}
-                    </button>
-                  </form>
-
-                  <form
-                    onSubmit={(event) =>
-                      onSubmit(event, () =>
-                        runWrite('claimRewards', () => ({
-                          address: contracts.stakingProxy,
-                          abi: stakingAbi,
-                          functionName: 'claimRewards',
-                          args: [],
-                        })),
-                      )
-                    }
-                  >
-                    <h3>{t('claimRewards')}</h3>
-                    <button type="submit" disabled={!isConnected || onWrongChain}>
-                      {t('claimRewards')}
-                    </button>
-                  </form>
-                </div>
               </>
             ) : (
               <p className="muted">{t('connectHint')}</p>
@@ -1028,7 +977,7 @@ export default function App() {
         </section>
       )}
 
-      {isTokensListPage && (
+      {(isTokensListPage || isHomePage) && (
         <>
           <section className="card">
             <h2>{t('userActions')}</h2>
@@ -1058,12 +1007,7 @@ export default function App() {
             <button type="submit">{t('approve')}</button>
           </form>
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('stake', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'stake',
-            args: [parsePositiveTokenAmount(stakeAmount)],
-          })))}>
+          <form onSubmit={(event) => onSubmit(event, () => runStakeWithAutoApprove(stakeAmount))}>
             <h3>{t('stake')}</h3>
             <input value={stakeAmount} onChange={(e) => setStakeAmount(e.target.value)} placeholder={t('amount')} />
             <button type="submit">{t('stake')}</button>
