@@ -8,7 +8,7 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 - `SERISE9 (SER9)`: 기본 토큰, 초기 1조 발행 후 스테이킹 보상 경로로만 추가 민트
 - `Series9Staking`: 
   - SER9 스테이킹/락/보상
-  - SER9 락을 담보로 새 관리 토큰 생성/민트/번/언락
+  - 스테이킹 SER9 담보를 관리 토큰 민트 시 자동 락/번 시 자동 언락
   - fee 활성 토큰의 전송 수수료를 토큰별 스테이커에게 분배
   - Permit2 기반 서명 전송(`stakeWithPermit2`, `createManagedTokenWithPermit2`, `stakeFeeTokenWithPermit2`) 지원
   - 관리 토큰 생성 시 선택적 `maxSupply` + 동적 mint rate 정책(`maxMultiplierBps`, `rampStartBps`) 지원
@@ -24,9 +24,9 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 
 1. `lock`된 SER9는 일반 스테이킹 SER9 대비 보상 가중치 1/2
 2. SER9 스테이킹 보상은 초 단위가 아니라 블록 단위로 누적되며, 기본값은 `1 SER9 / block` (owner가 변경 가능)
-3. 관리 토큰 민트는 `usedLockedSer9 <= lockedSER9` 범위에서만 가능
+3. 관리 토큰 민트 시 필요한 담보는 자동으로 lock되며, 전체 담보 사용량은 `usedLockedSer9 <= stakedSER9`를 유지
 4. `burnAndUnlock`은 burn한 토큰 양에 해당하는 담보만 언락
-5. `unlockUnused`는 사용되지 않은 락만 언락 가능
+5. `unlockUnused`는 레거시/잔여 미사용 락이 있는 경우에만 언락 가능
 6. fee 토큰은 토큰별 독립 풀에서만 스테이킹/분배
 7. transfer fee는 화이트리스트 면제형이며 staking 컨트랙트는 기본 면제
 8. `burnAndUnlock`은 burn한 담보 비율만큼만 정확히 언락됨

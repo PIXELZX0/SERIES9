@@ -88,6 +88,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error InsufficientLockedBalance();
     error InsufficientUnusedLockedBalance();
     error ExceedsMintLimit();
+    error ManualLockDisabled();
     error InsufficientTokenDebt();
     error NoRewards();
     error NoFeeRewards();
@@ -489,23 +490,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit RewardClaimed(msg.sender, reward);
     }
 
-    function lock(uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
-        if (amount == 0) {
-            revert ZeroAmount();
-        }
-
-        uint256 userStaked = stakedBalance[msg.sender];
-        uint256 userLocked = lockedBalance[msg.sender];
-
-        if (amount > userStaked - userLocked) {
-            revert InsufficientUnlockedBalance();
-        }
-
-        uint256 lockedAfter = userLocked + amount;
-        lockedBalance[msg.sender] = lockedAfter;
-        _syncRewardWeight(msg.sender);
-
-        emit Locked(msg.sender, amount, lockedAfter);
+    function lock(uint256) external pure {
+        revert ManualLockDisabled();
     }
 
     function mintManagedToken(address token, uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
@@ -518,17 +504,29 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 currentSupply = Series9ManagedToken(token).totalSupply();
         uint256 collateralCost = _previewCollateralForMint(config.mintRate, policy, currentSupply, amount);
 
-        uint256 usedAfter = usedLockedSer9[msg.sender] + collateralCost;
-        if (usedAfter > lockedBalance[msg.sender]) {
+        uint256 userLocked = lockedBalance[msg.sender];
+        uint256 userUsed = usedLockedSer9[msg.sender];
+        uint256 unusedLocked = userLocked - userUsed;
+        uint256 additionalLockRequired = collateralCost > unusedLocked ? collateralCost - unusedLocked : 0;
+
+        if (additionalLockRequired > stakedBalance[msg.sender] - userLocked) {
             revert ExceedsMintLimit();
         }
 
+        uint256 usedAfter = userUsed + collateralCost;
+        uint256 lockedAfter = userLocked + additionalLockRequired;
+
+        lockedBalance[msg.sender] = lockedAfter;
         usedLockedSer9[msg.sender] = usedAfter;
         userTokenDebt[msg.sender][token] += amount;
         userTokenCollateralUsed[msg.sender][token] += collateralCost;
+        _syncRewardWeight(msg.sender);
 
         Series9ManagedToken(token).mint(msg.sender, amount);
 
+        if (additionalLockRequired > 0) {
+            emit Locked(msg.sender, additionalLockRequired, lockedAfter);
+        }
         emit ManagedTokenMinted(msg.sender, token, amount, collateralCost, usedAfter);
     }
 
@@ -595,14 +593,14 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             return 0;
         }
 
-        uint256 availableLocked = lockedBalance[user] - usedLockedSer9[user];
-        if (availableLocked == 0) {
+        uint256 availableCollateral = stakedBalance[user] - usedLockedSer9[user];
+        if (availableCollateral == 0) {
             return 0;
         }
 
         TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
         if (policy.maxSupply == 0) {
-            return Math.mulDiv(availableLocked, PRECISION, config.mintRate);
+            return Math.mulDiv(availableCollateral, PRECISION, config.mintRate);
         }
 
         uint256 currentSupply = Series9ManagedToken(token).totalSupply();
@@ -616,7 +614,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         while (low < high) {
             uint256 mid = (low + high + 1) / 2;
             uint256 collateral = _previewCollateralForMint(config.mintRate, policy, currentSupply, mid);
-            if (collateral <= availableLocked) {
+            if (collateral <= availableCollateral) {
                 low = mid;
             } else {
                 high = mid - 1;
@@ -627,7 +625,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     }
 
     function availableUnusedLocked(address user) external view returns (uint256) {
-        return lockedBalance[user] - usedLockedSer9[user];
+        return stakedBalance[user] - usedLockedSer9[user];
     }
 
     function tokenMintPolicies(address token)

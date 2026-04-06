@@ -348,8 +348,6 @@ export default function App() {
 
   const [stakeAmount, setStakeAmount] = useState('');
   const [unstakeAmount, setUnstakeAmount] = useState('');
-  const [lockAmount, setLockAmount] = useState('');
-  const [unlockAmount, setUnlockAmount] = useState('');
 
   const [createName, setCreateName] = useState('');
   const [createSymbol, setCreateSymbol] = useState('');
@@ -1022,28 +1020,6 @@ export default function App() {
             <h3>{t('unstake')}</h3>
             <input value={unstakeAmount} onChange={(e) => setUnstakeAmount(e.target.value)} placeholder={t('amount')} />
             <button type="submit">{t('unstake')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('lock', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'lock',
-            args: [parsePositiveTokenAmount(lockAmount)],
-          })))}>
-            <h3>{t('lock')}</h3>
-            <input value={lockAmount} onChange={(e) => setLockAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('lock')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('unlockUnused', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'unlockUnused',
-            args: [parsePositiveTokenAmount(unlockAmount)],
-          })))}>
-            <h3>{t('unlockUnused')}</h3>
-            <input value={unlockAmount} onChange={(e) => setUnlockAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('unlockUnused')}</button>
           </form>
 
           <form onSubmit={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({

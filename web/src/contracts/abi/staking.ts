@@ -171,7 +171,7 @@ export const stakingAbi = [
     name: 'lock',
     inputs: [{ name: 'amount', type: 'uint256', internalType: 'uint256' }],
     outputs: [],
-    stateMutability: 'nonpayable',
+    stateMutability: 'pure',
   },
   {
     type: 'function',

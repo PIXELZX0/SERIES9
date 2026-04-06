@@ -211,7 +211,7 @@ contract Series9StakingTest is Test {
     }
 
     function testStakeFeeTokenWithPermit2() public {
-        _stakeAndLock(alice, 500 ether, 500 ether);
+        _stake(alice, 500 ether);
         address token = _createToken(alice, "FEEPERMIT", "FPM", 1 ether, true, 200);
 
         vm.startPrank(alice);
@@ -295,12 +295,15 @@ contract Series9StakingTest is Test {
         staking.setRewardRatePerBlock(2 ether);
     }
 
-    function testLockedStakeGetsHalfRewardVsUnlockedStake() public {
+    function testAutoLockedStakeGetsHalfRewardVsUnlockedStake() public {
         vm.startPrank(alice);
         ser9.approve(address(staking), type(uint256).max);
         staking.stake(100 ether);
-        staking.lock(100 ether);
         vm.stopPrank();
+
+        address token = _createToken(alice, "LOCKTEST", "LCK", 1 ether, false, 0);
+        vm.prank(alice);
+        staking.mintManagedToken(token, 100 ether);
 
         vm.startPrank(bob);
         ser9.approve(address(staking), type(uint256).max);
@@ -323,6 +326,15 @@ contract Series9StakingTest is Test {
 
         assertEq(aliceReward, 1 ether);
         assertEq(bobReward, 2 ether);
+    }
+
+    function testManualLockIsDisabled() public {
+        _stake(alice, 100 ether);
+
+        vm.startPrank(alice);
+        vm.expectRevert(Series9Staking.ManualLockDisabled.selector);
+        staking.lock(1 ether);
+        vm.stopPrank();
     }
 
     function testAnyoneCanCreateTokenByPayingFee() public {
@@ -429,7 +441,7 @@ contract Series9StakingTest is Test {
     }
 
     function testMintManagedTokensUsesAggregateLockedCollateral() public {
-        _stakeAndLock(alice, 100 ether, 100 ether);
+        _stake(alice, 100 ether);
 
         address tokenA = _createToken(alice, "TOKENA", "TKA", 1 ether, false, 0);
         address tokenB = _createToken(alice, "TOKENB", "TKB", 2 ether, false, 0);
@@ -448,7 +460,7 @@ contract Series9StakingTest is Test {
     }
 
     function testMintManagedTokenRevertsWhenExceedsMaxSupply() public {
-        _stakeAndLock(alice, 300 ether, 300 ether);
+        _stake(alice, 300 ether);
         address token = _createTokenWithPolicy(alice, "MAX", "MAX", 1 ether, false, 0, 100 ether, 20_000, 0);
 
         vm.startPrank(alice);
@@ -460,7 +472,7 @@ contract Series9StakingTest is Test {
     }
 
     function testEffectiveMintRateIncreasesAsSupplyApproachesCap() public {
-        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        _stake(alice, 5_000 ether);
         address token = _createTokenWithPolicy(alice, "DYN", "DYN", 1 ether, false, 0, 1_000 ether, 30_000, 0);
 
         uint256 rateAtZero = staking.effectiveMintRate(token);
@@ -481,7 +493,7 @@ contract Series9StakingTest is Test {
     }
 
     function testRampStartDelaysMintRateIncrease() public {
-        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        _stake(alice, 5_000 ether);
         address token = _createTokenWithPolicy(alice, "RAMP", "RMP", 1 ether, false, 0, 1_000 ether, 30_000, 7_000);
 
         assertEq(staking.effectiveMintRate(token), 1 ether);
@@ -501,7 +513,7 @@ contract Series9StakingTest is Test {
     }
 
     function testMaxMultiplier10000KeepsFixedMintRate() public {
-        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        _stake(alice, 5_000 ether);
         address token = _createTokenWithPolicy(alice, "FIXED", "FIX", 2 ether, false, 0, 1_000 ether, 10_000, 5_000);
 
         vm.startPrank(alice);
@@ -512,7 +524,7 @@ contract Series9StakingTest is Test {
     }
 
     function testBurnLowersEffectiveMintRate() public {
-        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        _stake(alice, 5_000 ether);
         address token = _createTokenWithPolicy(alice, "BURN", "BRN", 1 ether, false, 0, 1_000 ether, 40_000, 0);
 
         vm.startPrank(alice);
@@ -527,7 +539,7 @@ contract Series9StakingTest is Test {
     }
 
     function testHighUtilMintCostsMoreThanLowUtilMintForSameAmount() public {
-        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        _stake(alice, 5_000 ether);
         address token = _createTokenWithPolicy(alice, "COST", "CST", 1 ether, false, 0, 1_000 ether, 40_000, 0);
 
         uint256 lowUtilCost = staking.previewMintCollateral(token, 50 ether);
@@ -541,7 +553,7 @@ contract Series9StakingTest is Test {
     }
 
     function testMaxMintableDynamicPolicyIsExact() public {
-        _stakeAndLock(alice, 500 ether, 150 ether);
+        _stake(alice, 500 ether);
         address token = _createTokenWithPolicy(alice, "MXM", "MXM", 1 ether, false, 0, 1_000 ether, 30_000, 0);
 
         uint256 maxMintableAmount = staking.maxMintable(alice, token);
@@ -575,7 +587,7 @@ contract Series9StakingTest is Test {
     }
 
     function testMaxMintableIsZeroWhenNoUnusedLockedCollateral() public {
-        _stakeAndLock(alice, 100 ether, 100 ether);
+        _stake(alice, 100 ether);
         address token = _createTokenWithPolicy(alice, "ZERO", "ZER", 1 ether, false, 0, 1_000 ether, 10_000, 0);
 
         vm.prank(alice);
@@ -586,7 +598,7 @@ contract Series9StakingTest is Test {
     }
 
     function testMaxMintableHandlesOneWeiBoundary() public {
-        _stakeAndLock(alice, 1, 1);
+        _stake(alice, 1);
         address token = _createTokenWithPolicy(alice, "ONEWEI", "OWI", 1 ether, false, 0, 1_000 ether, 20_000, 0);
 
         assertEq(staking.maxMintable(alice, token), 1);
@@ -599,7 +611,7 @@ contract Series9StakingTest is Test {
     }
 
     function testMaxMintableIsZeroAtMaxSupply() public {
-        _stakeAndLock(alice, 500 ether, 500 ether);
+        _stake(alice, 500 ether);
         address token = _createTokenWithPolicy(alice, "FULL", "FUL", 1 ether, false, 0, 100 ether, 30_000, 0);
 
         vm.prank(alice);
@@ -611,26 +623,26 @@ contract Series9StakingTest is Test {
     }
 
     function testBurnAndUnlockOnlyUnlocksBurnEquivalent() public {
-        _stakeAndLock(alice, 100 ether, 100 ether);
+        _stake(alice, 100 ether);
         address token = _createToken(alice, "DUAL", "DUL", 2 ether, false, 0);
 
         vm.startPrank(alice);
         staking.mintManagedToken(token, 30 ether);
 
-        assertEq(staking.lockedBalance(alice), 100 ether);
+        assertEq(staking.lockedBalance(alice), 60 ether);
         assertEq(staking.usedLockedSer9(alice), 60 ether);
 
         staking.burnAndUnlock(token, 10 ether);
         vm.stopPrank();
 
         assertEq(staking.userTokenDebt(alice, token), 20 ether);
-        assertEq(staking.lockedBalance(alice), 80 ether);
+        assertEq(staking.lockedBalance(alice), 40 ether);
         assertEq(staking.usedLockedSer9(alice), 40 ether);
         assertEq(Series9ManagedToken(token).balanceOf(alice), 20 ether);
     }
 
     function testPartialDustBurnDoesNotUnlockAllCollateral() public {
-        _stakeAndLock(alice, 1 ether, 1 ether);
+        _stake(alice, 1 ether);
         address token = _createToken(alice, "DUST", "DST", 1, false, 0);
 
         vm.startPrank(alice);
@@ -647,17 +659,12 @@ contract Series9StakingTest is Test {
         vm.stopPrank();
     }
 
-    function testUnlockUnusedOnlyForUnusedCollateral() public {
-        _stakeAndLock(alice, 100 ether, 100 ether);
+    function testUnlockUnusedRevertsWithoutUnusedCollateral() public {
+        _stake(alice, 100 ether);
         address token = _createToken(alice, "UNLOCK", "ULK", 2 ether, false, 0);
 
         vm.startPrank(alice);
         staking.mintManagedToken(token, 10 ether);
-        staking.unlockUnused(80 ether);
-
-        assertEq(staking.lockedBalance(alice), 20 ether);
-        assertEq(staking.usedLockedSer9(alice), 20 ether);
-
         vm.expectRevert(Series9Staking.InsufficientUnusedLockedBalance.selector);
         staking.unlockUnused(1 ether);
 
@@ -670,7 +677,7 @@ contract Series9StakingTest is Test {
     }
 
     function testFeeDisabledTokenCannotBeFeeStaked() public {
-        _stakeAndLock(alice, 100 ether, 100 ether);
+        _stake(alice, 100 ether);
         address token = _createToken(alice, "NOFEE", "NFE", 1 ether, false, 0);
 
         vm.startPrank(alice);
@@ -683,7 +690,7 @@ contract Series9StakingTest is Test {
     }
 
     function testFeeTokenStakingDistributesTransferFeeProRata() public {
-        _stakeAndLock(alice, 2_000 ether, 2_000 ether);
+        _stake(alice, 2_000 ether);
 
         address token = _createToken(alice, "FEECOIN", "FEE", 1 ether, true, 500);
 
@@ -723,7 +730,7 @@ contract Series9StakingTest is Test {
     }
 
     function testFeeAccumulatedWithoutStakersIsDistributedWhenFirstStakerJoins() public {
-        _stakeAndLock(alice, 2_000 ether, 2_000 ether);
+        _stake(alice, 2_000 ether);
         address token = _createToken(alice, "LATEFEE", "LFE", 1 ether, true, 500);
 
         vm.startPrank(alice);
@@ -745,7 +752,7 @@ contract Series9StakingTest is Test {
     }
 
     function testStakingTransfersAreFeeExempt() public {
-        _stakeAndLock(alice, 200 ether, 200 ether);
+        _stake(alice, 200 ether);
         address token = _createToken(alice, "EXEMPT", "XEM", 1 ether, true, 500);
 
         vm.startPrank(alice);
@@ -855,7 +862,7 @@ contract Series9StakingTest is Test {
     }
 
     function testUpgradeTokensPreservesStateAndCreatorPrivileges() public {
-        _stakeAndLock(alice, 200 ether, 120 ether);
+        _stake(alice, 200 ether);
         address token = _createToken(alice, "STATE", "STA", 2 ether, true, 300);
 
         vm.startPrank(alice);
@@ -973,20 +980,17 @@ contract Series9StakingTest is Test {
     function testFuzzMintBurnCollateralAccounting(uint256 mintAmount) public {
         mintAmount = bound(mintAmount, 1, 99 ether);
 
-        _stakeAndLock(alice, 100 ether, 100 ether);
+        _stake(alice, 100 ether);
         address token = _createToken(alice, "FUZZ", "FZZ", 1 ether, false, 0);
 
         vm.startPrank(alice);
         staking.mintManagedToken(token, mintAmount);
-
-        uint256 usedBefore = staking.usedLockedSer9(alice);
-
         staking.burnAndUnlock(token, mintAmount);
         vm.stopPrank();
 
         assertEq(staking.userTokenDebt(alice, token), 0);
         assertEq(staking.usedLockedSer9(alice), 0);
-        assertEq(staking.lockedBalance(alice), 100 ether - usedBefore);
+        assertEq(staking.lockedBalance(alice), 0);
     }
 
     function testFuzzMultiStakerRewardProportionality(uint256 aliceAmount, uint256 bobAmount) public {
@@ -1077,11 +1081,10 @@ contract Series9StakingTest is Test {
         staking.setTokenFeeRecipient(token, address(0));
     }
 
-    function _stakeAndLock(address user, uint256 stakeAmount, uint256 lockAmount) internal {
+    function _stake(address user, uint256 stakeAmount) internal {
         vm.startPrank(user);
         ser9.approve(address(staking), type(uint256).max);
         staking.stake(stakeAmount);
-        staking.lock(lockAmount);
         vm.stopPrank();
     }
 
