@@ -37,6 +37,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     SER9Token public ser9;
     address public managedTokenImplementation;
+    uint256 public tokenCreationFee;
 
     uint256 public rewardRatePerBlock;
     uint256 public rewardPerTokenStored;
@@ -84,6 +85,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error ImplementationNotUUPSCompatible(address implementation);
     error UnsupportedProxiableUUID(address implementation, bytes32 uuid);
     error UnauthorizedTokenOwner(address token, address ownerAddress);
+    error InsufficientCreationFee();
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -118,6 +120,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event TokenFeeBpsUpdated(address indexed token, uint16 feeBps);
     event TokenFeeExemptUpdated(address indexed token, address indexed account, bool isExempt);
 
+    event TokenCreationFeeUpdated(uint256 previousFee, uint256 newFee);
+
     event FeeTokenStaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
     event FeeTokenUnstaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
     event FeeRewardsClaimed(address indexed user, address indexed token, uint256 rewardAmount);
@@ -143,7 +147,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         address ser9Token,
         uint256 rewardPerBlock,
         address initialOwner,
-        address managedTokenImplementation_
+        address managedTokenImplementation_,
+        uint256 initialCreationFee
     ) external initializer {
         if (ser9Token == address(0) || ser9Token.code.length == 0) {
             revert InvalidTokenAddress();
@@ -156,6 +161,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         ser9 = SER9Token(ser9Token);
         rewardRatePerBlock = rewardPerBlock;
+        tokenCreationFee = initialCreationFee;
         lastUpdateBlock = block.number;
         managedTokenImplementation = managedTokenImplementation_;
     }
@@ -175,6 +181,12 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function setSer9StakingContract(address newStakingContract) external onlyOwner {
         ser9.setStakingContract(newStakingContract);
+    }
+
+    function setTokenCreationFee(uint256 newFee) external onlyOwner {
+        uint256 previousFee = tokenCreationFee;
+        tokenCreationFee = newFee;
+        emit TokenCreationFeeUpdated(previousFee, newFee);
     }
 
     function managedTokensLength() external view returns (uint256) {
@@ -231,13 +243,12 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     }
 
     function createManagedToken(
-        address creator,
         string calldata name,
         string calldata symbol,
         uint256 mintRate,
         bool feeEnabled,
         uint16 feeBps
-    ) external onlyOwner whenNotPaused returns (address token) {
+    ) external whenNotPaused returns (address token) {
         if (mintRate == 0) {
             revert MintRateZero();
         }
@@ -246,12 +257,21 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             revert InvalidFeeConfiguration();
         }
 
-        bytes memory initData = abi.encodeCall(
-            Series9ManagedToken.initialize, (name, symbol, address(this), feeEnabled, feeBps, address(this))
-        );
-        ERC1967Proxy managedTokenProxy = new ERC1967Proxy(managedTokenImplementation, initData);
+        {
+            uint256 fee = tokenCreationFee;
+            if (fee > 0) {
+                IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
+            }
+        }
 
-        token = address(managedTokenProxy);
+        {
+            bytes memory initData = abi.encodeCall(
+                Series9ManagedToken.initialize, (name, symbol, address(this), feeEnabled, feeBps, address(this))
+            );
+            token = address(new ERC1967Proxy(managedTokenImplementation, initData));
+        }
+
+        address creator = msg.sender;
         tokenConfigs[token] =
             TokenConfig({exists: true, creator: creator, mintRate: mintRate, feeEnabled: feeEnabled});
         managedTokens.push(token);
@@ -679,5 +699,5 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[29] private __gap;
+    uint256[28] private __gap;
 }
