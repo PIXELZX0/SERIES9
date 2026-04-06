@@ -17,6 +17,16 @@ npm run build
 npm run preview
 ```
 
+## Node.js 실행
+
+```bash
+npm run build
+npm run start
+```
+
+- 기본 포트: `4173`
+- 포트 변경: `PORT=8080 npm run start`
+
 ## Features
 
 - 지갑 연결 / 네트워크 전환 안내
