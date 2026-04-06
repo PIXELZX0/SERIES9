@@ -940,15 +940,72 @@ export default function App() {
           <section className="card">
             <h2>{t('userState')}</h2>
             {isConnected ? (
-              <div className="metric-grid">
-                <MetricCard label={t('ser9Balance')} value={formatTokenAmount(ser9BalanceRead.data)} />
-                <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
-                <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
-                <MetricCard label={t('unlockedBalance')} value={formatTokenAmount(userUnlockedRead.data)} />
-                <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
-                <MetricCard label={t('unusedLocked')} value={formatTokenAmount(userUnusedRead.data)} />
-                <MetricCard label={t('usedLocked')} value={formatTokenAmount(userUsedRead.data)} />
-              </div>
+              <>
+                <div className="metric-grid">
+                  <MetricCard label={t('ser9Balance')} value={formatTokenAmount(ser9BalanceRead.data)} />
+                  <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
+                  <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
+                  <MetricCard label={t('unlockedBalance')} value={formatTokenAmount(userUnlockedRead.data)} />
+                  <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
+                  <MetricCard label={t('unusedLocked')} value={formatTokenAmount(userUnusedRead.data)} />
+                  <MetricCard label={t('usedLocked')} value={formatTokenAmount(userUsedRead.data)} />
+                </div>
+
+                <div className="section-title">{t('userActions')}</div>
+                <div className="action-grid">
+                  <form onSubmit={(event) => onSubmit(event, runQuickStakeFlow)}>
+                    <h3>{t('quickStakeSection')}</h3>
+                    <input
+                      value={quickStakeAmount}
+                      onChange={(event) => setQuickStakeAmount(event.target.value)}
+                      placeholder={t('amount')}
+                    />
+                    <button type="submit" disabled={!isConnected || onWrongChain}>
+                      {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
+                    </button>
+                    <p className="muted">
+                      {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
+                    </p>
+                  </form>
+
+                  <form
+                    onSubmit={(event) =>
+                      onSubmit(event, () =>
+                        runWrite('unstake', () => ({
+                          address: contracts.stakingProxy,
+                          abi: stakingAbi,
+                          functionName: 'unstake',
+                          args: [parsePositiveTokenAmount(unstakeAmount)],
+                        })),
+                      )
+                    }
+                  >
+                    <h3>{t('unstake')}</h3>
+                    <input value={unstakeAmount} onChange={(e) => setUnstakeAmount(e.target.value)} placeholder={t('amount')} />
+                    <button type="submit" disabled={!isConnected || onWrongChain}>
+                      {t('unstake')}
+                    </button>
+                  </form>
+
+                  <form
+                    onSubmit={(event) =>
+                      onSubmit(event, () =>
+                        runWrite('claimRewards', () => ({
+                          address: contracts.stakingProxy,
+                          abi: stakingAbi,
+                          functionName: 'claimRewards',
+                          args: [],
+                        })),
+                      )
+                    }
+                  >
+                    <h3>{t('claimRewards')}</h3>
+                    <button type="submit" disabled={!isConnected || onWrongChain}>
+                      {t('claimRewards')}
+                    </button>
+                  </form>
+                </div>
+              </>
             ) : (
               <p className="muted">{t('connectHint')}</p>
             )}
