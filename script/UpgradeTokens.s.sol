@@ -25,6 +25,7 @@ contract UpgradeTokens is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address stakingProxy = vm.envAddress("STAKING_PROXY");
+        bool skipVerify = vm.envOr("SKIP_VERIFY", false);
 
         string memory ser9DataHex = vm.envOr("SER9_UPGRADE_DATA", string(""));
         string memory managedDataHex = vm.envOr("MANAGED_UPGRADE_DATA", string(""));
@@ -44,10 +45,14 @@ contract UpgradeTokens is Script {
         console.log("New Managed Implementation:", newManagedImplementation);
         console.log("Staking Proxy:", stakingProxy);
 
-        // --- Phase 2: Verify new implementations ---
-        console.log("\n=== Verifying New Implementations ===");
-        _verify(newSer9Implementation, "src/SER9Token.sol:SER9Token");
-        _verify(newManagedImplementation, "src/Series9ManagedToken.sol:Series9ManagedToken");
+        // --- Phase 2: Verify new implementations (optional) ---
+        if (skipVerify) {
+            console.log("\n=== Skipping Verification (SKIP_VERIFY=true) ===");
+        } else {
+            console.log("\n=== Verifying New Implementations ===");
+            _verify(newSer9Implementation, "src/SER9Token.sol:SER9Token");
+            _verify(newManagedImplementation, "src/Series9ManagedToken.sol:Series9ManagedToken");
+        }
 
         // --- Phase 3: Generate Safe TX Builder JSON ---
         bytes memory upgradeCalldata = abi.encodeCall(
