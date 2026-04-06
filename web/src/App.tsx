@@ -19,8 +19,6 @@ import { useI18n, type MessageKey } from './i18n';
 import { equalsAddress, formatTokenAmount, shortenAddress } from './utils/format';
 import {
   parseAddressStrict,
-  parseBooleanFromSelect,
-  parseHexOrDefault,
   parseNonNegativeBps,
   parsePositiveTokenAmount,
 } from './utils/validation';
@@ -260,6 +258,8 @@ export default function App() {
   const [managedApproveAmount, setManagedApproveAmount] = useState('');
   const [managedApproveSpender, setManagedApproveSpender] = useState<string>(contracts.stakingProxy);
 
+  const [quickStakeAmount, setQuickStakeAmount] = useState('');
+
   const [stakeAmount, setStakeAmount] = useState('');
   const [unstakeAmount, setUnstakeAmount] = useState('');
   const [lockAmount, setLockAmount] = useState('');
@@ -288,39 +288,8 @@ export default function App() {
   const [creatorToken, setCreatorToken] = useState('');
   const [creatorFeeBps, setCreatorFeeBps] = useState('');
 
-  const [ownerRewardRate, setOwnerRewardRate] = useState('');
-  const [ownerCreationFee, setOwnerCreationFee] = useState('');
-
-  const [ownerFeeExemptToken, setOwnerFeeExemptToken] = useState('');
-  const [ownerFeeExemptAccount, setOwnerFeeExemptAccount] = useState('');
-  const [ownerFeeExemptState, setOwnerFeeExemptState] = useState('true');
-
-  const [ownerFeeRecipientToken, setOwnerFeeRecipientToken] = useState('');
-  const [ownerNewFeeRecipient, setOwnerNewFeeRecipient] = useState('');
-
-  const [ownerManagedImpl, setOwnerManagedImpl] = useState<string>(contracts.managedTokenImplementation);
-  const [ownerNewStakingContract, setOwnerNewStakingContract] = useState<string>(contracts.stakingProxy);
-  const [ownerTransferOwner, setOwnerTransferOwner] = useState('');
-
-  const [expertArmed, setExpertArmed] = useState(false);
-  const [expertPhrase, setExpertPhrase] = useState('');
-
-  const [expertUpgradeImpl, setExpertUpgradeImpl] = useState<string>(contracts.stakingImplementation);
-  const [expertUpgradeData, setExpertUpgradeData] = useState('0x');
-
-  const [expertNewSer9Impl, setExpertNewSer9Impl] = useState<string>(contracts.ser9Implementation);
-  const [expertNewManagedImpl, setExpertNewManagedImpl] = useState<string>(contracts.managedTokenImplementation);
-  const [expertSer9Data, setExpertSer9Data] = useState('0x');
-  const [expertManagedData, setExpertManagedData] = useState('0x');
-
   const normalizedConnectedAddress = address ? getAddress(address) : undefined;
   const addressForReads = normalizedConnectedAddress ?? zeroAddress;
-
-  const ownerRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'owner',
-  });
 
   const pausedRead = useReadContract({
     address: contracts.stakingProxy,
@@ -363,6 +332,16 @@ export default function App() {
     abi: ser9Abi,
     functionName: 'balanceOf',
     args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const ser9AllowanceRead = useReadContract({
+    address: contracts.ser9Proxy,
+    abi: ser9Abi,
+    functionName: 'allowance',
+    args: [addressForReads, contracts.stakingProxy],
     query: {
       enabled: Boolean(normalizedConnectedAddress),
     },
@@ -477,18 +456,36 @@ export default function App() {
   });
 
   const creatorTokenConfig = parseTokenConfig(creatorTokenConfigRead.data);
-
-  const connectedIsOwner = equalsAddress(ownerRead.data, normalizedConnectedAddress);
   const connectedIsCreator = equalsAddress(creatorTokenConfig?.creator, normalizedConnectedAddress);
 
   const onWrongChain = isConnected && chainId !== networkConfig.chainId;
-  const expertReady = expertArmed && expertPhrase.trim() === 'I UNDERSTAND';
 
   const injectedConnector = connectors[0];
 
   const datalistTokens = useMemo(() => {
     return managedTokens.map((token) => token.toLowerCase());
   }, [managedTokens]);
+
+  const parsedQuickStakeAmount = useMemo(() => {
+    const amount = quickStakeAmount.trim();
+    if (!amount) {
+      return null;
+    }
+
+    try {
+      return parsePositiveTokenAmount(amount);
+    } catch {
+      return null;
+    }
+  }, [quickStakeAmount]);
+
+  const quickStakeNeedsApproval =
+    parsedQuickStakeAmount !== null && (ser9AllowanceRead.data ?? 0n) < parsedQuickStakeAmount;
+  const normalizedPathname = (typeof window !== 'undefined' ? window.location.pathname : '/')
+    .replace(/\/+$/, '') || '/';
+  const isTokensListPage = normalizedPathname === '/tokens';
+  const isTokenCreatePage = normalizedPathname === '/tokens/create';
+  const isHomePage = !isTokensListPage && !isTokenCreatePage;
 
   function mapLocalError(error: unknown): string {
     if (!(error instanceof Error)) {
@@ -553,10 +550,75 @@ export default function App() {
     void handler();
   }
 
+  function createManagedTokenRequest() {
+    const name = createName.trim();
+    const symbol = createSymbol.trim();
+
+    if (!name || !symbol) {
+      throw new Error('INVALID_AMOUNT');
+    }
+
+    return {
+      address: contracts.stakingProxy,
+      abi: stakingAbi,
+      functionName: 'createManagedToken' as const,
+      args: [
+        name,
+        symbol,
+        parsePositiveTokenAmount(createMintRate),
+        createFeeEnabled,
+        createFeeEnabled ? parseNonNegativeBps(createFeeBps) : 0,
+      ] as const,
+    };
+  }
+
+  async function runQuickStakeFlow() {
+    resetErrors();
+
+    if (!normalizedConnectedAddress) {
+      setFormError(t('connectHint'));
+      return;
+    }
+
+    try {
+      const amount = parsePositiveTokenAmount(quickStakeAmount);
+      const allowance = ser9AllowanceRead.data ?? 0n;
+
+      if (allowance < amount) {
+        await tx.execute(t('ser9Approve'), {
+          address: contracts.ser9Proxy,
+          abi: ser9Abi,
+          functionName: 'approve',
+          args: [contracts.stakingProxy, amount],
+        });
+      }
+
+      await tx.execute(t('stake'), {
+        address: contracts.stakingProxy,
+        abi: stakingAbi,
+        functionName: 'stake',
+        args: [amount],
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
         <div>
+          <nav className="page-nav">
+            <a href="/" className={normalizedPathname === '/' ? 'active' : ''}>
+              {t('navHome')}
+            </a>
+            <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
+              {t('navTokens')}
+            </a>
+            <a href="/tokens/create" className={isTokenCreatePage ? 'active' : ''}>
+              {t('navCreateToken')}
+            </a>
+          </nav>
           <h1>{t('appTitle')}</h1>
           <p>{t('appSubtitle')}</p>
         </div>
@@ -618,9 +680,7 @@ export default function App() {
         </div>
         <div>
           <span>Role</span>
-          <strong>
-            {connectedIsOwner ? t('roleOwner') : connectedIsCreator ? t('roleCreator') : t('roleUser')}
-          </strong>
+          <strong>{connectedIsCreator ? t('roleCreator') : t('roleUser')}</strong>
         </div>
         <div>
           <button type="button" className="secondary" onClick={() => void queryClient.invalidateQueries()}>
@@ -644,58 +704,119 @@ export default function App() {
         </section>
       )}
 
-      <section className="card">
-        <h2>{t('contractAddresses')}</h2>
-        <div className="address-list">
-          {contractEntries.map((entry) => (
-            <div className="address-row" key={entry.key}>
-              <div>
-                <strong>{entry.title}</strong>
-                <p>{entry.address}</p>
-              </div>
-              <div className="address-actions">
-                <button type="button" onClick={() => void copyToClipboard(entry.key, entry.address)}>
-                  {copiedId === entry.key ? t('copied') : t('copy')}
-                </button>
-                <a href={explorerAddressUrl(entry.address)} target="_blank" rel="noreferrer">
-                  {t('openExplorer')}
-                </a>
-              </div>
+      {isTokensListPage && (
+        <section className="card">
+          <h2>{t('tokensPageTitle')}</h2>
+          <p className="muted">{t('tokensPageHint')}</p>
+        </section>
+      )}
+
+      {isTokenCreatePage && (
+        <section className="card">
+          <h2>{t('tokensCreatePageTitle')}</h2>
+          <p className="muted">{t('tokensCreatePageHint')}</p>
+          <form
+            className="single-form"
+            onSubmit={(event) => onSubmit(event, () => runWrite('createManagedToken', createManagedTokenRequest))}
+          >
+            <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder={t('tokenName')} />
+            <input value={createSymbol} onChange={(e) => setCreateSymbol(e.target.value)} placeholder={t('tokenSymbol')} />
+            <input value={createMintRate} onChange={(e) => setCreateMintRate(e.target.value)} placeholder={t('mintRatePerToken')} />
+            <label className="checkbox-row">
+              <input type="checkbox" checked={createFeeEnabled} onChange={(e) => setCreateFeeEnabled(e.target.checked)} />
+              {t('enableFee')}
+            </label>
+            <input
+              value={createFeeBps}
+              onChange={(e) => setCreateFeeBps(e.target.value)}
+              placeholder={t('initialFeeBps')}
+              disabled={!createFeeEnabled}
+            />
+            <button type="submit" disabled={!isConnected || onWrongChain}>
+              {t('createManagedToken')}
+            </button>
+          </form>
+        </section>
+      )}
+
+      {isHomePage && (
+        <>
+          <section className="card">
+            <h2>{t('contractAddresses')}</h2>
+            <div className="address-list">
+              {contractEntries.map((entry) => (
+                <div className="address-row" key={entry.key}>
+                  <div>
+                    <strong>{entry.title}</strong>
+                    <p>{entry.address}</p>
+                  </div>
+                  <div className="address-actions">
+                    <button type="button" onClick={() => void copyToClipboard(entry.key, entry.address)}>
+                      {copiedId === entry.key ? t('copied') : t('copy')}
+                    </button>
+                    <a href={explorerAddressUrl(entry.address)} target="_blank" rel="noreferrer">
+                      {t('openExplorer')}
+                    </a>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </section>
+          </section>
 
-      <section className="card">
-        <h2>{t('stakingOverview')}</h2>
-        <div className="section-title">{t('protocolState')}</div>
-        <div className="metric-grid">
-          <MetricCard
-            label={t('paused')}
-            value={pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
-          />
-          <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
-          <MetricCard label={t('totalRewardWeight')} value={formatTokenAmount(totalRewardWeightRead.data)} />
-          <MetricCard label={t('rewardRatePerBlock')} value={formatTokenAmount(rewardRateRead.data)} />
-          <MetricCard label={t('tokenCreationFee')} value={formatTokenAmount(creationFeeRead.data)} />
-          <MetricCard label={t('managedTokenCount')} value={String(managedTokenCount)} />
-        </div>
+          <section className="card">
+            <h2>{t('stakingOverview')}</h2>
+            <div className="section-title">{t('protocolState')}</div>
+            <div className="metric-grid">
+              <MetricCard
+                label={t('paused')}
+                value={pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
+              />
+              <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
+              <MetricCard label={t('totalRewardWeight')} value={formatTokenAmount(totalRewardWeightRead.data)} />
+              <MetricCard label={t('rewardRatePerBlock')} value={formatTokenAmount(rewardRateRead.data)} />
+              <MetricCard label={t('tokenCreationFee')} value={formatTokenAmount(creationFeeRead.data)} />
+              <MetricCard label={t('managedTokenCount')} value={String(managedTokenCount)} />
+            </div>
 
-        <div className="section-title">{t('userState')}</div>
-        {isConnected ? (
-          <div className="metric-grid">
-            <MetricCard label={t('ser9Balance')} value={formatTokenAmount(ser9BalanceRead.data)} />
-            <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
-            <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
-            <MetricCard label={t('unlockedBalance')} value={formatTokenAmount(userUnlockedRead.data)} />
-            <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
-            <MetricCard label={t('unusedLocked')} value={formatTokenAmount(userUnusedRead.data)} />
-            <MetricCard label={t('usedLocked')} value={formatTokenAmount(userUsedRead.data)} />
-          </div>
-        ) : (
-          <p className="muted">{t('connectHint')}</p>
-        )}
-      </section>
+            <div className="section-title">{t('userState')}</div>
+            {isConnected ? (
+              <div className="metric-grid">
+                <MetricCard label={t('ser9Balance')} value={formatTokenAmount(ser9BalanceRead.data)} />
+                <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
+                <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
+                <MetricCard label={t('unlockedBalance')} value={formatTokenAmount(userUnlockedRead.data)} />
+                <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
+                <MetricCard label={t('unusedLocked')} value={formatTokenAmount(userUnusedRead.data)} />
+                <MetricCard label={t('usedLocked')} value={formatTokenAmount(userUsedRead.data)} />
+              </div>
+            ) : (
+              <p className="muted">{t('connectHint')}</p>
+            )}
+          </section>
+
+          <section className="card">
+            <h2>{t('quickStakeSection')}</h2>
+            <p className="muted">{t('quickStakeHint')}</p>
+            <form className="single-form" onSubmit={(event) => onSubmit(event, runQuickStakeFlow)}>
+              <input
+                value={quickStakeAmount}
+                onChange={(event) => setQuickStakeAmount(event.target.value)}
+                placeholder={t('amount')}
+              />
+              <button type="submit" disabled={!isConnected || onWrongChain}>
+                {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
+              </button>
+            </form>
+            {isConnected ? (
+              <p className="muted">
+                {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
+              </p>
+            ) : (
+              <p className="muted">{t('connectHint')}</p>
+            )}
+          </section>
+        </>
+      )}
 
       <section className="card">
         <h2>{t('sectionManagedTokens')}</h2>
@@ -710,9 +831,11 @@ export default function App() {
         )}
       </section>
 
-      <section className="card">
-        <h2>{t('userActions')}</h2>
-        <div className="action-grid">
+      {isHomePage && (
+        <>
+          <section className="card">
+            <h2>{t('userActions')}</h2>
+            <div className="action-grid">
           <form onSubmit={(event) => onSubmit(event, () => runWrite('ser9Approve', () => ({
             address: contracts.ser9Proxy,
             abi: ser9Abi,
@@ -792,27 +915,7 @@ export default function App() {
             <button type="submit">{t('claimRewards')}</button>
           </form>
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('createManagedToken', () => {
-            const name = createName.trim();
-            const symbol = createSymbol.trim();
-
-            if (!name || !symbol) {
-              throw new Error('INVALID_AMOUNT');
-            }
-
-            return {
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'createManagedToken',
-              args: [
-                name,
-                symbol,
-                parsePositiveTokenAmount(createMintRate),
-                createFeeEnabled,
-                createFeeEnabled ? parseNonNegativeBps(createFeeBps) : 0,
-              ],
-            };
-          }))}>
+          <form onSubmit={(event) => onSubmit(event, () => runWrite('createManagedToken', createManagedTokenRequest))}>
             <h3>{t('createManagedToken')}</h3>
             <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder={t('tokenName')} />
             <input value={createSymbol} onChange={(e) => setCreateSymbol(e.target.value)} placeholder={t('tokenSymbol')} />
@@ -883,284 +986,93 @@ export default function App() {
             <input list="managed-token-list" value={feeClaimToken} onChange={(e) => setFeeClaimToken(e.target.value)} placeholder={t('tokenAddress')} />
             <button type="submit">{t('claimFeeRewards')}</button>
           </form>
-        </div>
-      </section>
+            </div>
+          </section>
 
-      <section className="card">
-        <h2>{t('creatorControls')}</h2>
-        <form
-          className="single-form"
-          onSubmit={(event) => onSubmit(event, () => runWrite(
-            'setTokenFeeBps',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'setTokenFeeBps',
-              args: [parseAddressStrict(creatorToken), parseNonNegativeBps(creatorFeeBps)],
-            }),
-            () => (connectedIsCreator ? null : t('creatorOnly')),
-          ))}
-        >
-          <input list="managed-token-list" value={creatorToken} onChange={(e) => setCreatorToken(e.target.value)} placeholder={t('selectedToken')} />
-          <input value={creatorFeeBps} onChange={(e) => setCreatorFeeBps(e.target.value)} placeholder={t('feeBps')} />
-          <button type="submit">{t('setTokenFeeBps')}</button>
-        </form>
-      </section>
+          <section className="card">
+            <h2>{t('creatorControls')}</h2>
+            <form
+              className="single-form"
+              onSubmit={(event) => onSubmit(event, () => runWrite(
+                'setTokenFeeBps',
+                () => ({
+                  address: contracts.stakingProxy,
+                  abi: stakingAbi,
+                  functionName: 'setTokenFeeBps',
+                  args: [parseAddressStrict(creatorToken), parseNonNegativeBps(creatorFeeBps)],
+                }),
+                () => (connectedIsCreator ? null : t('creatorOnly')),
+              ))}
+            >
+              <input list="managed-token-list" value={creatorToken} onChange={(e) => setCreatorToken(e.target.value)} placeholder={t('selectedToken')} />
+              <input value={creatorFeeBps} onChange={(e) => setCreatorFeeBps(e.target.value)} placeholder={t('feeBps')} />
+              <button type="submit">{t('setTokenFeeBps')}</button>
+            </form>
+          </section>
 
-      <section className="card">
-        <h2>{t('ownerControls')}</h2>
-        <div className="action-grid">
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'pause',
-            () => ({ address: contracts.stakingProxy, abi: stakingAbi, functionName: 'pause', args: [] }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('pause')}</h3>
-            <button type="submit">{t('pause')}</button>
-          </form>
+          <datalist id="managed-token-list">
+            {datalistTokens.map((token) => (
+              <option key={token} value={token} />
+            ))}
+          </datalist>
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'unpause',
-            () => ({ address: contracts.stakingProxy, abi: stakingAbi, functionName: 'unpause', args: [] }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('unpause')}</h3>
-            <button type="submit">{t('unpause')}</button>
-          </form>
+          <section className="card tx-card">
+            <h2>{t('txStatus')}</h2>
+            {tx.actionLabel ? (
+              <p>
+                {t('lastAction')}: <strong>{tx.actionLabel}</strong>
+              </p>
+            ) : (
+              <p className="muted">-</p>
+            )}
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'setRewardRate',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'setRewardRatePerBlock',
-              args: [parsePositiveTokenAmount(ownerRewardRate)],
-            }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('setRewardRate')}</h3>
-            <input value={ownerRewardRate} onChange={(e) => setOwnerRewardRate(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('submit')}</button>
-          </form>
+            {tx.isWalletPrompt && <p>{t('walletPrompt')}</p>}
+            {tx.isConfirming && <p>{t('txPending')}</p>}
+            {tx.isSuccess && <p className="success">{t('txSuccess')}</p>}
+            {tx.errorKey && <p className="error">{t(tx.errorKey)}</p>}
+            {tx.errorDetail && <p className="muted">{tx.errorDetail}</p>}
+            {formError && <p className="error">{formError}</p>}
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'setTokenCreationFee',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'setTokenCreationFee',
-              args: [parsePositiveTokenAmount(ownerCreationFee)],
-            }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('setTokenCreationFee')}</h3>
-            <input value={ownerCreationFee} onChange={(e) => setOwnerCreationFee(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('submit')}</button>
-          </form>
+            {tx.txHash && (
+              <p>
+                {t('txHash')}:&nbsp;
+                <a href={explorerTxUrl(tx.txHash)} target="_blank" rel="noreferrer">
+                  {shortenAddress(tx.txHash as Address, 8)}
+                </a>
+              </p>
+            )}
+          </section>
+        </>
+      )}
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'setFeeExempt',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'setFeeExempt',
-              args: [
-                parseAddressStrict(ownerFeeExemptToken),
-                parseAddressStrict(ownerFeeExemptAccount),
-                parseBooleanFromSelect(ownerFeeExemptState),
-              ],
-            }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('setFeeExempt')}</h3>
-            <input list="managed-token-list" value={ownerFeeExemptToken} onChange={(e) => setOwnerFeeExemptToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <input value={ownerFeeExemptAccount} onChange={(e) => setOwnerFeeExemptAccount(e.target.value)} placeholder={t('accountAddress')} />
-            <select value={ownerFeeExemptState} onChange={(e) => setOwnerFeeExemptState(e.target.value)}>
-              <option value="true">{t('yes')}</option>
-              <option value="false">{t('no')}</option>
-            </select>
-            <button type="submit">{t('submit')}</button>
-          </form>
+      {isTokenCreatePage && (
+        <section className="card tx-card">
+          <h2>{t('txStatus')}</h2>
+          {tx.actionLabel ? (
+            <p>
+              {t('lastAction')}: <strong>{tx.actionLabel}</strong>
+            </p>
+          ) : (
+            <p className="muted">-</p>
+          )}
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'setTokenFeeRecipient',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'setTokenFeeRecipient',
-              args: [parseAddressStrict(ownerFeeRecipientToken), parseAddressStrict(ownerNewFeeRecipient)],
-            }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('setTokenFeeRecipient')}</h3>
-            <input list="managed-token-list" value={ownerFeeRecipientToken} onChange={(e) => setOwnerFeeRecipientToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <input value={ownerNewFeeRecipient} onChange={(e) => setOwnerNewFeeRecipient(e.target.value)} placeholder={t('newFeeRecipient')} />
-            <button type="submit">{t('submit')}</button>
-          </form>
+          {tx.isWalletPrompt && <p>{t('walletPrompt')}</p>}
+          {tx.isConfirming && <p>{t('txPending')}</p>}
+          {tx.isSuccess && <p className="success">{t('txSuccess')}</p>}
+          {tx.errorKey && <p className="error">{t(tx.errorKey)}</p>}
+          {tx.errorDetail && <p className="muted">{tx.errorDetail}</p>}
+          {formError && <p className="error">{formError}</p>}
 
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'setManagedTokenImplementation',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'setManagedTokenImplementation',
-              args: [parseAddressStrict(ownerManagedImpl)],
-            }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('setManagedTokenImplementation')}</h3>
-            <input value={ownerManagedImpl} onChange={(e) => setOwnerManagedImpl(e.target.value)} placeholder={t('newImplementation')} />
-            <button type="submit">{t('submit')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'setSer9StakingContract',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'setSer9StakingContract',
-              args: [parseAddressStrict(ownerNewStakingContract)],
-            }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('setSer9StakingContract')}</h3>
-            <input value={ownerNewStakingContract} onChange={(e) => setOwnerNewStakingContract(e.target.value)} placeholder={t('newImplementation')} />
-            <button type="submit">{t('submit')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite(
-            'transferOwnership',
-            () => ({
-              address: contracts.stakingProxy,
-              abi: stakingAbi,
-              functionName: 'transferOwnership',
-              args: [parseAddressStrict(ownerTransferOwner)],
-            }),
-            () => (connectedIsOwner ? null : t('ownerOnly')),
-          ))}>
-            <h3>{t('transferOwnership')}</h3>
-            <input value={ownerTransferOwner} onChange={(e) => setOwnerTransferOwner(e.target.value)} placeholder={t('newOwner')} />
-            <button type="submit">{t('submit')}</button>
-          </form>
-        </div>
-      </section>
-
-      <section className="card expert">
-        <h2>{t('expertMode')}</h2>
-        <p className="muted">{t('expertDescription')}</p>
-
-        <label className="checkbox-row">
-          <input type="checkbox" checked={expertArmed} onChange={(e) => setExpertArmed(e.target.checked)} />
-          {t('armExpertMode')}
-        </label>
-
-        <label className="expert-confirm">
-          <span>{t('confirmationPhraseLabel')}</span>
-          <input value={expertPhrase} onChange={(e) => setExpertPhrase(e.target.value)} placeholder="I UNDERSTAND" />
-          <small>{t('confirmationPhraseHelp')}</small>
-        </label>
-
-        <div className="expert-ready">{expertReady ? t('expertReady') : '-'}</div>
-
-        <div className="action-grid">
-          <form
-            onSubmit={(event) =>
-              onSubmit(event, () =>
-                runWrite(
-                  'upgradeToAndCall',
-                  () => {
-                    if (!expertReady) {
-                      throw new Error('INVALID_AMOUNT');
-                    }
-
-                    return {
-                      address: contracts.stakingProxy,
-                      abi: stakingAbi,
-                      functionName: 'upgradeToAndCall',
-                      args: [parseAddressStrict(expertUpgradeImpl), parseHexOrDefault(expertUpgradeData)],
-                    };
-                  },
-                  () => (connectedIsOwner ? null : t('ownerOnly')),
-                ),
-              )
-            }
-          >
-            <h3>{t('upgradeToAndCall')}</h3>
-            <input value={expertUpgradeImpl} onChange={(e) => setExpertUpgradeImpl(e.target.value)} placeholder={t('newImplementation')} />
-            <input value={expertUpgradeData} onChange={(e) => setExpertUpgradeData(e.target.value)} placeholder={t('calldataHex')} />
-            <small>{t('byteDefaultHint')}</small>
-            <button type="submit" disabled={!expertReady}>{t('submit')}</button>
-          </form>
-
-          <form
-            onSubmit={(event) =>
-              onSubmit(event, () =>
-                runWrite(
-                  'upgradeTokens',
-                  () => {
-                    if (!expertReady) {
-                      throw new Error('INVALID_AMOUNT');
-                    }
-
-                    return {
-                      address: contracts.stakingProxy,
-                      abi: stakingAbi,
-                      functionName: 'upgradeTokens',
-                      args: [
-                        parseAddressStrict(expertNewSer9Impl),
-                        parseAddressStrict(expertNewManagedImpl),
-                        parseHexOrDefault(expertSer9Data),
-                        parseHexOrDefault(expertManagedData),
-                      ],
-                    };
-                  },
-                  () => (connectedIsOwner ? null : t('ownerOnly')),
-                ),
-              )
-            }
-          >
-            <h3>{t('upgradeTokens')}</h3>
-            <input value={expertNewSer9Impl} onChange={(e) => setExpertNewSer9Impl(e.target.value)} placeholder={t('newSer9Implementation')} />
-            <input value={expertNewManagedImpl} onChange={(e) => setExpertNewManagedImpl(e.target.value)} placeholder={t('newManagedImplementation')} />
-            <input value={expertSer9Data} onChange={(e) => setExpertSer9Data(e.target.value)} placeholder={t('ser9Calldata')} />
-            <input value={expertManagedData} onChange={(e) => setExpertManagedData(e.target.value)} placeholder={t('managedCalldata')} />
-            <button type="submit" disabled={!expertReady}>{t('submit')}</button>
-          </form>
-        </div>
-      </section>
-
-      <datalist id="managed-token-list">
-        {datalistTokens.map((token) => (
-          <option key={token} value={token} />
-        ))}
-      </datalist>
-
-      <section className="card tx-card">
-        <h2>{t('txStatus')}</h2>
-        {tx.actionLabel ? (
-          <p>
-            {t('lastAction')}: <strong>{tx.actionLabel}</strong>
-          </p>
-        ) : (
-          <p className="muted">-</p>
-        )}
-
-        {tx.isWalletPrompt && <p>{t('walletPrompt')}</p>}
-        {tx.isConfirming && <p>{t('txPending')}</p>}
-        {tx.isSuccess && <p className="success">{t('txSuccess')}</p>}
-        {tx.errorKey && <p className="error">{t(tx.errorKey)}</p>}
-        {tx.errorDetail && <p className="muted">{tx.errorDetail}</p>}
-        {formError && <p className="error">{formError}</p>}
-
-        {tx.txHash && (
-          <p>
-            {t('txHash')}:&nbsp;
-            <a href={explorerTxUrl(tx.txHash)} target="_blank" rel="noreferrer">
-              {shortenAddress(tx.txHash as Address, 8)}
-            </a>
-          </p>
-        )}
-      </section>
+          {tx.txHash && (
+            <p>
+              {t('txHash')}:&nbsp;
+              <a href={explorerTxUrl(tx.txHash)} target="_blank" rel="noreferrer">
+                {shortenAddress(tx.txHash as Address, 8)}
+              </a>
+            </p>
+          )}
+        </section>
+      )}
     </div>
   );
 }

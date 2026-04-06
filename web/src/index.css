@@ -67,6 +67,30 @@ body {
   max-width: 68ch;
 }
 
+.page-nav {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+
+.page-nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.36rem 0.68rem;
+  border-radius: 999px;
+  border: 1px solid #d6e4ff;
+  text-decoration: none;
+  color: #2b4a8c;
+  background: #f4f8ff;
+  font-size: 0.84rem;
+}
+
+.page-nav a.active {
+  background: #dbe9ff;
+  border-color: #9fbcff;
+  color: #133f87;
+}
+
 .header-actions {
   display: grid;
   gap: 0.6rem;
