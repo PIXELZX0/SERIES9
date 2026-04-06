@@ -5,6 +5,7 @@ export const en = {
   connectWallet: 'Connect Wallet',
   disconnectWallet: 'Disconnect',
   connectPending: 'Waiting for wallet...',
+  walletNotDetected: 'No Web3 wallet connector is available. Install a browser wallet or configure WalletConnect.',
   account: 'Account',
   networkLabel: 'Network',
   languageLabel: 'Language',

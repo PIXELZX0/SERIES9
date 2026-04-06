@@ -4,6 +4,7 @@ export const ko = {
   connectWallet: '지갑 연결',
   disconnectWallet: '연결 해제',
   connectPending: '지갑 승인 대기 중...',
+  walletNotDetected: '사용 가능한 Web3 지갑 커넥터가 없습니다. 브라우저 지갑을 설치하거나 WalletConnect를 설정하세요.',
   account: '계정',
   networkLabel: '네트워크',
   languageLabel: '언어',

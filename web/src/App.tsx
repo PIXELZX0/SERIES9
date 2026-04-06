@@ -11,8 +11,8 @@ import {
 } from 'wagmi';
 import { getAddress, isAddress, zeroAddress, type Address } from 'viem';
 
-import { explorerAddressUrl, explorerTxUrl, networkConfig } from './config/chain';
-import { contractEntries, contracts } from './config/contracts';
+import { explorerTxUrl, networkConfig } from './config/chain';
+import { contracts } from './config/contracts';
 import { managedTokenAbi, ser9Abi, stakingAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
 import { useI18n, type MessageKey } from './i18n';
@@ -323,7 +323,7 @@ export default function App() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
 
-  const { connect, connectors, isPending: isConnecting } = useConnect();
+  const { connectAsync, connectors, isPending: isConnecting } = useConnect();
   const { disconnect } = useDisconnect();
   const { switchChain, isPending: isSwitchingNetwork } = useSwitchChain();
 
@@ -333,8 +333,9 @@ export default function App() {
     },
   });
 
-  const [copiedId, setCopiedId] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [connectingConnectorUid, setConnectingConnectorUid] = useState<string | null>(null);
 
   const [ser9ApproveAmount, setSer9ApproveAmount] = useState('');
   const [ser9ApproveSpender, setSer9ApproveSpender] = useState<string>(contracts.stakingProxy);
@@ -549,8 +550,6 @@ export default function App() {
 
   const onWrongChain = isConnected && chainId !== networkConfig.chainId;
 
-  const injectedConnector = connectors[0];
-
   const datalistTokens = useMemo(() => {
     return managedTokens.map((token) => token.toLowerCase());
   }, [managedTokens]);
@@ -625,8 +624,37 @@ export default function App() {
     }
   }
 
+  function mapConnectError(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return t('unknownError');
+    }
+
+    const message = error.message.toLowerCase();
+    if (message.includes('user rejected')) {
+      return t('walletRejected');
+    }
+    if (message.includes('connector not found') || message.includes('provider') || message.includes('not installed')) {
+      return t('walletNotDetected');
+    }
+
+    return error.message || t('unknownError');
+  }
+
   function resetErrors() {
     setFormError(null);
+  }
+
+  async function connectWallet(connector: (typeof connectors)[number]) {
+    setConnectError(null);
+    setConnectingConnectorUid(connector.uid);
+
+    try {
+      await connectAsync({ connector });
+    } catch (error) {
+      setConnectError(mapConnectError(error));
+    } finally {
+      setConnectingConnectorUid(null);
+    }
   }
 
   async function runWrite(
@@ -649,18 +677,6 @@ export default function App() {
       await tx.execute(t(actionKey), request);
     } catch (error) {
       setFormError(mapLocalError(error));
-    }
-  }
-
-  async function copyToClipboard(key: string, value: string) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedId(key);
-      setTimeout(() => {
-        setCopiedId('');
-      }, 1500);
-    } catch {
-      setFormError(t('unknownError'));
     }
   }
 
@@ -765,20 +781,27 @@ export default function App() {
           </div>
 
           {!isConnected ? (
-            <button
-              type="button"
-              className="primary"
-              disabled={!injectedConnector || isConnecting}
-              onClick={() => {
-                if (!injectedConnector) {
-                  return;
-                }
-
-                connect({ connector: injectedConnector });
-              }}
-            >
-              {isConnecting ? t('connectPending') : t('connectWallet')}
-            </button>
+            <div className="wallet-connectors">
+              {connectors.length === 0 ? (
+                <p className="muted">{t('walletNotDetected')}</p>
+              ) : (
+                connectors.map((connector) => {
+                  const isCurrent = isConnecting && connectingConnectorUid === connector.uid;
+                  return (
+                    <button
+                      key={connector.uid}
+                      type="button"
+                      className="primary"
+                      disabled={isConnecting}
+                      onClick={() => void connectWallet(connector)}
+                    >
+                      {isCurrent ? t('connectPending') : `${t('connectWallet')} · ${connector.name}`}
+                    </button>
+                  );
+                })
+              )}
+              {connectError && <p className="error">{connectError}</p>}
+            </div>
           ) : (
             <button type="button" className="secondary" onClick={() => disconnect()}>
               {t('disconnectWallet')}
@@ -827,10 +850,50 @@ export default function App() {
       )}
 
       {isTokensListPage && (
-        <section className="card">
-          <h2>{t('tokensPageTitle')}</h2>
-          <p className="muted">{t('tokensPageHint')}</p>
-        </section>
+        <>
+          <section className="card">
+            <h2>{t('tokensPageTitle')}</h2>
+            <p className="muted">{t('tokensPageHint')}</p>
+          </section>
+
+          <section className="card">
+            <h2>{t('stakingOverview')}</h2>
+            <div className="section-title">{t('protocolState')}</div>
+            <div className="metric-grid">
+              <MetricCard
+                label={t('paused')}
+                value={pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
+              />
+              <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
+              <MetricCard label={t('totalRewardWeight')} value={formatTokenAmount(totalRewardWeightRead.data)} />
+              <MetricCard label={t('rewardRatePerBlock')} value={formatTokenAmount(rewardRateRead.data)} />
+              <MetricCard label={t('tokenCreationFee')} value={formatTokenAmount(creationFeeRead.data)} />
+              <MetricCard label={t('managedTokenCount')} value={String(managedTokenCount)} />
+            </div>
+          </section>
+
+          <section className="card">
+            <h2>{t('quickStakeSection')}</h2>
+            <p className="muted">{t('quickStakeHint')}</p>
+            <form className="single-form" onSubmit={(event) => onSubmit(event, runQuickStakeFlow)}>
+              <input
+                value={quickStakeAmount}
+                onChange={(event) => setQuickStakeAmount(event.target.value)}
+                placeholder={t('amount')}
+              />
+              <button type="submit" disabled={!isConnected || onWrongChain}>
+                {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
+              </button>
+            </form>
+            {isConnected ? (
+              <p className="muted">
+                {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
+              </p>
+            ) : (
+              <p className="muted">{t('connectHint')}</p>
+            )}
+          </section>
+        </>
       )}
 
       {isTokenCreatePage && (
@@ -875,43 +938,7 @@ export default function App() {
       {isHomePage && (
         <>
           <section className="card">
-            <h2>{t('contractAddresses')}</h2>
-            <div className="address-list">
-              {contractEntries.map((entry) => (
-                <div className="address-row" key={entry.key}>
-                  <div>
-                    <strong>{entry.title}</strong>
-                    <p>{entry.address}</p>
-                  </div>
-                  <div className="address-actions">
-                    <button type="button" onClick={() => void copyToClipboard(entry.key, entry.address)}>
-                      {copiedId === entry.key ? t('copied') : t('copy')}
-                    </button>
-                    <a href={explorerAddressUrl(entry.address)} target="_blank" rel="noreferrer">
-                      {t('openExplorer')}
-                    </a>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="card">
-            <h2>{t('stakingOverview')}</h2>
-            <div className="section-title">{t('protocolState')}</div>
-            <div className="metric-grid">
-              <MetricCard
-                label={t('paused')}
-                value={pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
-              />
-              <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
-              <MetricCard label={t('totalRewardWeight')} value={formatTokenAmount(totalRewardWeightRead.data)} />
-              <MetricCard label={t('rewardRatePerBlock')} value={formatTokenAmount(rewardRateRead.data)} />
-              <MetricCard label={t('tokenCreationFee')} value={formatTokenAmount(creationFeeRead.data)} />
-              <MetricCard label={t('managedTokenCount')} value={String(managedTokenCount)} />
-            </div>
-
-            <div className="section-title">{t('userState')}</div>
+            <h2>{t('userState')}</h2>
             {isConnected ? (
               <div className="metric-grid">
                 <MetricCard label={t('ser9Balance')} value={formatTokenAmount(ser9BalanceRead.data)} />
@@ -926,45 +953,25 @@ export default function App() {
               <p className="muted">{t('connectHint')}</p>
             )}
           </section>
-
-          <section className="card">
-            <h2>{t('quickStakeSection')}</h2>
-            <p className="muted">{t('quickStakeHint')}</p>
-            <form className="single-form" onSubmit={(event) => onSubmit(event, runQuickStakeFlow)}>
-              <input
-                value={quickStakeAmount}
-                onChange={(event) => setQuickStakeAmount(event.target.value)}
-                placeholder={t('amount')}
-              />
-              <button type="submit" disabled={!isConnected || onWrongChain}>
-                {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
-              </button>
-            </form>
-            {isConnected ? (
-              <p className="muted">
-                {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
-              </p>
-            ) : (
-              <p className="muted">{t('connectHint')}</p>
-            )}
-          </section>
         </>
       )}
 
-      <section className="card">
-        <h2>{t('sectionManagedTokens')}</h2>
-        {managedTokens.length === 0 ? (
-          <p className="muted">{t('noManagedTokens')}</p>
-        ) : (
-          <div className="token-list">
-            {managedTokens.map((token) => (
-              <ManagedTokenCard key={token} token={token} userAddress={normalizedConnectedAddress} />
-            ))}
-          </div>
-        )}
-      </section>
+      {!isHomePage && (
+        <section className="card">
+          <h2>{t('sectionManagedTokens')}</h2>
+          {managedTokens.length === 0 ? (
+            <p className="muted">{t('noManagedTokens')}</p>
+          ) : (
+            <div className="token-list">
+              {managedTokens.map((token) => (
+                <ManagedTokenCard key={token} token={token} userAddress={normalizedConnectedAddress} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
-      {isHomePage && (
+      {isTokensListPage && (
         <>
           <section className="card">
             <h2>{t('userActions')}</h2>

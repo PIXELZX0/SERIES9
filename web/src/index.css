@@ -97,6 +97,16 @@ body {
   justify-items: end;
 }
 
+.wallet-connectors {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: end;
+}
+
+.wallet-connectors button {
+  min-width: 220px;
+}
+
 .lang-switch {
   display: inline-flex;
   align-items: center;
@@ -421,6 +431,10 @@ select:focus {
   }
 
   .header-actions {
+    justify-items: start;
+  }
+
+  .wallet-connectors {
     justify-items: start;
   }
 
