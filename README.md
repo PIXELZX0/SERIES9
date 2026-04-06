@@ -10,6 +10,8 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
   - SER9 스테이킹/락/보상
   - SER9 락을 담보로 새 관리 토큰 생성/민트/번/언락
   - fee 활성 토큰의 전송 수수료를 토큰별 스테이커에게 분배
+  - Permit2 기반 서명 전송(`stakeWithPermit2`, `createManagedTokenWithPermit2`, `stakeFeeTokenWithPermit2`) 지원
+  - 관리 토큰 생성 시 선택적 `maxSupply` + 동적 mint rate 정책(`maxMultiplierBps`, `rampStartBps`) 지원
 - `Series9ManagedToken`:
   - 생성 시 `mintRate`(토큰 1개당 필요한 SER9)
   - 선택적 transfer fee(`feeEnabled`, `feeBps`)
@@ -29,12 +31,21 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 7. transfer fee는 화이트리스트 면제형이며 staking 컨트랙트는 기본 면제
 8. `burnAndUnlock`은 burn한 담보 비율만큼만 정확히 언락됨
 9. `SER9.mint`는 staking 컨트랙트 주소만 호출 가능하며, owner 직접 민트는 불가
+10. `maxSupply > 0`인 토큰은 공급량이 상한에 가까워질수록 민트 담보 비용이 증가하며, 상한 초과 mint는 revert
 
 ## 컨트랙트
 
 - `src/SER9Token.sol`
 - `src/Series9ManagedToken.sol`
 - `src/Series9Staking.sol`
+
+동적 mint rate 관련 주요 함수:
+
+- `createManagedTokenWithPolicy(...)`
+- `createManagedTokenWithPermit2WithPolicy(...)`
+- `tokenMintPolicies(token)`
+- `effectiveMintRate(token)`
+- `previewMintCollateral(token, amount)`
 
 ## 빠른 시작
 
@@ -67,6 +78,14 @@ forge script script/DeploySeries9.s.sol:DeploySeries9 \
 
 ```bash
 cast send <STAKING_ADDRESS> "setRewardRatePerBlock(uint256)" <NEW_REWARD_PER_BLOCK> \
+  --private-key $PRIVATE_KEY \
+  --rpc-url <MONAD_RPC_URL>
+```
+
+운영 중 Permit2 주소 설정(Owner):
+
+```bash
+cast send <STAKING_ADDRESS> "setPermit2(address)" <PERMIT2_ADDRESS> \
   --private-key $PRIVATE_KEY \
   --rpc-url <MONAD_RPC_URL>
 ```

@@ -18,7 +18,7 @@ import {Series9Staking} from "../src/Series9Staking.sol";
 ///   5. After deployment: Staking.owner() == Safe, SER9.owner() == Staking
 ///
 /// Usage:
-///   PRIVATE_KEY=0x... SAFE_ADDRESS=0x... forge script script/DeploySeries9.s.sol \
+///   PRIVATE_KEY=0x... SAFE_ADDRESS=0x... PERMIT2_ADDRESS=0x... forge script script/DeploySeries9.s.sol \
 ///     --rpc-url $MONAD_RPC_URL --broadcast --ffi --profile deploy
 contract DeploySeries9 is Script {
     string constant VERIFIER_URL = "https://api.socialscan.io/monad/v1/explorer/command_api/contract";
@@ -26,6 +26,7 @@ contract DeploySeries9 is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address safeAddress = vm.envAddress("SAFE_ADDRESS");
+        address permit2Address = vm.envOr("PERMIT2_ADDRESS", address(0));
         uint256 rewardPerBlock = vm.envOr("REWARD_PER_BLOCK", uint256(1 ether));
         address deployer = vm.addr(deployerPrivateKey);
 
@@ -68,6 +69,10 @@ contract DeploySeries9 is Script {
         ser9.setStakingContract(address(staking));
         ser9.transferOwnership(address(staking));
 
+        if (permit2Address != address(0)) {
+            staking.setPermit2(permit2Address);
+        }
+
         vm.stopBroadcast();
 
         // --- Post-deploy logs ---
@@ -77,6 +82,7 @@ contract DeploySeries9 is Script {
         console.log("ManagedToken Implementation:", address(managedTokenImplementation));
         console.log("Staking Implementation:", address(stakingImplementation));
         console.log("Staking Proxy:", address(staking));
+        console.log("Permit2:", permit2Address == address(0) ? "not-set" : vm.toString(permit2Address));
 
         console.log("\n=== Ownership ===");
         console.log("Staking.owner():", safeAddress, "(Safe multisig)");

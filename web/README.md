@@ -32,5 +32,7 @@ npm run start
 - 지갑 연결 / 네트워크 전환 안내
 - 컨트랙트 주소 복사 + Explorer 링크
 - 사용자 기능: 스테이킹, 락, 보상 청구, 관리 토큰 민트/소각, fee 토큰 스테이킹
+- 토큰 생성 시 `maxSupply`, `maxMultiplierBps`, `rampStartBps` 입력 및 토큰별 동적 민트 정책 조회
+- 관리 토큰 민트 시 예상 담보(`previewMintCollateral`) 표시
 - 생성자 기능: `setTokenFeeBps`
 - 국문/영문 전환

@@ -19,8 +19,11 @@ import { useI18n, type MessageKey } from './i18n';
 import { equalsAddress, formatTokenAmount, shortenAddress } from './utils/format';
 import {
   parseAddressStrict,
+  parseMaxMultiplierBps,
   parseNonNegativeBps,
+  parseOptionalTokenAmountOrZero,
   parsePositiveTokenAmount,
+  parseRampStartBps,
 } from './utils/validation';
 
 type TokenConfigValue = {
@@ -28,6 +31,12 @@ type TokenConfigValue = {
   creator: Address;
   mintRate: bigint;
   feeEnabled: boolean;
+};
+
+type TokenMintPolicyValue = {
+  maxSupply: bigint;
+  maxMultiplierBps: bigint;
+  rampStartBps: number;
 };
 
 function parseTokenConfig(raw: unknown): TokenConfigValue | null {
@@ -73,6 +82,49 @@ function parseTokenConfig(raw: unknown): TokenConfigValue | null {
   return null;
 }
 
+function parseTokenMintPolicy(raw: unknown): TokenMintPolicyValue | null {
+  if (!raw) {
+    return null;
+  }
+
+  if (Array.isArray(raw)) {
+    const [maxSupply, maxMultiplierBps, rampStartBps] = raw;
+    if (
+      typeof maxSupply === 'bigint' &&
+      typeof maxMultiplierBps === 'bigint' &&
+      (typeof rampStartBps === 'number' || typeof rampStartBps === 'bigint')
+    ) {
+      return {
+        maxSupply,
+        maxMultiplierBps,
+        rampStartBps: Number(rampStartBps),
+      };
+    }
+  }
+
+  if (typeof raw === 'object') {
+    const value = raw as {
+      maxSupply?: unknown;
+      maxMultiplierBps?: unknown;
+      rampStartBps?: unknown;
+    };
+
+    if (
+      typeof value.maxSupply === 'bigint' &&
+      typeof value.maxMultiplierBps === 'bigint' &&
+      (typeof value.rampStartBps === 'number' || typeof value.rampStartBps === 'bigint')
+    ) {
+      return {
+        maxSupply: value.maxSupply,
+        maxMultiplierBps: value.maxMultiplierBps,
+        rampStartBps: Number(value.rampStartBps),
+      };
+    }
+  }
+
+  return null;
+}
+
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="metric-card">
@@ -96,6 +148,13 @@ function ManagedTokenCard({
     address: contracts.stakingProxy,
     abi: stakingAbi,
     functionName: 'tokenConfigs',
+    args: [token],
+  });
+
+  const tokenMintPolicyRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'tokenMintPolicies',
     args: [token],
   });
 
@@ -141,6 +200,13 @@ function ManagedTokenCard({
     functionName: 'decimals',
   });
 
+  const effectiveMintRateRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'effectiveMintRate',
+    args: [token],
+  });
+
   const userBalanceRead = useReadContract({
     address: token,
     abi: managedTokenAbi,
@@ -172,6 +238,7 @@ function ManagedTokenCard({
   });
 
   const tokenConfig = parseTokenConfig(tokenConfigRead.data);
+  const tokenMintPolicy = parseTokenMintPolicy(tokenMintPolicyRead.data);
   const symbol = symbolRead.data ?? '-';
 
   return (
@@ -193,6 +260,24 @@ function ManagedTokenCard({
         <div>
           <span>{t('mintRate')}</span>
           <strong>{formatTokenAmount(tokenConfig?.mintRate)}</strong>
+        </div>
+        <div>
+          <span>{t('effectiveMintRate')}</span>
+          <strong>{formatTokenAmount(effectiveMintRateRead.data)}</strong>
+        </div>
+        <div>
+          <span>{t('maxSupply')}</span>
+          <strong>
+            {tokenMintPolicy?.maxSupply === 0n ? t('unlimited') : formatTokenAmount(tokenMintPolicy?.maxSupply)}
+          </strong>
+        </div>
+        <div>
+          <span>{t('maxMultiplierBps')}</span>
+          <strong>{tokenMintPolicy?.maxMultiplierBps?.toString() ?? '10000'}</strong>
+        </div>
+        <div>
+          <span>{t('rampStartBps')}</span>
+          <strong>{tokenMintPolicy?.rampStartBps?.toString() ?? '0'}</strong>
         </div>
         <div>
           <span>{t('feeEnabled')}</span>
@@ -268,6 +353,9 @@ export default function App() {
   const [createName, setCreateName] = useState('');
   const [createSymbol, setCreateSymbol] = useState('');
   const [createMintRate, setCreateMintRate] = useState('');
+  const [createMaxSupply, setCreateMaxSupply] = useState('');
+  const [createMaxMultiplierBps, setCreateMaxMultiplierBps] = useState('10000');
+  const [createRampStartBps, setCreateRampStartBps] = useState('0');
   const [createFeeEnabled, setCreateFeeEnabled] = useState(false);
   const [createFeeBps, setCreateFeeBps] = useState('0');
 
@@ -444,6 +532,7 @@ export default function App() {
   }, [managedTokenListRead.data]);
 
   const creatorTokenAddress = isAddress(creatorToken) ? getAddress(creatorToken) : undefined;
+  const mintTokenAddress = isAddress(mintToken) ? getAddress(mintToken) : undefined;
 
   const creatorTokenConfigRead = useReadContract({
     address: contracts.stakingProxy,
@@ -479,6 +568,32 @@ export default function App() {
     }
   }, [quickStakeAmount]);
 
+  const parsedMintAmount = useMemo(() => {
+    const amount = mintAmount.trim();
+    if (!amount) {
+      return null;
+    }
+
+    try {
+      return parsePositiveTokenAmount(amount);
+    } catch {
+      return null;
+    }
+  }, [mintAmount]);
+
+  const previewMintCollateralRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'previewMintCollateral',
+    args:
+      mintTokenAddress && parsedMintAmount !== null
+        ? [mintTokenAddress, parsedMintAmount]
+        : undefined,
+    query: {
+      enabled: Boolean(mintTokenAddress && parsedMintAmount !== null),
+    },
+  });
+
   const quickStakeNeedsApproval =
     parsedQuickStakeAmount !== null && (ser9AllowanceRead.data ?? 0n) < parsedQuickStakeAmount;
   const normalizedPathname = (typeof window !== 'undefined' ? window.location.pathname : '/')
@@ -499,6 +614,10 @@ export default function App() {
         return t('invalidAmount');
       case 'INVALID_BPS':
         return t('invalidBps');
+      case 'INVALID_MAX_MULTIPLIER_BPS':
+        return t('invalidMaxMultiplierBps');
+      case 'INVALID_RAMP_START_BPS':
+        return t('invalidRampStartBps');
       case 'INVALID_HEX':
         return t('invalidHex');
       default:
@@ -561,13 +680,16 @@ export default function App() {
     return {
       address: contracts.stakingProxy,
       abi: stakingAbi,
-      functionName: 'createManagedToken' as const,
+      functionName: 'createManagedTokenWithPolicy' as const,
       args: [
         name,
         symbol,
         parsePositiveTokenAmount(createMintRate),
         createFeeEnabled,
         createFeeEnabled ? parseNonNegativeBps(createFeeBps) : 0,
+        parseOptionalTokenAmountOrZero(createMaxSupply),
+        parseMaxMultiplierBps(createMaxMultiplierBps),
+        parseRampStartBps(createRampStartBps),
       ] as const,
     };
   }
@@ -722,6 +844,17 @@ export default function App() {
             <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder={t('tokenName')} />
             <input value={createSymbol} onChange={(e) => setCreateSymbol(e.target.value)} placeholder={t('tokenSymbol')} />
             <input value={createMintRate} onChange={(e) => setCreateMintRate(e.target.value)} placeholder={t('mintRatePerToken')} />
+            <input value={createMaxSupply} onChange={(e) => setCreateMaxSupply(e.target.value)} placeholder={t('maxSupplyOptional')} />
+            <input
+              value={createMaxMultiplierBps}
+              onChange={(e) => setCreateMaxMultiplierBps(e.target.value)}
+              placeholder={t('maxMultiplierBpsInput')}
+            />
+            <input
+              value={createRampStartBps}
+              onChange={(e) => setCreateRampStartBps(e.target.value)}
+              placeholder={t('rampStartBpsInput')}
+            />
             <label className="checkbox-row">
               <input type="checkbox" checked={createFeeEnabled} onChange={(e) => setCreateFeeEnabled(e.target.checked)} />
               {t('enableFee')}
@@ -920,6 +1053,17 @@ export default function App() {
             <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder={t('tokenName')} />
             <input value={createSymbol} onChange={(e) => setCreateSymbol(e.target.value)} placeholder={t('tokenSymbol')} />
             <input value={createMintRate} onChange={(e) => setCreateMintRate(e.target.value)} placeholder={t('mintRatePerToken')} />
+            <input value={createMaxSupply} onChange={(e) => setCreateMaxSupply(e.target.value)} placeholder={t('maxSupplyOptional')} />
+            <input
+              value={createMaxMultiplierBps}
+              onChange={(e) => setCreateMaxMultiplierBps(e.target.value)}
+              placeholder={t('maxMultiplierBpsInput')}
+            />
+            <input
+              value={createRampStartBps}
+              onChange={(e) => setCreateRampStartBps(e.target.value)}
+              placeholder={t('rampStartBpsInput')}
+            />
             <label className="checkbox-row">
               <input type="checkbox" checked={createFeeEnabled} onChange={(e) => setCreateFeeEnabled(e.target.checked)} />
               {t('enableFee')}
@@ -938,6 +1082,11 @@ export default function App() {
             <input list="managed-token-list" value={mintToken} onChange={(e) => setMintToken(e.target.value)} placeholder={t('tokenAddress')} />
             <input value={mintAmount} onChange={(e) => setMintAmount(e.target.value)} placeholder={t('amount')} />
             <button type="submit">{t('mintManagedToken')}</button>
+            {mintTokenAddress && parsedMintAmount !== null && (
+              <p className="muted">
+                {t('previewMintCollateral')}: {formatTokenAmount(previewMintCollateralRead.data)}
+              </p>
+            )}
           </form>
 
           <form onSubmit={(event) => onSubmit(event, () => runWrite('burnAndUnlock', () => ({

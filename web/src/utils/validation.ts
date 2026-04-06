@@ -25,12 +25,54 @@ export function parsePositiveTokenAmount(value: string, decimals = 18): bigint {
   return amount;
 }
 
+export function parseOptionalTokenAmountOrZero(value: string, decimals = 18): bigint {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 0n;
+  }
+
+  const amount = parseUnits(trimmed, decimals);
+  if (amount < 0n) {
+    throw new Error('INVALID_AMOUNT');
+  }
+
+  return amount;
+}
+
 export function parseNonNegativeBps(value: string): number {
   const trimmed = value.trim();
   const parsed = Number(trimmed);
 
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1000) {
     throw new Error('INVALID_BPS');
+  }
+
+  return parsed;
+}
+
+export function parseMaxMultiplierBps(value: string): bigint {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('INVALID_MAX_MULTIPLIER_BPS');
+  }
+
+  const parsed = BigInt(trimmed);
+  if (parsed < 10_000n) {
+    throw new Error('INVALID_MAX_MULTIPLIER_BPS');
+  }
+
+  return parsed;
+}
+
+export function parseRampStartBps(value: string): number {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('INVALID_RAMP_START_BPS');
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 9_999) {
+    throw new Error('INVALID_RAMP_START_BPS');
   }
 
   return parsed;

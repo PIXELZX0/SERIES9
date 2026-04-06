@@ -4,10 +4,12 @@ pragma solidity ^0.8.22;
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC1822Proxiable} from "openzeppelin-contracts/contracts/interfaces/draft-IERC1822.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 import {SER9Token} from "../src/SER9Token.sol";
 import {Series9ManagedToken} from "../src/Series9ManagedToken.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
+import {IPermit2} from "../src/interfaces/IPermit2.sol";
 
 contract SER9TokenV2 is SER9Token {
     function version() external pure returns (uint256) {
@@ -29,9 +31,29 @@ contract WrongUUIDImplementation is IERC1822Proxiable {
     }
 }
 
+contract Permit2Mock is IPermit2 {
+    mapping(address owner => mapping(address token => mapping(address spender => uint160 amount))) internal allowanceAmount;
+
+    function permit(address owner, PermitSingle calldata permitSingle, bytes calldata) external {
+        allowanceAmount[owner][permitSingle.details.token][permitSingle.spender] = permitSingle.details.amount;
+    }
+
+    function transferFrom(address from, address to, uint160 amount, address token) external {
+        uint160 allowed = allowanceAmount[from][token][msg.sender];
+        require(allowed >= amount, "Permit2: insufficient allowance");
+
+        unchecked {
+            allowanceAmount[from][token][msg.sender] = allowed - amount;
+        }
+
+        IERC20(token).transferFrom(from, to, amount);
+    }
+}
+
 contract Series9StakingTest is Test {
     SER9Token internal ser9;
     Series9Staking internal staking;
+    Permit2Mock internal permit2;
 
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
@@ -61,6 +83,9 @@ contract Series9StakingTest is Test {
                 )
             )
         );
+
+        permit2 = new Permit2Mock();
+        staking.setPermit2(address(permit2));
 
         ser9.setStakingContract(address(staking));
         ser9.transferOwnership(address(staking));
@@ -111,15 +136,148 @@ contract Series9StakingTest is Test {
         assertEq(claimed, 10 ether);
     }
 
+    function testStakeWithPermit2() public {
+        vm.startPrank(alice);
+        ser9.approve(address(permit2), type(uint256).max);
+
+        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(ser9),
+                amount: uint160(100 ether),
+                expiration: uint48(block.timestamp + 1 days),
+                nonce: 0
+            }),
+            spender: address(staking),
+            sigDeadline: block.timestamp + 1 days
+        });
+
+        staking.stakeWithPermit2(100 ether, permitSingle, hex"01");
+        vm.stopPrank();
+
+        assertEq(staking.stakedBalance(alice), 100 ether);
+        assertEq(ser9.balanceOf(alice), 9_900 ether);
+    }
+
+    function testCreateManagedTokenWithPermit2() public {
+        vm.startPrank(alice);
+        ser9.approve(address(permit2), type(uint256).max);
+
+        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(ser9),
+                amount: uint160(CREATION_FEE),
+                expiration: uint48(block.timestamp + 1 days),
+                nonce: 0
+            }),
+            spender: address(staking),
+            sigDeadline: block.timestamp + 1 days
+        });
+
+        uint256 aliceBefore = ser9.balanceOf(alice);
+        address token =
+            staking.createManagedTokenWithPermit2("PERMIT", "PRM", 1 ether, false, 0, permitSingle, hex"01");
+        vm.stopPrank();
+
+        (bool exists, address creator,,) = staking.tokenConfigs(token);
+        assertTrue(exists);
+        assertEq(creator, alice);
+        assertEq(ser9.balanceOf(alice), aliceBefore - CREATION_FEE);
+    }
+
+    function testCreateManagedTokenWithPermit2WithPolicy() public {
+        vm.startPrank(alice);
+        ser9.approve(address(permit2), type(uint256).max);
+
+        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(ser9),
+                amount: uint160(CREATION_FEE),
+                expiration: uint48(block.timestamp + 1 days),
+                nonce: 0
+            }),
+            spender: address(staking),
+            sigDeadline: block.timestamp + 1 days
+        });
+
+        address token = staking.createManagedTokenWithPermit2WithPolicy(
+            "PERMIT-POLICY", "PPL", 1 ether, false, 0, 1_000 ether, 30_000, 7_000, permitSingle, hex"01"
+        );
+        vm.stopPrank();
+
+        (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps) = staking.tokenMintPolicies(token);
+        assertEq(maxSupply, 1_000 ether);
+        assertEq(maxMultiplierBps, 30_000);
+        assertEq(rampStartBps, 7_000);
+    }
+
+    function testStakeFeeTokenWithPermit2() public {
+        _stakeAndLock(alice, 500 ether, 500 ether);
+        address token = _createToken(alice, "FEEPERMIT", "FPM", 1 ether, true, 200);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 200 ether);
+        Series9ManagedToken(token).approve(address(permit2), type(uint256).max);
+
+        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: token,
+                amount: uint160(100 ether),
+                expiration: uint48(block.timestamp + 1 days),
+                nonce: 0
+            }),
+            spender: address(staking),
+            sigDeadline: block.timestamp + 1 days
+        });
+
+        staking.stakeFeeTokenWithPermit2(token, 100 ether, permitSingle, hex"01");
+        vm.stopPrank();
+
+        assertEq(staking.feeStakeBalance(token, alice), 100 ether);
+    }
+
+    function testPermit2PathRevertsWhenPermit2NotConfigured() public {
+        // Re-deploy staking without Permit2 setup to verify guard behavior.
+        Series9ManagedToken managedTokenImplementation = new Series9ManagedToken();
+        Series9Staking stakingImplementation = new Series9Staking();
+        Series9Staking stakingWithoutPermit2 = Series9Staking(
+            address(
+                new ERC1967Proxy(
+                    address(stakingImplementation),
+                    abi.encodeCall(
+                        Series9Staking.initialize,
+                        (address(ser9), REWARD_PER_BLOCK, address(this), address(managedTokenImplementation), CREATION_FEE)
+                    )
+                )
+            )
+        );
+
+        vm.startPrank(alice);
+        ser9.approve(address(permit2), type(uint256).max);
+        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(ser9),
+                amount: uint160(1 ether),
+                expiration: uint48(block.timestamp + 1 days),
+                nonce: 0
+            }),
+            spender: address(stakingWithoutPermit2),
+            sigDeadline: block.timestamp + 1 days
+        });
+
+        vm.expectRevert(Series9Staking.Permit2NotConfigured.selector);
+        stakingWithoutPermit2.stakeWithPermit2(1 ether, permitSingle, hex"01");
+        vm.stopPrank();
+    }
+
     function testOwnerCanUpdateRewardRatePerBlock() public {
         vm.startPrank(alice);
         ser9.approve(address(staking), type(uint256).max);
         staking.stake(100 ether);
         vm.stopPrank();
 
-        vm.roll(block.number + 5);
+        vm.roll(6);
         staking.setRewardRatePerBlock(2 ether);
-        vm.roll(block.number + 5);
+        vm.roll(11);
 
         vm.startPrank(alice);
         uint256 balanceBefore = ser9.balanceOf(alice);
@@ -175,6 +333,40 @@ contract Series9StakingTest is Test {
         assertTrue(exists);
         assertEq(creator, alice);
         assertEq(ser9.balanceOf(alice), aliceBefore - CREATION_FEE);
+    }
+
+    function testCreateManagedTokenWithPolicyStoresMintPolicy() public {
+        address token = _createTokenWithPolicy(alice, "CAPPED", "CAP", 1 ether, false, 0, 1_000 ether, 30_000, 7_000);
+
+        (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps) = staking.tokenMintPolicies(token);
+        assertEq(maxSupply, 1_000 ether);
+        assertEq(maxMultiplierBps, 30_000);
+        assertEq(rampStartBps, 7_000);
+    }
+
+    function testLegacyCreateManagedTokenUsesUnlimitedPolicyDefaults() public {
+        address token = _createToken(alice, "LEGACY", "LEG", 1 ether, false, 0);
+        (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps) = staking.tokenMintPolicies(token);
+
+        assertEq(maxSupply, 0);
+        assertEq(maxMultiplierBps, 10_000);
+        assertEq(rampStartBps, 0);
+    }
+
+    function testCreateManagedTokenWithPolicyRejectsInvalidMultiplier() public {
+        vm.startPrank(alice);
+        ser9.approve(address(staking), type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidMaxMultiplierBps.selector, 9_999));
+        staking.createManagedTokenWithPolicy("BADMULT", "BM", 1 ether, false, 0, 1_000 ether, 9_999, 0);
+        vm.stopPrank();
+    }
+
+    function testCreateManagedTokenWithPolicyRejectsInvalidRampStart() public {
+        vm.startPrank(alice);
+        ser9.approve(address(staking), type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidRampStartBps.selector, 10_000));
+        staking.createManagedTokenWithPolicy("BADRAMP", "BR", 1 ether, false, 0, 1_000 ether, 20_000, 10_000);
+        vm.stopPrank();
     }
 
     function testCannotCreateTokenWithoutSufficientBalance() public {
@@ -253,6 +445,169 @@ contract Series9StakingTest is Test {
         vm.expectRevert(Series9Staking.ExceedsMintLimit.selector);
         staking.mintManagedToken(tokenA, 1 ether);
         vm.stopPrank();
+    }
+
+    function testMintManagedTokenRevertsWhenExceedsMaxSupply() public {
+        _stakeAndLock(alice, 300 ether, 300 ether);
+        address token = _createTokenWithPolicy(alice, "MAX", "MAX", 1 ether, false, 0, 100 ether, 20_000, 0);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 100 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.ExceedsMaxSupply.selector, 101 ether, 100 ether));
+        staking.mintManagedToken(token, 1 ether);
+        vm.stopPrank();
+    }
+
+    function testEffectiveMintRateIncreasesAsSupplyApproachesCap() public {
+        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        address token = _createTokenWithPolicy(alice, "DYN", "DYN", 1 ether, false, 0, 1_000 ether, 30_000, 0);
+
+        uint256 rateAtZero = staking.effectiveMintRate(token);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 400 ether);
+        vm.stopPrank();
+
+        uint256 rateAfter400 = staking.effectiveMintRate(token);
+        assertGt(rateAfter400, rateAtZero);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 500 ether);
+        vm.stopPrank();
+
+        uint256 rateAfter900 = staking.effectiveMintRate(token);
+        assertGt(rateAfter900, rateAfter400);
+    }
+
+    function testRampStartDelaysMintRateIncrease() public {
+        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        address token = _createTokenWithPolicy(alice, "RAMP", "RMP", 1 ether, false, 0, 1_000 ether, 30_000, 7_000);
+
+        assertEq(staking.effectiveMintRate(token), 1 ether);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 600 ether);
+        vm.stopPrank();
+
+        // 60% < ramp start 70%: no increase yet.
+        assertEq(staking.effectiveMintRate(token), 1 ether);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 200 ether);
+        vm.stopPrank();
+
+        assertGt(staking.effectiveMintRate(token), 1 ether);
+    }
+
+    function testMaxMultiplier10000KeepsFixedMintRate() public {
+        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        address token = _createTokenWithPolicy(alice, "FIXED", "FIX", 2 ether, false, 0, 1_000 ether, 10_000, 5_000);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 800 ether);
+        vm.stopPrank();
+
+        assertEq(staking.effectiveMintRate(token), 2 ether);
+    }
+
+    function testBurnLowersEffectiveMintRate() public {
+        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        address token = _createTokenWithPolicy(alice, "BURN", "BRN", 1 ether, false, 0, 1_000 ether, 40_000, 0);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 800 ether);
+        uint256 highRate = staking.effectiveMintRate(token);
+
+        staking.burnAndUnlock(token, 400 ether);
+        uint256 lowerRate = staking.effectiveMintRate(token);
+        vm.stopPrank();
+
+        assertLt(lowerRate, highRate);
+    }
+
+    function testHighUtilMintCostsMoreThanLowUtilMintForSameAmount() public {
+        _stakeAndLock(alice, 5_000 ether, 5_000 ether);
+        address token = _createTokenWithPolicy(alice, "COST", "CST", 1 ether, false, 0, 1_000 ether, 40_000, 0);
+
+        uint256 lowUtilCost = staking.previewMintCollateral(token, 50 ether);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 800 ether);
+        vm.stopPrank();
+
+        uint256 highUtilCost = staking.previewMintCollateral(token, 50 ether);
+        assertGt(highUtilCost, lowUtilCost);
+    }
+
+    function testMaxMintableDynamicPolicyIsExact() public {
+        _stakeAndLock(alice, 500 ether, 150 ether);
+        address token = _createTokenWithPolicy(alice, "MXM", "MXM", 1 ether, false, 0, 1_000 ether, 30_000, 0);
+
+        uint256 maxMintableAmount = staking.maxMintable(alice, token);
+        assertGt(maxMintableAmount, 0);
+
+        uint256 available = staking.availableUnusedLocked(alice);
+        uint256 costAtMax = staking.previewMintCollateral(token, maxMintableAmount);
+        assertLe(costAtMax, available);
+
+        (uint256 maxSupply,,) = staking.tokenMintPolicies(token);
+        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
+        uint256 remainingSupply = maxSupply - currentSupply;
+
+        if (maxMintableAmount < remainingSupply) {
+            uint256 costAtNext = staking.previewMintCollateral(token, maxMintableAmount + 1);
+            assertGt(costAtNext, available);
+        } else {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    Series9Staking.ExceedsMaxSupply.selector, currentSupply + maxMintableAmount + 1, maxSupply
+                )
+            );
+            staking.previewMintCollateral(token, maxMintableAmount + 1);
+        }
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, maxMintableAmount);
+        vm.expectRevert();
+        staking.mintManagedToken(token, 1);
+        vm.stopPrank();
+    }
+
+    function testMaxMintableIsZeroWhenNoUnusedLockedCollateral() public {
+        _stakeAndLock(alice, 100 ether, 100 ether);
+        address token = _createTokenWithPolicy(alice, "ZERO", "ZER", 1 ether, false, 0, 1_000 ether, 10_000, 0);
+
+        vm.prank(alice);
+        staking.mintManagedToken(token, 100 ether);
+
+        assertEq(staking.availableUnusedLocked(alice), 0);
+        assertEq(staking.maxMintable(alice, token), 0);
+    }
+
+    function testMaxMintableHandlesOneWeiBoundary() public {
+        _stakeAndLock(alice, 1, 1);
+        address token = _createTokenWithPolicy(alice, "ONEWEI", "OWI", 1 ether, false, 0, 1_000 ether, 20_000, 0);
+
+        assertEq(staking.maxMintable(alice, token), 1);
+        assertEq(staking.previewMintCollateral(token, 1), 1);
+
+        vm.prank(alice);
+        staking.mintManagedToken(token, 1);
+
+        assertEq(staking.maxMintable(alice, token), 0);
+    }
+
+    function testMaxMintableIsZeroAtMaxSupply() public {
+        _stakeAndLock(alice, 500 ether, 500 ether);
+        address token = _createTokenWithPolicy(alice, "FULL", "FUL", 1 ether, false, 0, 100 ether, 30_000, 0);
+
+        vm.prank(alice);
+        staking.mintManagedToken(token, 100 ether);
+
+        assertEq(staking.maxMintable(alice, token), 0);
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.ExceedsMaxSupply.selector, 100 ether + 1, 100 ether));
+        staking.previewMintCollateral(token, 1);
     }
 
     function testBurnAndUnlockOnlyUnlocksBurnEquivalent() public {
@@ -741,6 +1096,25 @@ contract Series9StakingTest is Test {
         vm.startPrank(creator);
         ser9.approve(address(staking), type(uint256).max);
         token = staking.createManagedToken(name, symbol, mintRate, feeEnabled, feeBps);
+        vm.stopPrank();
+    }
+
+    function _createTokenWithPolicy(
+        address creator,
+        string memory name,
+        string memory symbol,
+        uint256 mintRate,
+        bool feeEnabled,
+        uint16 feeBps,
+        uint256 maxSupply,
+        uint256 maxMultiplierBps,
+        uint16 rampStartBps
+    ) internal returns (address token) {
+        vm.startPrank(creator);
+        ser9.approve(address(staking), type(uint256).max);
+        token = staking.createManagedTokenWithPolicy(
+            name, symbol, mintRate, feeEnabled, feeBps, maxSupply, maxMultiplierBps, rampStartBps
+        );
         vm.stopPrank();
     }
 }

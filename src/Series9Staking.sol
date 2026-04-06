@@ -8,17 +8,20 @@ import {IERC1822Proxiable} from "openzeppelin-contracts/contracts/interfaces/dra
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
+import {SafeCast} from "openzeppelin-contracts/contracts/utils/math/SafeCast.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
 import {PausableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/utils/PausableUpgradeable.sol";
 
 import {SER9Token} from "./SER9Token.sol";
 import {Series9ManagedToken} from "./Series9ManagedToken.sol";
+import {IPermit2} from "./interfaces/IPermit2.sol";
 
 contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeable, ReentrancyGuard, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     uint256 private constant PRECISION = 1e18;
+    uint256 private constant BPS_DENOMINATOR = 10_000;
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
     struct TokenConfig {
@@ -35,7 +38,14 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 undistributedRewards;
     }
 
+    struct TokenMintPolicy {
+        uint256 maxSupply;
+        uint256 maxMultiplierBps;
+        uint16 rampStartBps;
+    }
+
     SER9Token public ser9;
+    IPermit2 public permit2;
     address public managedTokenImplementation;
     uint256 public tokenCreationFee;
 
@@ -54,6 +64,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     mapping(address => uint256) public rewards;
 
     mapping(address => TokenConfig) public tokenConfigs;
+    mapping(address => TokenMintPolicy) private _tokenMintPolicies;
     address[] public managedTokens;
 
     mapping(address => mapping(address => uint256)) public userTokenDebt;
@@ -86,6 +97,14 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error UnsupportedProxiableUUID(address implementation, bytes32 uuid);
     error UnauthorizedTokenOwner(address token, address ownerAddress);
     error InsufficientCreationFee();
+    error InvalidPermit2Address();
+    error Permit2NotConfigured();
+    error InvalidPermit2Token(address expectedToken, address permitToken);
+    error InvalidPermit2Spender(address expectedSpender, address permitSpender);
+    error Permit2AmountTooLow(uint256 requiredAmount, uint256 permitAmount);
+    error InvalidMaxMultiplierBps(uint256 maxMultiplierBps);
+    error InvalidRampStartBps(uint16 rampStartBps);
+    error ExceedsMaxSupply(uint256 requestedSupply, uint256 maxSupply);
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -119,8 +138,12 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     event TokenFeeBpsUpdated(address indexed token, uint16 feeBps);
     event TokenFeeExemptUpdated(address indexed token, address indexed account, bool isExempt);
+    event TokenMintPolicyConfigured(
+        address indexed token, uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps
+    );
 
     event TokenCreationFeeUpdated(uint256 previousFee, uint256 newFee);
+    event Permit2Updated(address indexed previousPermit2, address indexed newPermit2);
 
     event FeeTokenStaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
     event FeeTokenUnstaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
@@ -189,6 +212,16 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit TokenCreationFeeUpdated(previousFee, newFee);
     }
 
+    function setPermit2(address newPermit2) external onlyOwner {
+        if (newPermit2 == address(0) || newPermit2.code.length == 0) {
+            revert InvalidPermit2Address();
+        }
+
+        address previousPermit2 = address(permit2);
+        permit2 = IPermit2(newPermit2);
+        emit Permit2Updated(previousPermit2, newPermit2);
+    }
+
     function managedTokensLength() external view returns (uint256) {
         return managedTokens.length;
     }
@@ -249,6 +282,83 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         bool feeEnabled,
         uint16 feeBps
     ) external whenNotPaused returns (address token) {
+        token = _createManagedToken(name, symbol, mintRate, feeEnabled, feeBps, 0, BPS_DENOMINATOR, 0);
+
+        uint256 fee = tokenCreationFee;
+        if (fee > 0) {
+            IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
+        }
+    }
+
+    function createManagedTokenWithPermit2(
+        string calldata name,
+        string calldata symbol,
+        uint256 mintRate,
+        bool feeEnabled,
+        uint16 feeBps,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata permitSignature
+    ) external whenNotPaused returns (address token) {
+        token = _createManagedToken(name, symbol, mintRate, feeEnabled, feeBps, 0, BPS_DENOMINATOR, 0);
+
+        uint256 fee = tokenCreationFee;
+        if (fee > 0) {
+            _transferFromWithPermit2(address(ser9), fee, permitSingle, permitSignature);
+        }
+    }
+
+    function createManagedTokenWithPolicy(
+        string calldata name,
+        string calldata symbol,
+        uint256 mintRate,
+        bool feeEnabled,
+        uint16 feeBps,
+        uint256 maxSupply,
+        uint256 maxMultiplierBps,
+        uint16 rampStartBps
+    ) external whenNotPaused returns (address token) {
+        token = _createManagedToken(
+            name, symbol, mintRate, feeEnabled, feeBps, maxSupply, maxMultiplierBps, rampStartBps
+        );
+
+        uint256 fee = tokenCreationFee;
+        if (fee > 0) {
+            IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
+        }
+    }
+
+    function createManagedTokenWithPermit2WithPolicy(
+        string calldata name,
+        string calldata symbol,
+        uint256 mintRate,
+        bool feeEnabled,
+        uint16 feeBps,
+        uint256 maxSupply,
+        uint256 maxMultiplierBps,
+        uint16 rampStartBps,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata permitSignature
+    ) external whenNotPaused returns (address token) {
+        token = _createManagedToken(
+            name, symbol, mintRate, feeEnabled, feeBps, maxSupply, maxMultiplierBps, rampStartBps
+        );
+
+        uint256 fee = tokenCreationFee;
+        if (fee > 0) {
+            _transferFromWithPermit2(address(ser9), fee, permitSingle, permitSignature);
+        }
+    }
+
+    function _createManagedToken(
+        string calldata name,
+        string calldata symbol,
+        uint256 mintRate,
+        bool feeEnabled,
+        uint16 feeBps,
+        uint256 maxSupply,
+        uint256 maxMultiplierBps,
+        uint16 rampStartBps
+    ) internal returns (address token) {
         if (mintRate == 0) {
             revert MintRateZero();
         }
@@ -256,13 +366,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         if (!feeEnabled && feeBps != 0) {
             revert InvalidFeeConfiguration();
         }
-
-        {
-            uint256 fee = tokenCreationFee;
-            if (fee > 0) {
-                IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
-            }
-        }
+        _validateMintPolicy(maxSupply, maxMultiplierBps, rampStartBps);
 
         {
             bytes memory initData = abi.encodeCall(
@@ -274,9 +378,15 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         address creator = msg.sender;
         tokenConfigs[token] =
             TokenConfig({exists: true, creator: creator, mintRate: mintRate, feeEnabled: feeEnabled});
+        _tokenMintPolicies[token] = TokenMintPolicy({
+            maxSupply: maxSupply,
+            maxMultiplierBps: maxMultiplierBps,
+            rampStartBps: maxSupply == 0 ? 0 : rampStartBps
+        });
         managedTokens.push(token);
 
         emit ManagedTokenCreated(token, creator, mintRate, feeEnabled, feeBps, name, symbol);
+        emit TokenMintPolicyConfigured(token, maxSupply, maxMultiplierBps, maxSupply == 0 ? 0 : rampStartBps);
     }
 
     function setTokenFeeBps(address token, uint16 newFeeBps) external {
@@ -320,6 +430,25 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         _syncRewardWeight(msg.sender);
 
         IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), amount);
+
+        emit Staked(msg.sender, amount);
+    }
+
+    function stakeWithPermit2(uint256 amount, IPermit2.PermitSingle calldata permitSingle, bytes calldata permitSignature)
+        external
+        whenNotPaused
+        nonReentrant
+        updateReward(msg.sender)
+    {
+        if (amount == 0) {
+            revert ZeroAmount();
+        }
+
+        totalStaked += amount;
+        stakedBalance[msg.sender] += amount;
+        _syncRewardWeight(msg.sender);
+
+        _transferFromWithPermit2(address(ser9), amount, permitSingle, permitSignature);
 
         emit Staked(msg.sender, amount);
     }
@@ -385,8 +514,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         TokenConfig storage config = _requireManagedToken(token);
-
-        uint256 collateralCost = _collateralForAmount(amount, config.mintRate);
+        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
+        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
+        uint256 collateralCost = _previewCollateralForMint(config.mintRate, policy, currentSupply, amount);
 
         uint256 usedAfter = usedLockedSer9[msg.sender] + collateralCost;
         if (usedAfter > lockedBalance[msg.sender]) {
@@ -466,11 +596,73 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         uint256 availableLocked = lockedBalance[user] - usedLockedSer9[user];
-        return Math.mulDiv(availableLocked, PRECISION, config.mintRate);
+        if (availableLocked == 0) {
+            return 0;
+        }
+
+        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
+        if (policy.maxSupply == 0) {
+            return Math.mulDiv(availableLocked, PRECISION, config.mintRate);
+        }
+
+        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
+        if (currentSupply >= policy.maxSupply) {
+            return 0;
+        }
+
+        uint256 low = 0;
+        uint256 high = policy.maxSupply - currentSupply;
+
+        while (low < high) {
+            uint256 mid = (low + high + 1) / 2;
+            uint256 collateral = _previewCollateralForMint(config.mintRate, policy, currentSupply, mid);
+            if (collateral <= availableLocked) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        return low;
     }
 
     function availableUnusedLocked(address user) external view returns (uint256) {
         return lockedBalance[user] - usedLockedSer9[user];
+    }
+
+    function tokenMintPolicies(address token)
+        external
+        view
+        returns (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps)
+    {
+        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
+        return (policy.maxSupply, policy.maxMultiplierBps, policy.rampStartBps);
+    }
+
+    function effectiveMintRate(address token) public view returns (uint256) {
+        TokenConfig storage config = tokenConfigs[token];
+        if (!config.exists) {
+            return 0;
+        }
+
+        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
+        if (policy.maxSupply == 0) {
+            return config.mintRate;
+        }
+
+        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
+        return _effectiveMintRateAtSupply(config.mintRate, policy, currentSupply);
+    }
+
+    function previewMintCollateral(address token, uint256 amount) external view returns (uint256) {
+        if (amount == 0) {
+            return 0;
+        }
+
+        TokenConfig storage config = _requireManagedToken(token);
+        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
+        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
+        return _previewCollateralForMint(config.mintRate, policy, currentSupply, amount);
     }
 
     function stakeFeeToken(address token, uint256 amount) external whenNotPaused nonReentrant {
@@ -489,6 +681,31 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             Math.mulDiv(feeStakeBalance[token][msg.sender], feePools[token].accFeePerShare, PRECISION);
 
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        emit FeeTokenStaked(msg.sender, token, amount, feeStakeBalance[token][msg.sender]);
+    }
+
+    function stakeFeeTokenWithPermit2(
+        address token,
+        uint256 amount,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata permitSignature
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) {
+            revert ZeroAmount();
+        }
+
+        TokenConfig storage config = _requireManagedToken(token);
+        _requireFeeEnabled(config);
+
+        _accrueFeeRewards(token, msg.sender);
+
+        feePools[token].totalStaked += amount;
+        feeStakeBalance[token][msg.sender] += amount;
+        feeRewardDebt[token][msg.sender] =
+            Math.mulDiv(feeStakeBalance[token][msg.sender], feePools[token].accFeePerShare, PRECISION);
+
+        _transferFromWithPermit2(token, amount, permitSingle, permitSignature);
 
         emit FeeTokenStaked(msg.sender, token, amount, feeStakeBalance[token][msg.sender]);
     }
@@ -580,6 +797,131 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         if (!config.exists) {
             revert InvalidManagedToken();
         }
+    }
+
+    function _validateMintPolicy(uint256, uint256 maxMultiplierBps, uint16 rampStartBps) internal pure {
+        if (maxMultiplierBps < BPS_DENOMINATOR) {
+            revert InvalidMaxMultiplierBps(maxMultiplierBps);
+        }
+        if (rampStartBps > BPS_DENOMINATOR - 1) {
+            revert InvalidRampStartBps(rampStartBps);
+        }
+    }
+
+    function _resolveTokenMintPolicy(address token) internal view returns (TokenMintPolicy memory policy) {
+        policy = _tokenMintPolicies[token];
+        if (policy.maxSupply == 0) {
+            return TokenMintPolicy({maxSupply: 0, maxMultiplierBps: BPS_DENOMINATOR, rampStartBps: 0});
+        }
+    }
+
+    function _effectiveMintRateAtSupply(uint256 baseRate, TokenMintPolicy memory policy, uint256 supply)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (policy.maxSupply == 0) {
+            return baseRate;
+        }
+
+        uint256 multiplierBps = _multiplierBpsAtSupply(policy, supply);
+        return Math.mulDiv(baseRate, multiplierBps, BPS_DENOMINATOR);
+    }
+
+    function _previewCollateralForMint(
+        uint256 baseRate,
+        TokenMintPolicy memory policy,
+        uint256 currentSupply,
+        uint256 amount
+    ) internal pure returns (uint256) {
+        if (amount == 0) {
+            return 0;
+        }
+
+        if (policy.maxSupply == 0) {
+            return _collateralForAmount(amount, baseRate);
+        }
+
+        uint256 requestedSupply = currentSupply + amount;
+        if (requestedSupply > policy.maxSupply) {
+            revert ExceedsMaxSupply(requestedSupply, policy.maxSupply);
+        }
+
+        if (policy.maxMultiplierBps == BPS_DENOMINATOR) {
+            return _collateralForAmount(amount, baseRate);
+        }
+
+        uint256 startSupply = _rampStartSupply(policy);
+        uint256 collateral;
+
+        if (currentSupply < startSupply) {
+            uint256 preRampEnd = requestedSupply < startSupply ? requestedSupply : startSupply;
+            uint256 preRampAmount = preRampEnd - currentSupply;
+            if (preRampAmount > 0) {
+                collateral += _collateralForAmount(preRampAmount, baseRate);
+            }
+        }
+
+        uint256 rampStartSupply = currentSupply > startSupply ? currentSupply : startSupply;
+        if (requestedSupply > rampStartSupply) {
+            uint256 rampAmount = requestedSupply - rampStartSupply;
+            uint256 startBps = _multiplierBpsAtSupply(policy, rampStartSupply);
+            uint256 endBps = _multiplierBpsAtSupply(policy, requestedSupply);
+            uint256 bpsSum = startBps + endBps;
+            uint256 baseRampCollateral = _collateralForAmount(rampAmount, baseRate);
+            collateral += Math.mulDiv(baseRampCollateral, bpsSum, 2 * BPS_DENOMINATOR, Math.Rounding.Ceil);
+        }
+
+        return collateral;
+    }
+
+    function _rampStartSupply(TokenMintPolicy memory policy) internal pure returns (uint256) {
+        return Math.mulDiv(policy.maxSupply, policy.rampStartBps, BPS_DENOMINATOR);
+    }
+
+    function _multiplierBpsAtSupply(TokenMintPolicy memory policy, uint256 supply) internal pure returns (uint256) {
+        if (policy.maxSupply == 0) {
+            return BPS_DENOMINATOR;
+        }
+
+        if (supply >= policy.maxSupply) {
+            return policy.maxMultiplierBps;
+        }
+
+        uint256 startSupply = _rampStartSupply(policy);
+        if (supply <= startSupply) {
+            return BPS_DENOMINATOR;
+        }
+
+        uint256 rampRange = policy.maxSupply - startSupply;
+        uint256 rampProgress = supply - startSupply;
+        uint256 extraBps = Math.mulDiv(policy.maxMultiplierBps - BPS_DENOMINATOR, rampProgress, rampRange);
+        return BPS_DENOMINATOR + extraBps;
+    }
+
+    function _transferFromWithPermit2(
+        address token,
+        uint256 amount,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata permitSignature
+    ) internal {
+        IPermit2 permit2Contract = permit2;
+        if (address(permit2Contract) == address(0)) {
+            revert Permit2NotConfigured();
+        }
+
+        if (permitSingle.details.token != token) {
+            revert InvalidPermit2Token(token, permitSingle.details.token);
+        }
+        if (permitSingle.spender != address(this)) {
+            revert InvalidPermit2Spender(address(this), permitSingle.spender);
+        }
+        if (uint256(permitSingle.details.amount) < amount) {
+            revert Permit2AmountTooLow(amount, uint256(permitSingle.details.amount));
+        }
+
+        permit2Contract.permit(msg.sender, permitSingle, permitSignature);
+        permit2Contract.transferFrom(msg.sender, address(this), SafeCast.toUint160(amount), token);
     }
 
     function _requireFeeEnabled(TokenConfig storage config) internal view {
@@ -699,5 +1041,5 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[28] private __gap;
+    uint256[26] private __gap;
 }
