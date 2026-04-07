@@ -1,0 +1,126 @@
+name: Release Monad Mainnet Upgrade
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monad-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-generate-safe-tx:
+    name: Deploy Upgrade + Safe Tx JSON
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MONAD_RPC_URL: ${{ secrets.MONAD_RPC_URL }}
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      STAKING_PROXY: ${{ secrets.STAKING_PROXY }}
+      SER9_UPGRADE_DATA: ${{ secrets.SER9_UPGRADE_DATA }}
+      MANAGED_UPGRADE_DATA: ${{ secrets.MANAGED_UPGRADE_DATA }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${MONAD_RPC_URL:?GitHub secret MONAD_RPC_URL is required}"
+          : "${PRIVATE_KEY:?GitHub secret PRIVATE_KEY is required}"
+          : "${STAKING_PROXY:?GitHub secret STAKING_PROXY is required}"
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Show Foundry version
+        run: forge --version
+
+      - name: Build contracts
+        env:
+          FOUNDRY_PROFILE: deploy
+        run: forge build
+
+      - name: Deploy to Monad Mainnet and generate Safe Transaction Builder JSON
+        env:
+          FOUNDRY_PROFILE: deploy
+          SKIP_VERIFY_INPUT: ${{ vars.SKIP_VERIFY }}
+        run: |
+          if [[ -n "${SKIP_VERIFY_INPUT:-}" ]]; then
+            export SKIP_VERIFY="$SKIP_VERIFY_INPUT"
+          fi
+
+          forge script script/UpgradeTokens.s.sol:UpgradeTokens \
+            --rpc-url "$MONAD_RPC_URL" \
+            --broadcast \
+            --ffi
+
+      - name: Collect deployment metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUN_FILE="broadcast/UpgradeTokens.s.sol/143/run-latest.json"
+          SAFE_JSON="safe-tx-upgrade-tokens.json"
+
+          test -s "$RUN_FILE"
+          test -s "$SAFE_JSON"
+
+          SER9_IMPL="$(jq -r '.transactions[] | select(.transactionType == "CREATE" and .contractName == "SER9Token") | .contractAddress' "$RUN_FILE" | tail -n 1)"
+          MANAGED_IMPL="$(jq -r '.transactions[] | select(.transactionType == "CREATE" and .contractName == "Series9ManagedToken") | .contractAddress' "$RUN_FILE" | tail -n 1)"
+
+          if [[ -z "$SER9_IMPL" || "$SER9_IMPL" == "null" ]]; then
+            echo "SER9 implementation address not found in $RUN_FILE" >&2
+            exit 1
+          fi
+          if [[ -z "$MANAGED_IMPL" || "$MANAGED_IMPL" == "null" ]]; then
+            echo "ManagedToken implementation address not found in $RUN_FILE" >&2
+            exit 1
+          fi
+
+          SAFE_JSON_OUT="safe-tx-upgrade-tokens-${GITHUB_REF_NAME}.json"
+          cp "$SAFE_JSON" "$SAFE_JSON_OUT"
+
+          echo "run_file=$RUN_FILE" >> "$GITHUB_OUTPUT"
+          echo "safe_json=$SAFE_JSON_OUT" >> "$GITHUB_OUTPUT"
+          echo "ser9_impl=$SER9_IMPL" >> "$GITHUB_OUTPUT"
+          echo "managed_impl=$MANAGED_IMPL" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: monad-release-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.meta.outputs.safe_json }}
+            ${{ steps.meta.outputs.run_file }}
+
+      - name: Attach artifacts to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.meta.outputs.safe_json }}
+            ${{ steps.meta.outputs.run_file }}
+
+      - name: Write job summary
+        run: |
+          {
+            echo "## Monad Mainnet release deployment"
+            echo ""
+            echo "- Release: \`${{ github.ref_name }}\`"
+            echo "- Staking Proxy: \`${STAKING_PROXY}\`"
+            echo "- New SER9 implementation: \`${{ steps.meta.outputs.ser9_impl }}\`"
+            echo "- New ManagedToken implementation: \`${{ steps.meta.outputs.managed_impl }}\`"
+            echo "- Safe Transaction Builder JSON: \`${{ steps.meta.outputs.safe_json }}\`"
+            echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -108,3 +108,27 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
   --rpc-url <MONAD_RPC_URL> \
   --broadcast
 ```
+
+## GitHub Actions 릴리즈 자동화
+
+릴리즈(`published`) 시 Monad Mainnet에 새 implementation을 배포하고,
+`safe.global` Transaction Builder import용 JSON을 자동 생성합니다.
+
+- 워크플로: `.github/workflows/release-monad-mainnet-upgrade.yml`
+- 실행 스크립트: `script/UpgradeTokens.s.sol:UpgradeTokens`
+- 생성 파일: `safe-tx-upgrade-tokens-<release-tag>.json`
+
+필수 GitHub Secrets:
+
+- `MONAD_RPC_URL`
+- `PRIVATE_KEY`
+- `STAKING_PROXY`
+
+선택 GitHub Secrets:
+
+- `SER9_UPGRADE_DATA`
+- `MANAGED_UPGRADE_DATA`
+
+선택 GitHub Variables:
+
+- `SKIP_VERIFY` (`true`면 explorer verify 단계 스킵)

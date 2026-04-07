@@ -54,7 +54,7 @@ contract DeploySeries9 is Script {
 
         // --- Deploy Staking proxy (Safe as owner) ---
         Series9Staking staking = Series9Staking(
-            address(
+            payable(
                 new ERC1967Proxy(
                     address(stakingImplementation),
                     abi.encodeCall(

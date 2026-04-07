@@ -10,6 +10,7 @@ import {SER9Token} from "../src/SER9Token.sol";
 import {Series9ManagedToken} from "../src/Series9ManagedToken.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
 import {IPermit2} from "../src/interfaces/IPermit2.sol";
+import {IMonadStaking} from "../src/interfaces/IMonadStaking.sol";
 
 contract SER9TokenV2 is SER9Token {
     function version() external pure returns (uint256) {
@@ -50,10 +51,171 @@ contract Permit2Mock is IPermit2 {
     }
 }
 
+contract MonadStakingMock is IMonadStaking {
+    struct ValidatorInfo {
+        uint256 stake;
+        uint256 accRewardPerToken;
+        uint256 commission;
+        uint256 unclaimedRewards;
+    }
+
+    struct DelegatorInfo {
+        uint256 stake;
+        uint256 accRewardPerToken;
+        uint256 unclaimedRewards;
+    }
+
+    struct WithdrawalRequestInfo {
+        uint256 amount;
+        uint64 claimableEpoch;
+    }
+
+    uint64 internal currentEpoch;
+    bool internal currentInDelayPeriod;
+    uint64[] internal executionValset;
+
+    mapping(uint64 => ValidatorInfo) internal validatorInfo;
+    mapping(uint64 => mapping(address => DelegatorInfo)) internal delegatorInfo;
+    mapping(uint64 => mapping(address => mapping(uint8 => WithdrawalRequestInfo))) internal withdrawalInfo;
+    mapping(uint64 => mapping(address => uint256)) internal pendingRewards;
+
+    function setEpoch(uint64 epoch_, bool inDelayPeriod_) external {
+        currentEpoch = epoch_;
+        currentInDelayPeriod = inDelayPeriod_;
+    }
+
+    function setExecutionValidatorSet(uint64[] calldata validatorIds) external {
+        delete executionValset;
+        for (uint256 i = 0; i < validatorIds.length; ++i) {
+            executionValset.push(validatorIds[i]);
+        }
+    }
+
+    function setValidator(uint64 validatorId, uint256 stake_, uint256 accRewardPerToken_, uint256 commission_) external {
+        validatorInfo[validatorId].stake = stake_;
+        validatorInfo[validatorId].accRewardPerToken = accRewardPerToken_;
+        validatorInfo[validatorId].commission = commission_;
+    }
+
+    function bumpValidatorAccRewardPerToken(uint64 validatorId, uint256 delta) external {
+        validatorInfo[validatorId].accRewardPerToken += delta;
+    }
+
+    function setDelegatorRewards(uint64 validatorId, address delegator, uint256 rewardAmount) external {
+        pendingRewards[validatorId][delegator] = rewardAmount;
+    }
+
+    function delegate(uint64 validatorId) external payable returns (bool success) {
+        validatorInfo[validatorId].stake += msg.value;
+        delegatorInfo[validatorId][msg.sender].stake += msg.value;
+        return true;
+    }
+
+    function undelegate(uint64 validatorId, uint256 amount, uint8 withdrawId) external returns (bool success) {
+        DelegatorInfo storage info = delegatorInfo[validatorId][msg.sender];
+        require(info.stake >= amount, "mock: insufficient stake");
+
+        info.stake -= amount;
+        validatorInfo[validatorId].stake -= amount;
+        withdrawalInfo[validatorId][msg.sender][withdrawId] = WithdrawalRequestInfo({
+            amount: amount,
+            claimableEpoch: currentInDelayPeriod ? currentEpoch + 3 : currentEpoch + 2
+        });
+        return true;
+    }
+
+    function withdraw(uint64 validatorId, uint8 withdrawId) external returns (bool success) {
+        WithdrawalRequestInfo storage info = withdrawalInfo[validatorId][msg.sender][withdrawId];
+        require(info.amount > 0, "mock: no withdrawal");
+        require(currentEpoch >= info.claimableEpoch, "mock: not matured");
+
+        uint256 amount = info.amount;
+        info.amount = 0;
+        info.claimableEpoch = 0;
+
+        (bool ok,) = msg.sender.call{value: amount}("");
+        require(ok, "mock: transfer failed");
+        return true;
+    }
+
+    function claimRewards(uint64 validatorId) external returns (bool success) {
+        uint256 rewardAmount = pendingRewards[validatorId][msg.sender];
+        if (rewardAmount == 0) {
+            return true;
+        }
+
+        pendingRewards[validatorId][msg.sender] = 0;
+        (bool ok,) = msg.sender.call{value: rewardAmount}("");
+        require(ok, "mock: reward transfer failed");
+        return true;
+    }
+
+    function getExecutionValidatorSet(uint32) external view returns (bool isDone, uint32 nextIndex, uint64[] memory valIds) {
+        return (true, 0, executionValset);
+    }
+
+    function getValidator(uint64 validatorId)
+        external
+        view
+        returns (
+            address authAddress,
+            uint64 flags,
+            uint256 stake_,
+            uint256 accRewardPerToken,
+            uint256 commission,
+            uint256 unclaimedRewards,
+            uint256 consensusStake,
+            uint256 consensusCommission,
+            uint256 snapshotStake,
+            uint256 snapshotCommission,
+            bytes memory secpPubkey,
+            bytes memory blsPubkey
+        )
+    {
+        ValidatorInfo storage info = validatorInfo[validatorId];
+        return (
+            address(0),
+            0,
+            info.stake,
+            info.accRewardPerToken,
+            info.commission,
+            info.unclaimedRewards,
+            0,
+            0,
+            0,
+            0,
+            "",
+            ""
+        );
+    }
+
+    function getDelegator(uint64 validatorId, address delegator)
+        external
+        view
+        returns (
+            uint256 stake_,
+            uint256 accRewardPerToken,
+            uint256 unclaimedRewards,
+            uint256 deltaStake,
+            uint256 nextDeltaStake,
+            uint64 deltaEpoch,
+            uint64 nextDeltaEpoch
+        )
+    {
+        DelegatorInfo storage info = delegatorInfo[validatorId][delegator];
+        return (info.stake, info.accRewardPerToken, info.unclaimedRewards, 0, 0, 0, 0);
+    }
+
+    function getEpoch() external view returns (uint64 epoch, bool inEpochDelayPeriod) {
+        return (currentEpoch, currentInDelayPeriod);
+    }
+}
+
 contract Series9StakingTest is Test {
     SER9Token internal ser9;
     Series9Staking internal staking;
     Permit2Mock internal permit2;
+    MonadStakingMock internal monadStakingMock;
 
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
@@ -73,7 +235,7 @@ contract Series9StakingTest is Test {
         );
 
         staking = Series9Staking(
-            address(
+            payable(
                 new ERC1967Proxy(
                     address(stakingImplementation),
                     abi.encodeCall(
@@ -240,7 +402,7 @@ contract Series9StakingTest is Test {
         Series9ManagedToken managedTokenImplementation = new Series9ManagedToken();
         Series9Staking stakingImplementation = new Series9Staking();
         Series9Staking stakingWithoutPermit2 = Series9Staking(
-            address(
+            payable(
                 new ERC1967Proxy(
                     address(stakingImplementation),
                     abi.encodeCall(
@@ -1079,6 +1241,148 @@ contract Series9StakingTest is Test {
 
         vm.expectRevert(Series9ManagedToken.InvalidFeeRecipient.selector);
         staking.setTokenFeeRecipient(token, address(0));
+    }
+
+    function testInitializeV2SetsDefaultMonadRewardRate() public {
+        staking.initializeV2();
+        assertEq(staking.monadRewardRatePerBlock(), REWARD_PER_BLOCK / 8);
+    }
+
+    function testStakeMonadAccruesAndClaimsSER9Rewards() public {
+        staking.initializeV2();
+        vm.deal(alice, 20 ether);
+
+        vm.startPrank(alice);
+        staking.stakeMonad{value: 8 ether}();
+        vm.roll(block.number + 8);
+
+        uint256 beforeBalance = ser9.balanceOf(alice);
+        staking.claimRewards();
+        uint256 claimed = ser9.balanceOf(alice) - beforeBalance;
+        vm.stopPrank();
+
+        assertEq(claimed, 1 ether);
+    }
+
+    function testRequestUnstakeMonadIsAlwaysDelayed() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        vm.deal(alice, 20 ether);
+
+        vm.prank(alice);
+        staking.stakeMonad{value: 5 ether}();
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(2 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.UnstakeRequestNotClaimable.selector, uint64(1), uint64(2)));
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        monadStakingMock.setEpoch(2, false);
+        uint256 aliceBefore = alice.balance;
+
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+        assertEq(alice.balance, aliceBefore + 2 ether);
+    }
+
+    function testRebalanceSelectsTopFiveAndAccruesProtocolYield() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+
+        vm.expectRevert(Series9Staking.UnauthorizedRebalanceOperator.selector);
+        vm.prank(bob);
+        staking.rebalanceMonadDelegations();
+
+        staking.setMonadRebalanceKeeper(bob, true);
+
+        vm.prank(bob);
+        staking.rebalanceMonadDelegations();
+
+        assertEq(staking.targetValidatorCount(), 5);
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+        assertEq(staking.targetValidatorIds(0), 1);
+
+        vm.roll(block.number + 10);
+        monadStakingMock.bumpValidatorAccRewardPerToken(6, 1_000 ether);
+        monadStakingMock.bumpValidatorAccRewardPerToken(1, 100 ether);
+        monadStakingMock.setDelegatorRewards(1, address(staking), 1 ether);
+
+        vm.prank(bob);
+        staking.rebalanceMonadDelegations();
+
+        assertEq(staking.protocolMonadYieldAccrued(), 1 ether);
+
+        bool hasValidatorSix;
+        for (uint256 i = 0; i < staking.targetValidatorCount(); ++i) {
+            if (staking.targetValidatorIds(i) == 6) {
+                hasValidatorSix = true;
+                break;
+            }
+        }
+        assertTrue(hasValidatorSix);
+    }
+
+    function testDelayedUnstakeClaimRequiresRebalanceWithdrawalStep() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(4 ether);
+
+        (,, uint64 minClaimEpoch,) = staking.monadUnstakeRequest(alice, requestId);
+        assertEq(minClaimEpoch, 3);
+
+        monadStakingMock.setEpoch(3, false);
+
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 4 ether, 0));
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        staking.rebalanceMonadDelegations();
+
+        uint256 aliceBefore = alice.balance;
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        assertEq(alice.balance, aliceBefore + 4 ether);
+    }
+
+    function _installMonadPrecompileMock() internal {
+        MonadStakingMock mockImplementation = new MonadStakingMock();
+        address precompileAddress = address(uint160(0x1000));
+        vm.etch(precompileAddress, address(mockImplementation).code);
+
+        monadStakingMock = MonadStakingMock(precompileAddress);
+        monadStakingMock.setEpoch(1, false);
+        vm.deal(precompileAddress, 1_000_000 ether);
+    }
+
+    function _configureValidatorSet123456() internal {
+        uint64[] memory validatorIds = new uint64[](6);
+        validatorIds[0] = 1;
+        validatorIds[1] = 2;
+        validatorIds[2] = 3;
+        validatorIds[3] = 4;
+        validatorIds[4] = 5;
+        validatorIds[5] = 6;
+
+        monadStakingMock.setExecutionValidatorSet(validatorIds);
+        for (uint64 i = 1; i <= 6; ++i) {
+            monadStakingMock.setValidator(i, 0, 1_000 ether, 0);
+        }
     }
 
     function _stake(address user, uint256 stakeAmount) internal {

@@ -16,12 +16,17 @@ import {PausableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/
 import {SER9Token} from "./SER9Token.sol";
 import {Series9ManagedToken} from "./Series9ManagedToken.sol";
 import {IPermit2} from "./interfaces/IPermit2.sol";
+import {IMonadStaking} from "./interfaces/IMonadStaking.sol";
 
 contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeable, ReentrancyGuard, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     uint256 private constant PRECISION = 1e18;
     uint256 private constant BPS_DENOMINATOR = 10_000;
+    uint256 private constant MONAD_SCORE_PRECISION = 1e18;
+    uint256 private constant MONAD_TARGET_COUNT = 5;
+    uint256 private constant MONAD_SCAN_LIMIT = 100;
+    uint64 private constant MONAD_PRECOMPILE_ADDRESS = 0x1000;
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
     struct TokenConfig {
@@ -42,6 +47,33 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 maxSupply;
         uint256 maxMultiplierBps;
         uint16 rampStartBps;
+    }
+
+    struct ValidatorSample {
+        uint256 accRewardPerToken;
+        uint256 sampledBlock;
+        uint256 commission;
+    }
+
+    struct PendingUndelegateTicket {
+        uint64 validatorId;
+        uint8 withdrawId;
+        uint256 amount;
+        uint64 claimableEpoch;
+        bool withdrawn;
+    }
+
+    struct MonadUnstakeRequest {
+        uint256 amount;
+        uint64 requestEpoch;
+        uint64 minClaimEpoch;
+        bool claimed;
+    }
+
+    struct CandidateScore {
+        uint64 validatorId;
+        uint256 score;
+        uint256 commission;
     }
 
     SER9Token public ser9;
@@ -76,6 +108,37 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     mapping(address => mapping(address => uint256)) public feeRewardDebt;
     mapping(address => mapping(address => uint256)) public feePendingRewards;
 
+    uint256 public monadRewardRatePerBlock;
+    uint256 public monadRewardPerTokenStored;
+    uint256 public monadLastUpdateBlock;
+
+    uint256 public totalMonadStaked;
+    uint256 public totalDelegatedMonad;
+    uint256 public totalPendingUndelegateMonad;
+    uint256 public pendingMonadUnstakePrincipal;
+    uint256 public protocolMonadYieldAccrued;
+
+    mapping(address => uint256) public monadStakedBalance;
+    mapping(address => uint256) public userMonadRewardPerTokenPaid;
+    mapping(address => uint256) public monadRewards;
+    mapping(address => bool) public monadRebalanceKeepers;
+
+    uint64[5] public targetValidatorIds;
+    uint16[5] public targetValidatorWeightsBps;
+    uint8 public targetValidatorCount;
+
+    mapping(uint64 => ValidatorSample) public validatorSamples;
+    mapping(uint64 => uint256) public validatorDelegatedAmount;
+    mapping(uint64 => uint256) public validatorPendingUndelegateAmount;
+    mapping(uint64 => uint8) public nextWithdrawIdByValidator;
+    mapping(uint64 => mapping(uint8 => bool)) private _withdrawIdInUse;
+    uint64[] public trackedValidators;
+    mapping(uint64 => bool) public isTrackedValidator;
+
+    PendingUndelegateTicket[] public pendingUndelegateTickets;
+    mapping(address => uint256) public monadUnstakeRequestCount;
+    mapping(address => mapping(uint256 => MonadUnstakeRequest)) private _monadUnstakeRequests;
+
     error ZeroAmount();
     error InvalidTokenAddress();
     error MintRateZero();
@@ -106,6 +169,14 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error InvalidMaxMultiplierBps(uint256 maxMultiplierBps);
     error InvalidRampStartBps(uint16 rampStartBps);
     error ExceedsMaxSupply(uint256 requestedSupply, uint256 maxSupply);
+    error UnauthorizedRebalanceOperator();
+    error InsufficientMonadStakedBalance();
+    error InvalidUnstakeRequest();
+    error UnstakeRequestAlreadyClaimed();
+    error UnstakeRequestNotClaimable(uint64 currentEpoch, uint64 minClaimEpoch);
+    error InsufficientLiquidMonad(uint256 requiredAmount, uint256 availableAmount);
+    error NoAvailableWithdrawId(uint64 validatorId);
+    error MonadPayoutFailed();
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -149,16 +220,39 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event FeeTokenStaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
     event FeeTokenUnstaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
     event FeeRewardsClaimed(address indexed user, address indexed token, uint256 rewardAmount);
+    event MonadRewardRateUpdated(uint256 previousRate, uint256 newRate);
+    event MonadRebalanceKeeperUpdated(address indexed keeper, bool allowed);
+    event MonadStaked(address indexed user, uint256 amount);
+    event MonadUnstakeRequested(
+        address indexed user, uint256 indexed requestId, uint256 amount, uint64 requestEpoch, uint64 minClaimEpoch
+    );
+    event MonadUnstakeClaimed(address indexed user, uint256 indexed requestId, uint256 amount);
+    event MonadUndelegateQueued(uint64 indexed validatorId, uint8 indexed withdrawId, uint256 amount, uint64 claimableEpoch);
+    event MonadWithdrawProcessed(uint64 indexed validatorId, uint8 indexed withdrawId, uint256 amount);
+    event MonadYieldAccrued(uint64 indexed validatorId, uint256 amount);
+    event MonadTargetsUpdated(uint64[5] validatorIds, uint16[5] weightsBps, uint8 targetCount);
+    event MonadRebalanced(uint256 totalMonadStaked, uint256 totalDelegatedMonad, uint256 totalPendingUndelegateMonad);
 
     modifier updateReward(address account) {
         rewardPerTokenStored = rewardPerToken();
         lastUpdateBlock = block.number;
+        monadRewardPerTokenStored = monadRewardPerToken();
+        monadLastUpdateBlock = block.number;
 
         if (account != address(0)) {
-            rewards[account] = earned(account);
+            rewards[account] = _earnedSer9(account);
             userRewardPerTokenPaid[account] = rewardPerTokenStored;
+            monadRewards[account] = _earnedMonad(account);
+            userMonadRewardPerTokenPaid[account] = monadRewardPerTokenStored;
         }
 
+        _;
+    }
+
+    modifier onlyMonadRebalanceOperator() {
+        if (msg.sender != owner() && !monadRebalanceKeepers[msg.sender]) {
+            revert UnauthorizedRebalanceOperator();
+        }
         _;
     }
 
@@ -166,6 +260,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     constructor() {
         _disableInitializers();
     }
+
+    receive() external payable {}
 
     function initialize(
         address ser9Token,
@@ -190,9 +286,25 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         managedTokenImplementation = managedTokenImplementation_;
     }
 
+    function initializeV2() external reinitializer(2) {
+        monadLastUpdateBlock = block.number;
+        monadRewardRatePerBlock = rewardRatePerBlock / 8;
+    }
+
     function setRewardRatePerBlock(uint256 newRewardRatePerBlock) external onlyOwner updateReward(address(0)) {
         rewardRatePerBlock = newRewardRatePerBlock;
         emit RewardRateUpdated(newRewardRatePerBlock);
+    }
+
+    function setMonadRewardRatePerBlock(uint256 newRate) external onlyOwner updateReward(address(0)) {
+        uint256 previousRate = monadRewardRatePerBlock;
+        monadRewardRatePerBlock = newRate;
+        emit MonadRewardRateUpdated(previousRate, newRate);
+    }
+
+    function setMonadRebalanceKeeper(address keeper, bool allowed) external onlyOwner {
+        monadRebalanceKeepers[keeper] = allowed;
+        emit MonadRebalanceKeeperUpdated(keeper, allowed);
     }
 
     function pause() external onlyOwner {
@@ -478,13 +590,119 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit Unstaked(msg.sender, amount);
     }
 
+    function stakeMonad() external payable whenNotPaused nonReentrant updateReward(msg.sender) {
+        uint256 amount = msg.value;
+        if (amount == 0) {
+            revert ZeroAmount();
+        }
+
+        monadStakedBalance[msg.sender] += amount;
+        totalMonadStaked += amount;
+
+        emit MonadStaked(msg.sender, amount);
+    }
+
+    function requestUnstakeMonad(uint256 amount)
+        external
+        whenNotPaused
+        nonReentrant
+        updateReward(msg.sender)
+        returns (uint256 requestId)
+    {
+        if (amount == 0) {
+            revert ZeroAmount();
+        }
+
+        uint256 userStaked = monadStakedBalance[msg.sender];
+        if (amount > userStaked) {
+            revert InsufficientMonadStakedBalance();
+        }
+
+        monadStakedBalance[msg.sender] = userStaked - amount;
+        totalMonadStaked -= amount;
+        pendingMonadUnstakePrincipal += amount;
+
+        (uint64 epoch, bool inEpochDelayPeriod) = _getEpoch();
+        uint64 minClaimEpoch = epoch + 1;
+        uint64 withdrawEpoch = _queueUnstakeFromDelegations(amount, epoch, inEpochDelayPeriod);
+        if (withdrawEpoch > minClaimEpoch) {
+            minClaimEpoch = withdrawEpoch;
+        }
+
+        requestId = monadUnstakeRequestCount[msg.sender];
+        monadUnstakeRequestCount[msg.sender] = requestId + 1;
+        _monadUnstakeRequests[msg.sender][requestId] =
+            MonadUnstakeRequest({amount: amount, requestEpoch: epoch, minClaimEpoch: minClaimEpoch, claimed: false});
+
+        emit MonadUnstakeRequested(msg.sender, requestId, amount, epoch, minClaimEpoch);
+    }
+
+    function claimUnstakedMonad(uint256 requestId) external whenNotPaused nonReentrant {
+        if (requestId >= monadUnstakeRequestCount[msg.sender]) {
+            revert InvalidUnstakeRequest();
+        }
+
+        MonadUnstakeRequest storage request = _monadUnstakeRequests[msg.sender][requestId];
+        if (request.claimed) {
+            revert UnstakeRequestAlreadyClaimed();
+        }
+
+        (uint64 currentEpoch,) = _getEpoch();
+        if (currentEpoch < request.minClaimEpoch) {
+            revert UnstakeRequestNotClaimable(currentEpoch, request.minClaimEpoch);
+        }
+
+        uint256 availableAmount = _availableMonadForUserClaims();
+        if (request.amount > availableAmount) {
+            revert InsufficientLiquidMonad(request.amount, availableAmount);
+        }
+
+        request.claimed = true;
+        pendingMonadUnstakePrincipal -= request.amount;
+
+        (bool ok,) = msg.sender.call{value: request.amount}("");
+        if (!ok) {
+            revert MonadPayoutFailed();
+        }
+
+        emit MonadUnstakeClaimed(msg.sender, requestId, request.amount);
+    }
+
+    function rebalanceMonadDelegations() external whenNotPaused nonReentrant onlyMonadRebalanceOperator {
+        rewardPerTokenStored = rewardPerToken();
+        lastUpdateBlock = block.number;
+        monadRewardPerTokenStored = monadRewardPerToken();
+        monadLastUpdateBlock = block.number;
+
+        _harvestMonadValidatorRewards();
+        _processMaturedUndelegations();
+        _updateMonadTargets();
+        _rebalanceToMonadTargets();
+
+        emit MonadRebalanced(totalMonadStaked, totalDelegatedMonad, totalPendingUndelegateMonad);
+    }
+
+    function monadUnstakeRequest(address user, uint256 requestId)
+        external
+        view
+        returns (uint256 amount, uint64 requestEpoch, uint64 minClaimEpoch, bool claimed)
+    {
+        if (requestId >= monadUnstakeRequestCount[user]) {
+            revert InvalidUnstakeRequest();
+        }
+
+        MonadUnstakeRequest storage request = _monadUnstakeRequests[user][requestId];
+        return (request.amount, request.requestEpoch, request.minClaimEpoch, request.claimed);
+    }
+
     function claimRewards() external whenNotPaused nonReentrant updateReward(msg.sender) {
-        uint256 reward = rewards[msg.sender];
+        uint256 reward = rewards[msg.sender] + monadRewards[msg.sender];
         if (reward == 0) {
             revert NoRewards();
         }
 
         rewards[msg.sender] = 0;
+        monadRewards[msg.sender] = 0;
         ser9.mint(msg.sender, reward);
 
         emit RewardClaimed(msg.sender, reward);
@@ -784,10 +1002,34 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return rewardPerTokenStored + rewardDelta;
     }
 
+    function monadRewardPerToken() public view returns (uint256) {
+        if (totalMonadStaked == 0 || monadLastUpdateBlock == 0) {
+            return monadRewardPerTokenStored;
+        }
+
+        uint256 blockDelta = block.number - monadLastUpdateBlock;
+        uint256 rewardDelta = Math.mulDiv(blockDelta * monadRewardRatePerBlock, PRECISION, totalMonadStaked);
+        return monadRewardPerTokenStored + rewardDelta;
+    }
+
     function earned(address account) public view returns (uint256) {
+        return _earnedSer9(account) + _earnedMonad(account);
+    }
+
+    function monadEarned(address account) external view returns (uint256) {
+        return _earnedMonad(account);
+    }
+
+    function _earnedSer9(address account) internal view returns (uint256) {
         uint256 rewardDelta = rewardPerToken() - userRewardPerTokenPaid[account];
         uint256 accrued = Math.mulDiv(rewardWeightBalance[account], rewardDelta, PRECISION);
         return rewards[account] + accrued;
+    }
+
+    function _earnedMonad(address account) internal view returns (uint256) {
+        uint256 rewardDelta = monadRewardPerToken() - userMonadRewardPerTokenPaid[account];
+        uint256 accrued = Math.mulDiv(monadStakedBalance[account], rewardDelta, PRECISION);
+        return monadRewards[account] + accrued;
     }
 
     function _requireManagedToken(address token) internal view returns (TokenConfig storage config) {
@@ -1021,6 +1263,409 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         feeRewardDebt[token][user] = accumulated;
+    }
+
+    function _monadStaking() internal pure returns (IMonadStaking) {
+        return IMonadStaking(address(uint160(MONAD_PRECOMPILE_ADDRESS)));
+    }
+
+    function _getEpoch() internal returns (uint64 epoch, bool inEpochDelayPeriod) {
+        try _monadStaking().getEpoch() returns (uint64 currentEpoch, bool isDelayPeriod) {
+            return (currentEpoch, isDelayPeriod);
+        } catch {
+            return (0, false);
+        }
+    }
+
+    function _availableLiquidForActiveDelegation() internal view returns (uint256) {
+        uint256 balance = address(this).balance;
+        uint256 reserved = pendingMonadUnstakePrincipal + protocolMonadYieldAccrued;
+        if (balance <= reserved) {
+            return 0;
+        }
+
+        return balance - reserved;
+    }
+
+    function _availableMonadForUserClaims() internal view returns (uint256) {
+        uint256 balance = address(this).balance;
+        if (balance <= protocolMonadYieldAccrued) {
+            return 0;
+        }
+        return balance - protocolMonadYieldAccrued;
+    }
+
+    function _queueUnstakeFromDelegations(uint256 amount, uint64 epoch, bool inEpochDelayPeriod)
+        internal
+        returns (uint64 maxClaimableEpoch)
+    {
+        uint256 remaining = amount;
+        uint256 trackedLength = trackedValidators.length;
+
+        for (uint256 i = 0; i < trackedLength && remaining > 0; ++i) {
+            uint64 validatorId = trackedValidators[i];
+            if (validatorDelegatedAmount[validatorId] == 0) {
+                continue;
+            }
+
+            (uint256 undelegatedAmount, uint64 claimableEpoch) =
+                _undelegateFromValidator(validatorId, remaining, epoch, inEpochDelayPeriod);
+            if (undelegatedAmount == 0) {
+                continue;
+            }
+
+            remaining -= undelegatedAmount;
+            if (claimableEpoch > maxClaimableEpoch) {
+                maxClaimableEpoch = claimableEpoch;
+            }
+        }
+    }
+
+    function _undelegateFromValidator(uint64 validatorId, uint256 requestedAmount, uint64 epoch, bool inEpochDelayPeriod)
+        internal
+        returns (uint256 undelegatedAmount, uint64 claimableEpoch)
+    {
+        uint256 delegatedAmount = validatorDelegatedAmount[validatorId];
+        if (delegatedAmount == 0 || requestedAmount == 0) {
+            return (0, 0);
+        }
+
+        uint256 activeStake = delegatedAmount;
+        try _monadStaking().getDelegator(validatorId, address(this)) returns (
+            uint256 stake,
+            uint256,
+            uint256,
+            uint256,
+            uint256,
+            uint64,
+            uint64
+        ) {
+            activeStake = stake;
+        } catch {}
+
+        if (activeStake == 0) {
+            return (0, 0);
+        }
+
+        undelegatedAmount = requestedAmount;
+        if (undelegatedAmount > delegatedAmount) {
+            undelegatedAmount = delegatedAmount;
+        }
+        if (undelegatedAmount > activeStake) {
+            undelegatedAmount = activeStake;
+        }
+        if (undelegatedAmount == 0) {
+            return (0, 0);
+        }
+
+        _trackValidator(validatorId);
+        uint8 withdrawId = _nextWithdrawId(validatorId);
+        try _monadStaking().undelegate(validatorId, undelegatedAmount, withdrawId) returns (bool success) {
+            if (!success) {
+                _withdrawIdInUse[validatorId][withdrawId] = false;
+                return (0, 0);
+            }
+        } catch {
+            _withdrawIdInUse[validatorId][withdrawId] = false;
+            return (0, 0);
+        }
+
+        claimableEpoch = inEpochDelayPeriod ? epoch + 3 : epoch + 2;
+
+        validatorDelegatedAmount[validatorId] = delegatedAmount - undelegatedAmount;
+        validatorPendingUndelegateAmount[validatorId] += undelegatedAmount;
+        totalDelegatedMonad -= undelegatedAmount;
+        totalPendingUndelegateMonad += undelegatedAmount;
+
+        pendingUndelegateTickets.push(
+            PendingUndelegateTicket({
+                validatorId: validatorId,
+                withdrawId: withdrawId,
+                amount: undelegatedAmount,
+                claimableEpoch: claimableEpoch,
+                withdrawn: false
+            })
+        );
+
+        emit MonadUndelegateQueued(validatorId, withdrawId, undelegatedAmount, claimableEpoch);
+    }
+
+    function _nextWithdrawId(uint64 validatorId) internal returns (uint8) {
+        uint256 start = uint256(nextWithdrawIdByValidator[validatorId]);
+        for (uint256 i = 0; i < 256; ++i) {
+            uint8 candidateId = uint8((start + i) % 256);
+            if (_withdrawIdInUse[validatorId][candidateId]) {
+                continue;
+            }
+
+            _withdrawIdInUse[validatorId][candidateId] = true;
+            nextWithdrawIdByValidator[validatorId] = uint8((uint256(candidateId) + 1) % 256);
+            return candidateId;
+        }
+
+        revert NoAvailableWithdrawId(validatorId);
+    }
+
+    function _trackValidator(uint64 validatorId) internal {
+        if (isTrackedValidator[validatorId]) {
+            return;
+        }
+
+        isTrackedValidator[validatorId] = true;
+        trackedValidators.push(validatorId);
+    }
+
+    function _harvestMonadValidatorRewards() internal {
+        uint256 trackedLength = trackedValidators.length;
+
+        for (uint256 i = 0; i < trackedLength; ++i) {
+            uint64 validatorId = trackedValidators[i];
+            if (validatorDelegatedAmount[validatorId] == 0 && validatorPendingUndelegateAmount[validatorId] == 0) {
+                continue;
+            }
+
+            uint256 beforeBalance = address(this).balance;
+            try _monadStaking().claimRewards(validatorId) {} catch {
+                continue;
+            }
+
+            uint256 afterBalance = address(this).balance;
+            if (afterBalance > beforeBalance) {
+                uint256 claimedAmount = afterBalance - beforeBalance;
+                protocolMonadYieldAccrued += claimedAmount;
+                emit MonadYieldAccrued(validatorId, claimedAmount);
+            }
+        }
+    }
+
+    function _processMaturedUndelegations() internal {
+        (uint64 currentEpoch,) = _getEpoch();
+        uint256 ticketsLength = pendingUndelegateTickets.length;
+
+        for (uint256 i = 0; i < ticketsLength; ++i) {
+            PendingUndelegateTicket storage ticket = pendingUndelegateTickets[i];
+            if (ticket.withdrawn || ticket.claimableEpoch > currentEpoch) {
+                continue;
+            }
+
+            try _monadStaking().withdraw(ticket.validatorId, ticket.withdrawId) returns (bool success) {
+                if (!success) {
+                    continue;
+                }
+            } catch {
+                continue;
+            }
+
+            ticket.withdrawn = true;
+            validatorPendingUndelegateAmount[ticket.validatorId] -= ticket.amount;
+            totalPendingUndelegateMonad -= ticket.amount;
+            _withdrawIdInUse[ticket.validatorId][ticket.withdrawId] = false;
+
+            emit MonadWithdrawProcessed(ticket.validatorId, ticket.withdrawId, ticket.amount);
+        }
+    }
+
+    function _updateMonadTargets() internal {
+        (,, uint64[] memory valIds) = _monadStaking().getExecutionValidatorSet(0);
+        uint256 candidateLength = valIds.length;
+        if (candidateLength > MONAD_SCAN_LIMIT) {
+            candidateLength = MONAD_SCAN_LIMIT;
+        }
+
+        CandidateScore[] memory candidates = new CandidateScore[](candidateLength);
+        uint256 filled;
+        for (uint256 i = 0; i < candidateLength; ++i) {
+            uint64 validatorId = valIds[i];
+            uint256 accRewardPerToken;
+            uint256 commission;
+
+            try _monadStaking().getValidator(validatorId) returns (
+                address,
+                uint64,
+                uint256,
+                uint256 currentAccRewardPerToken,
+                uint256 currentCommission,
+                uint256,
+                uint256,
+                uint256,
+                uint256,
+                uint256,
+                bytes memory,
+                bytes memory
+            ) {
+                accRewardPerToken = currentAccRewardPerToken;
+                commission = currentCommission;
+            } catch {
+                continue;
+            }
+
+            uint256 score;
+            ValidatorSample memory previousSample = validatorSamples[validatorId];
+            if (previousSample.sampledBlock != 0 && block.number > previousSample.sampledBlock) {
+                uint256 deltaBlocks = block.number - previousSample.sampledBlock;
+                if (accRewardPerToken > previousSample.accRewardPerToken && deltaBlocks > 0) {
+                    uint256 deltaAcc = accRewardPerToken - previousSample.accRewardPerToken;
+                    uint256 rawScore = Math.mulDiv(deltaAcc, MONAD_SCORE_PRECISION, deltaBlocks);
+                    uint256 rewardRetained = commission >= MONAD_SCORE_PRECISION ? 0 : MONAD_SCORE_PRECISION - commission;
+                    score = Math.mulDiv(rawScore, rewardRetained, MONAD_SCORE_PRECISION);
+                }
+            }
+
+            validatorSamples[validatorId] = ValidatorSample({
+                accRewardPerToken: accRewardPerToken,
+                sampledBlock: block.number,
+                commission: commission
+            });
+
+            candidates[filled] = CandidateScore({validatorId: validatorId, score: score, commission: commission});
+            filled++;
+        }
+
+        for (uint256 i = 0; i < MONAD_TARGET_COUNT; ++i) {
+            targetValidatorIds[i] = 0;
+            targetValidatorWeightsBps[i] = 0;
+        }
+
+        if (filled == 0) {
+            targetValidatorCount = 0;
+            emit MonadTargetsUpdated(targetValidatorIds, targetValidatorWeightsBps, targetValidatorCount);
+            return;
+        }
+
+        _sortCandidates(candidates, filled);
+
+        uint256 selectedCount = filled < MONAD_TARGET_COUNT ? filled : MONAD_TARGET_COUNT;
+        uint256 totalScore;
+        for (uint256 i = 0; i < selectedCount; ++i) {
+            totalScore += candidates[i].score;
+            targetValidatorIds[i] = candidates[i].validatorId;
+            _trackValidator(candidates[i].validatorId);
+        }
+
+        uint256 assigned;
+        if (totalScore == 0) {
+            uint256 equalWeight = BPS_DENOMINATOR / selectedCount;
+            uint256 remainder = BPS_DENOMINATOR - (equalWeight * selectedCount);
+            for (uint256 i = 0; i < selectedCount; ++i) {
+                uint256 weight = equalWeight + (i < remainder ? 1 : 0);
+                targetValidatorWeightsBps[i] = uint16(weight);
+            }
+        } else {
+            for (uint256 i = 0; i < selectedCount; ++i) {
+                uint256 weight = Math.mulDiv(candidates[i].score, BPS_DENOMINATOR, totalScore);
+                targetValidatorWeightsBps[i] = uint16(weight);
+                assigned += weight;
+            }
+
+            if (assigned < BPS_DENOMINATOR) {
+                targetValidatorWeightsBps[0] += uint16(BPS_DENOMINATOR - assigned);
+            }
+        }
+
+        targetValidatorCount = uint8(selectedCount);
+        emit MonadTargetsUpdated(targetValidatorIds, targetValidatorWeightsBps, targetValidatorCount);
+    }
+
+    function _sortCandidates(CandidateScore[] memory candidates, uint256 count) internal pure {
+        if (count < 2) {
+            return;
+        }
+
+        for (uint256 i = 1; i < count; ++i) {
+            CandidateScore memory current = candidates[i];
+            uint256 j = i;
+            while (j > 0 && _isCandidateBetter(current, candidates[j - 1])) {
+                candidates[j] = candidates[j - 1];
+                j--;
+            }
+            candidates[j] = current;
+        }
+    }
+
+    function _isCandidateBetter(CandidateScore memory left, CandidateScore memory right) internal pure returns (bool) {
+        if (left.score != right.score) {
+            return left.score > right.score;
+        }
+        if (left.commission != right.commission) {
+            return left.commission < right.commission;
+        }
+        return left.validatorId < right.validatorId;
+    }
+
+    function _rebalanceToMonadTargets() internal {
+        uint256 selectedCount = targetValidatorCount;
+        if (selectedCount == 0) {
+            return;
+        }
+
+        uint64[] memory selectedValidators = new uint64[](selectedCount);
+        uint256[] memory targetAmounts = new uint256[](selectedCount);
+        uint256 remaining = totalMonadStaked;
+
+        for (uint256 i = 0; i < selectedCount; ++i) {
+            selectedValidators[i] = targetValidatorIds[i];
+            if (i == selectedCount - 1) {
+                targetAmounts[i] = remaining;
+            } else {
+                targetAmounts[i] = Math.mulDiv(totalMonadStaked, targetValidatorWeightsBps[i], BPS_DENOMINATOR);
+                remaining -= targetAmounts[i];
+            }
+        }
+
+        (uint64 currentEpoch, bool inEpochDelayPeriod) = _getEpoch();
+        uint256 trackedLength = trackedValidators.length;
+        for (uint256 i = 0; i < trackedLength; ++i) {
+            uint64 validatorId = trackedValidators[i];
+            uint256 delegatedAmount = validatorDelegatedAmount[validatorId];
+            if (delegatedAmount == 0) {
+                continue;
+            }
+
+            uint256 targetAmount;
+            for (uint256 j = 0; j < selectedCount; ++j) {
+                if (selectedValidators[j] == validatorId) {
+                    targetAmount = targetAmounts[j];
+                    break;
+                }
+            }
+
+            if (delegatedAmount > targetAmount) {
+                _undelegateFromValidator(validatorId, delegatedAmount - targetAmount, currentEpoch, inEpochDelayPeriod);
+            }
+        }
+
+        uint256 liquidAmount = _availableLiquidForActiveDelegation();
+        if (liquidAmount == 0) {
+            return;
+        }
+
+        for (uint256 i = 0; i < selectedCount && liquidAmount > 0; ++i) {
+            uint64 validatorId = selectedValidators[i];
+            uint256 delegatedAmount = validatorDelegatedAmount[validatorId];
+            uint256 targetAmount = targetAmounts[i];
+            if (delegatedAmount >= targetAmount) {
+                continue;
+            }
+
+            uint256 deficit = targetAmount - delegatedAmount;
+            uint256 delegateAmount = deficit > liquidAmount ? liquidAmount : deficit;
+            if (delegateAmount == 0) {
+                continue;
+            }
+
+            _trackValidator(validatorId);
+            try _monadStaking().delegate{value: delegateAmount}(validatorId) returns (bool success) {
+                if (!success) {
+                    continue;
+                }
+            } catch {
+                continue;
+            }
+
+            validatorDelegatedAmount[validatorId] += delegateAmount;
+            totalDelegatedMonad += delegateAmount;
+            liquidAmount -= delegateAmount;
+        }
     }
 
     function _validateImplementation(address implementation) internal view {
