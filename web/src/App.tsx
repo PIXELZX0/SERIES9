@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   useAccount,
   useChainId,
@@ -15,7 +15,8 @@ import { explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
 import { managedTokenAbi, ser9Abi, stakingAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
-import { useI18n, type MessageKey } from './i18n';
+import { type MessageKey } from './i18n';
+import { useI18n } from './i18n/useI18n';
 import { equalsAddress, formatTokenAmount, shortenAddress } from './utils/format';
 import {
   parseAddressStrict,
@@ -336,6 +337,10 @@ export default function App() {
   const [formError, setFormError] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [connectingConnectorUid, setConnectingConnectorUid] = useState<string | null>(null);
+  const [isTxModalOpen, setIsTxModalOpen] = useState(false);
+  const [showAdvancedActions, setShowAdvancedActions] = useState(false);
+  const txModalPanelRef = useRef<HTMLElement | null>(null);
+  const txModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const [ser9ApproveAmount, setSer9ApproveAmount] = useState('');
   const [ser9ApproveSpender, setSer9ApproveSpender] = useState<string>(contracts.stakingProxy);
@@ -593,11 +598,102 @@ export default function App() {
 
   const quickStakeNeedsApproval =
     parsedQuickStakeAmount !== null && (ser9AllowanceRead.data ?? 0n) < parsedQuickStakeAmount;
+  const quickStakeSliderValue = useMemo(() => {
+    const parsed = Number(quickStakeAmount);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return 0;
+    }
+
+    return Math.min(parsed, 1000);
+  }, [quickStakeAmount]);
   const normalizedPathname = (typeof window !== 'undefined' ? window.location.pathname : '/')
     .replace(/\/+$/, '') || '/';
   const isTokensListPage = normalizedPathname === '/tokens';
   const isTokenCreatePage = normalizedPathname === '/tokens/create';
   const isHomePage = !isTokensListPage && !isTokenCreatePage;
+  const hasTxActivity =
+    tx.isWalletPrompt ||
+    tx.isConfirming ||
+    tx.isSuccess ||
+    Boolean(tx.errorKey) ||
+    Boolean(tx.errorDetail) ||
+    Boolean(formError) ||
+    Boolean(tx.txHash);
+
+  const txStatusSummary =
+    formError ??
+    (tx.errorKey ? t(tx.errorKey) : null) ??
+    (tx.isSuccess ? t('txSuccess') : null) ??
+    (tx.isConfirming ? t('txPending') : null) ??
+    (tx.isWalletPrompt ? t('walletPrompt') : null) ??
+    '-';
+
+  useEffect(() => {
+    if (hasTxActivity) {
+      setIsTxModalOpen(true);
+    }
+  }, [hasTxActivity]);
+
+  useEffect(() => {
+    if (!isTxModalOpen) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsTxModalOpen(false);
+        return;
+      }
+
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const panel = txModalPanelRef.current;
+      if (!panel) {
+        return;
+      }
+
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+
+      if (focusable.length === 0) {
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isTxModalOpen]);
+
+  useEffect(() => {
+    if (!isTxModalOpen) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    txModalCloseButtonRef.current?.focus();
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isTxModalOpen]);
 
   function mapLocalError(error: unknown): string {
     if (!(error instanceof Error)) {
@@ -681,6 +777,36 @@ export default function App() {
   function onSubmit(event: FormEvent<HTMLFormElement>, handler: () => void) {
     event.preventDefault();
     void handler();
+  }
+
+  function renderTxStatusContent() {
+    return (
+      <div className="tx-feed" role="status" aria-live="polite">
+        {tx.actionLabel ? (
+          <p>
+            {t('lastAction')}: <strong>{tx.actionLabel}</strong>
+          </p>
+        ) : (
+          <p className="muted">-</p>
+        )}
+
+        {tx.isWalletPrompt && <p>{t('walletPrompt')}</p>}
+        {tx.isConfirming && <p>{t('txPending')}</p>}
+        {tx.isSuccess && <p className="success">{t('txSuccess')}</p>}
+        {tx.errorKey && <p className="error">{t(tx.errorKey)}</p>}
+        {tx.errorDetail && <p className="muted">{tx.errorDetail}</p>}
+        {formError && <p className="error">{formError}</p>}
+
+        {tx.txHash && (
+          <p>
+            {t('txHash')}:&nbsp;
+            <a href={explorerTxUrl(tx.txHash)} target="_blank" rel="noreferrer">
+              {shortenAddress(tx.txHash as Address, 8)}
+            </a>
+          </p>
+        )}
+      </div>
+    );
   }
 
   function createManagedTokenRequest() {
@@ -877,13 +1003,30 @@ export default function App() {
           <section className="card">
             <h2>{t('quickStakeSection')}</h2>
             <p className="muted">{t('quickStakeHint')}</p>
+            <div className="slider-wrap">
+              <div className="slider-head">
+                <label htmlFor="quick-stake-slider">{t('quickStakeSliderLabel')}</label>
+                <strong>{quickStakeSliderValue}</strong>
+              </div>
+              <input
+                id="quick-stake-slider"
+                type="range"
+                min="0"
+                max="1000"
+                step="1"
+                value={quickStakeSliderValue}
+                onChange={(event) => setQuickStakeAmount(event.target.value)}
+                disabled={!isConnected || onWrongChain}
+              />
+              <small>{t('quickStakeSliderHint')}</small>
+            </div>
             <form className="single-form" onSubmit={(event) => onSubmit(event, runQuickStakeFlow)}>
               <input
                 value={quickStakeAmount}
                 onChange={(event) => setQuickStakeAmount(event.target.value)}
                 placeholder={t('amount')}
               />
-              <button type="submit" disabled={!isConnected || onWrongChain}>
+              <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
                 {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
               </button>
             </form>
@@ -930,7 +1073,7 @@ export default function App() {
               placeholder={t('initialFeeBps')}
               disabled={!createFeeEnabled}
             />
-            <button type="submit" disabled={!isConnected || onWrongChain}>
+            <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
               {t('createManagedToken')}
             </button>
           </form>
@@ -978,8 +1121,21 @@ export default function App() {
       {(isTokensListPage || isHomePage) && (
         <>
           <section className="card">
-            <h2>{t('userActions')}</h2>
-            <div className="action-grid">
+            <div className="section-head">
+              <h2>{t('userActions')}</h2>
+              <button
+                type="button"
+                className="secondary"
+                aria-expanded={showAdvancedActions}
+                aria-controls="advanced-actions-grid"
+                onClick={() => setShowAdvancedActions((prev) => !prev)}
+              >
+                {showAdvancedActions ? t('hideAdvancedActions') : t('showAdvancedActions')}
+              </button>
+            </div>
+            {!showAdvancedActions && <p className="muted">{t('advancedActionsHint')}</p>}
+            {showAdvancedActions && (
+              <div id="advanced-actions-grid" className="action-grid">
           <form onSubmit={(event) => onSubmit(event, () => runWrite('ser9Approve', () => ({
             address: contracts.ser9Proxy,
             abi: ser9Abi,
@@ -1119,7 +1275,8 @@ export default function App() {
             <input list="managed-token-list" value={feeClaimToken} onChange={(e) => setFeeClaimToken(e.target.value)} placeholder={t('tokenAddress')} />
             <button type="submit">{t('claimFeeRewards')}</button>
           </form>
-            </div>
+              </div>
+            )}
           </section>
 
           <section className="card">
@@ -1150,61 +1307,58 @@ export default function App() {
           </datalist>
 
           <section className="card tx-card">
-            <h2>{t('txStatus')}</h2>
-            {tx.actionLabel ? (
-              <p>
-                {t('lastAction')}: <strong>{tx.actionLabel}</strong>
-              </p>
-            ) : (
-              <p className="muted">-</p>
-            )}
-
-            {tx.isWalletPrompt && <p>{t('walletPrompt')}</p>}
-            {tx.isConfirming && <p>{t('txPending')}</p>}
-            {tx.isSuccess && <p className="success">{t('txSuccess')}</p>}
-            {tx.errorKey && <p className="error">{t(tx.errorKey)}</p>}
-            {tx.errorDetail && <p className="muted">{tx.errorDetail}</p>}
-            {formError && <p className="error">{formError}</p>}
-
-            {tx.txHash && (
-              <p>
-                {t('txHash')}:&nbsp;
-                <a href={explorerTxUrl(tx.txHash)} target="_blank" rel="noreferrer">
-                  {shortenAddress(tx.txHash as Address, 8)}
-                </a>
-              </p>
-            )}
+            <div className="tx-header">
+              <h2>{t('txStatus')}</h2>
+              <button type="button" className="secondary" onClick={() => setIsTxModalOpen(true)}>
+                {t('openTxStatusModal')}
+              </button>
+            </div>
+            <p className="muted" role="status" aria-live="polite">
+              {txStatusSummary}
+            </p>
           </section>
         </>
       )}
 
       {isTokenCreatePage && (
         <section className="card tx-card">
-          <h2>{t('txStatus')}</h2>
-          {tx.actionLabel ? (
-            <p>
-              {t('lastAction')}: <strong>{tx.actionLabel}</strong>
-            </p>
-          ) : (
-            <p className="muted">-</p>
-          )}
-
-          {tx.isWalletPrompt && <p>{t('walletPrompt')}</p>}
-          {tx.isConfirming && <p>{t('txPending')}</p>}
-          {tx.isSuccess && <p className="success">{t('txSuccess')}</p>}
-          {tx.errorKey && <p className="error">{t(tx.errorKey)}</p>}
-          {tx.errorDetail && <p className="muted">{tx.errorDetail}</p>}
-          {formError && <p className="error">{formError}</p>}
-
-          {tx.txHash && (
-            <p>
-              {t('txHash')}:&nbsp;
-              <a href={explorerTxUrl(tx.txHash)} target="_blank" rel="noreferrer">
-                {shortenAddress(tx.txHash as Address, 8)}
-              </a>
-            </p>
-          )}
+          <div className="tx-header">
+            <h2>{t('txStatus')}</h2>
+            <button type="button" className="secondary" onClick={() => setIsTxModalOpen(true)}>
+              {t('openTxStatusModal')}
+            </button>
+          </div>
+          <p className="muted" role="status" aria-live="polite">
+            {txStatusSummary}
+          </p>
         </section>
+      )}
+
+      {isTxModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsTxModalOpen(false)}>
+          <section
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('txStatus')}
+            ref={txModalPanelRef}
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="tx-header">
+              <h2>{t('txStatus')}</h2>
+              <button
+                ref={txModalCloseButtonRef}
+                type="button"
+                className="secondary"
+                onClick={() => setIsTxModalOpen(false)}
+              >
+                {t('close')}
+              </button>
+            </div>
+            {renderTxStatusContent()}
+          </section>
+        </div>
       )}
     </div>
   );

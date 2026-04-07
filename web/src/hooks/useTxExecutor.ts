@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
 
 import { getErrorDetails, getFriendlyErrorKey, type FriendlyErrorKey } from '../utils/errors';
@@ -15,7 +15,7 @@ export function useTxExecutor(options?: TxExecutorOptions) {
 
   const [actionLabel, setActionLabel] = useState('');
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
-  const [lastMinedHash, setLastMinedHash] = useState<`0x${string}` | undefined>();
+  const lastMinedHashRef = useRef<`0x${string}` | undefined>(undefined);
   const [errorKey, setErrorKey] = useState<FriendlyErrorKey | null>(null);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
 
@@ -27,13 +27,13 @@ export function useTxExecutor(options?: TxExecutorOptions) {
   });
 
   useEffect(() => {
-    if (!receipt.isSuccess || !txHash || txHash === lastMinedHash) {
+    if (!receipt.isSuccess || !txHash || txHash === lastMinedHashRef.current) {
       return;
     }
 
-    setLastMinedHash(txHash);
+    lastMinedHashRef.current = txHash;
     onMined?.();
-  }, [lastMinedHash, onMined, receipt.isSuccess, txHash]);
+  }, [onMined, receipt.isSuccess, txHash]);
 
   const execute = useCallback(
     async (label: string, request: WriteRequest) => {
