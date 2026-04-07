@@ -54,8 +54,20 @@ jobs:
           FOUNDRY_PROFILE: deploy
           SKIP_VERIFY_INPUT: ${{ vars.SKIP_VERIFY }}
         run: |
+          # Default to skipping verification on CI to avoid "Chain 143 not supported".
+          # Set repository variable SKIP_VERIFY=false only when you explicitly want verification.
           if [[ -n "${SKIP_VERIFY_INPUT:-}" ]]; then
-            export SKIP_VERIFY="$SKIP_VERIFY_INPUT"
+            case "${SKIP_VERIFY_INPUT,,}" in
+              true|false)
+                export SKIP_VERIFY="${SKIP_VERIFY_INPUT,,}"
+                ;;
+              *)
+                echo "Invalid SKIP_VERIFY value: ${SKIP_VERIFY_INPUT}. Use true or false." >&2
+                exit 1
+                ;;
+            esac
+          else
+            export SKIP_VERIFY="true"
           fi
 
           forge script script/UpgradeTokens.s.sol:UpgradeTokens \

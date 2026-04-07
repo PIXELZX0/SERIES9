@@ -131,4 +131,4 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 
 선택 GitHub Variables:
 
-- `SKIP_VERIFY` (`true`면 explorer verify 단계 스킵)
+- `SKIP_VERIFY` (`true`/`false`, 기본값은 `true`로 동작하여 verify를 스킵)
