@@ -49,11 +49,14 @@ jobs:
           FOUNDRY_PROFILE: deploy
         run: forge build
 
-      - name: Deploy to Monad Mainnet and generate Safe Transaction Builder JSON
+      - name: Deploy implementations and generate Safe Transaction Builder JSON
+        id: deploy
         env:
           FOUNDRY_PROFILE: deploy
           SKIP_VERIFY_INPUT: ${{ vars.SKIP_VERIFY }}
         run: |
+          set -euo pipefail
+
           # Default to skipping verification on CI to avoid "Chain 143 not supported".
           # Set repository variable SKIP_VERIFY=false only when you explicitly want verification.
           if [[ -n "${SKIP_VERIFY_INPUT:-}" ]]; then
@@ -70,37 +73,110 @@ jobs:
             export SKIP_VERIFY="true"
           fi
 
-          forge script script/UpgradeTokens.s.sol:UpgradeTokens \
+          SER9_DATA="${SER9_UPGRADE_DATA:-}"
+          MANAGED_DATA="${MANAGED_UPGRADE_DATA:-}"
+          if [[ -z "$SER9_DATA" ]]; then SER9_DATA="0x"; fi
+          if [[ -z "$MANAGED_DATA" ]]; then MANAGED_DATA="0x"; fi
+
+          echo "Deploying SER9 implementation..."
+          SER9_DEPLOY_JSON="$(forge create src/SER9Token.sol:SER9Token \
+            --rpc-url "$MONAD_RPC_URL" \
+            --private-key "$PRIVATE_KEY" \
+            --broadcast \
+            --json)"
+          SER9_IMPL="$(echo "$SER9_DEPLOY_JSON" | jq -r '.deployedTo')"
+          SER9_TX_HASH="$(echo "$SER9_DEPLOY_JSON" | jq -r '.transactionHash')"
+
+          echo "Deploying ManagedToken implementation..."
+          MANAGED_DEPLOY_JSON="$(forge create src/Series9ManagedToken.sol:Series9ManagedToken \
             --rpc-url "$MONAD_RPC_URL" \
             --broadcast \
-            --ffi
-
-      - name: Collect deployment metadata
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          RUN_FILE="broadcast/UpgradeTokens.s.sol/143/run-latest.json"
-          SAFE_JSON="safe-tx-upgrade-tokens.json"
-
-          test -s "$RUN_FILE"
-          test -s "$SAFE_JSON"
-
-          SER9_IMPL="$(jq -r '.transactions[] | select(.transactionType == "CREATE" and .contractName == "SER9Token") | .contractAddress' "$RUN_FILE" | tail -n 1)"
-          MANAGED_IMPL="$(jq -r '.transactions[] | select(.transactionType == "CREATE" and .contractName == "Series9ManagedToken") | .contractAddress' "$RUN_FILE" | tail -n 1)"
+            --private-key "$PRIVATE_KEY" \
+            --json)"
+          MANAGED_IMPL="$(echo "$MANAGED_DEPLOY_JSON" | jq -r '.deployedTo')"
+          MANAGED_TX_HASH="$(echo "$MANAGED_DEPLOY_JSON" | jq -r '.transactionHash')"
 
           if [[ -z "$SER9_IMPL" || "$SER9_IMPL" == "null" ]]; then
-            echo "SER9 implementation address not found in $RUN_FILE" >&2
+            echo "Failed to parse deployed SER9 implementation address" >&2
             exit 1
           fi
           if [[ -z "$MANAGED_IMPL" || "$MANAGED_IMPL" == "null" ]]; then
-            echo "ManagedToken implementation address not found in $RUN_FILE" >&2
+            echo "Failed to parse deployed managed implementation address" >&2
             exit 1
           fi
 
+          if [[ "$SKIP_VERIFY" == "false" ]]; then
+            echo "Verification enabled (best effort)."
+            set +e
+            forge verify-contract "$SER9_IMPL" src/SER9Token.sol:SER9Token \
+              --chain 143 \
+              --verifier blockscout \
+              --verifier-url https://api.socialscan.io/monad/v1/explorer/command_api/contract
+            forge verify-contract "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken \
+              --chain 143 \
+              --verifier blockscout \
+              --verifier-url https://api.socialscan.io/monad/v1/explorer/command_api/contract
+            set -e
+          else
+            echo "Skipping verification (SKIP_VERIFY=true)."
+          fi
+
+          UPGRADE_CALLDATA="$(cast calldata \
+            "upgradeTokens(address,address,bytes,bytes)" \
+            "$SER9_IMPL" \
+            "$MANAGED_IMPL" \
+            "$SER9_DATA" \
+            "$MANAGED_DATA")"
+
           SAFE_JSON_OUT="safe-tx-upgrade-tokens-${GITHUB_REF_NAME}.json"
-          cp "$SAFE_JSON" "$SAFE_JSON_OUT"
+          jq -n \
+            --arg chainId "143" \
+            --arg to "$STAKING_PROXY" \
+            --arg data "$UPGRADE_CALLDATA" \
+            '{
+              version: "1.0",
+              chainId: $chainId,
+              meta: {
+                name: "Series9 Upgrade",
+                description: "Upgrade SER9 and managed token implementations"
+              },
+              transactions: [
+                {
+                  to: $to,
+                  value: "0",
+                  data: $data
+                }
+              ]
+            }' > "$SAFE_JSON_OUT"
+
+          RUN_FILE="release-deploy-${GITHUB_REF_NAME}.json"
+          jq -n \
+            --arg chainId "143" \
+            --arg stakingProxy "$STAKING_PROXY" \
+            --arg ser9Impl "$SER9_IMPL" \
+            --arg managedImpl "$MANAGED_IMPL" \
+            --arg ser9TxHash "$SER9_TX_HASH" \
+            --arg managedTxHash "$MANAGED_TX_HASH" \
+            --arg safeJson "$SAFE_JSON_OUT" \
+            --arg skipVerify "$SKIP_VERIFY" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              chainId: $chainId,
+              stakingProxy: $stakingProxy,
+              implementations: {
+                ser9: {
+                  address: $ser9Impl,
+                  txHash: $ser9TxHash
+                },
+                managedToken: {
+                  address: $managedImpl,
+                  txHash: $managedTxHash
+                }
+              },
+              safeTxJson: $safeJson,
+              skipVerify: $skipVerify,
+              generatedAt: $generatedAt
+            }' > "$RUN_FILE"
 
           echo "run_file=$RUN_FILE" >> "$GITHUB_OUTPUT"
           echo "safe_json=$SAFE_JSON_OUT" >> "$GITHUB_OUTPUT"
@@ -113,16 +189,16 @@ jobs:
           name: monad-release-${{ github.ref_name }}
           if-no-files-found: error
           path: |
-            ${{ steps.meta.outputs.safe_json }}
-            ${{ steps.meta.outputs.run_file }}
+            ${{ steps.deploy.outputs.safe_json }}
+            ${{ steps.deploy.outputs.run_file }}
 
       - name: Attach artifacts to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ steps.meta.outputs.safe_json }}
-            ${{ steps.meta.outputs.run_file }}
+            ${{ steps.deploy.outputs.safe_json }}
+            ${{ steps.deploy.outputs.run_file }}
 
       - name: Write job summary
         run: |
@@ -131,8 +207,8 @@ jobs:
             echo ""
             echo "- Release: \`${{ github.ref_name }}\`"
             echo "- Staking Proxy: \`${STAKING_PROXY}\`"
-            echo "- New SER9 implementation: \`${{ steps.meta.outputs.ser9_impl }}\`"
-            echo "- New ManagedToken implementation: \`${{ steps.meta.outputs.managed_impl }}\`"
-            echo "- Safe Transaction Builder JSON: \`${{ steps.meta.outputs.safe_json }}\`"
+            echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
+            echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
+            echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
             echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -115,7 +115,7 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 `safe.global` Transaction Builder import용 JSON을 자동 생성합니다.
 
 - 워크플로: `.github/workflows/release-monad-mainnet-upgrade.yml`
-- 실행 스크립트: `script/UpgradeTokens.s.sol:UpgradeTokens`
+- 배포 방식: `forge create`로 새 implementation 2개 배포 후 Safe JSON 생성
 - 생성 파일: `safe-tx-upgrade-tokens-<release-tag>.json`
 
 필수 GitHub Secrets:
