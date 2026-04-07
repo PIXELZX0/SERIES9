@@ -115,8 +115,8 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 `safe.global` Transaction Builder import용 JSON을 자동 생성합니다.
 
 - 워크플로: `.github/workflows/release-monad-mainnet-upgrade.yml`
-- 배포 방식: `forge create`로 새 implementation 2개 배포 후 Safe JSON 생성
-- 생성 파일: `safe-tx-upgrade-tokens-<release-tag>.json`
+- 배포 방식: `forge create`로 새 implementation 3개(Staking/SER9/ManagedToken) 배포 후 Safe JSON 생성
+- 생성 파일: `safe-tx-upgrade-all-<release-tag>.json` (트랜잭션 2개: `upgradeToAndCall` + `upgradeTokens`)
 
 필수 GitHub Secrets:
 
@@ -126,6 +126,7 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 
 선택 GitHub Secrets:
 
+- `STAKING_UPGRADE_DATA`
 - `SER9_UPGRADE_DATA`
 - `MANAGED_UPGRADE_DATA`
 

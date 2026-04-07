@@ -21,6 +21,7 @@ jobs:
       MONAD_RPC_URL: ${{ secrets.MONAD_RPC_URL }}
       PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
       STAKING_PROXY: ${{ secrets.STAKING_PROXY }}
+      STAKING_UPGRADE_DATA: ${{ secrets.STAKING_UPGRADE_DATA }}
       SER9_UPGRADE_DATA: ${{ secrets.SER9_UPGRADE_DATA }}
       MANAGED_UPGRADE_DATA: ${{ secrets.MANAGED_UPGRADE_DATA }}
 
@@ -75,8 +76,19 @@ jobs:
 
           SER9_DATA="${SER9_UPGRADE_DATA:-}"
           MANAGED_DATA="${MANAGED_UPGRADE_DATA:-}"
+          STAKING_DATA="${STAKING_UPGRADE_DATA:-}"
           if [[ -z "$SER9_DATA" ]]; then SER9_DATA="0x"; fi
           if [[ -z "$MANAGED_DATA" ]]; then MANAGED_DATA="0x"; fi
+          if [[ -z "$STAKING_DATA" ]]; then STAKING_DATA="0x"; fi
+
+          echo "Deploying Staking implementation..."
+          STAKING_DEPLOY_JSON="$(forge create src/Series9Staking.sol:Series9Staking \
+            --rpc-url "$MONAD_RPC_URL" \
+            --private-key "$PRIVATE_KEY" \
+            --broadcast \
+            --json)"
+          STAKING_IMPL="$(echo "$STAKING_DEPLOY_JSON" | jq -r '.deployedTo')"
+          STAKING_TX_HASH="$(echo "$STAKING_DEPLOY_JSON" | jq -r '.transactionHash')"
 
           echo "Deploying SER9 implementation..."
           SER9_DEPLOY_JSON="$(forge create src/SER9Token.sol:SER9Token \
@@ -100,6 +112,10 @@ jobs:
             echo "Failed to parse deployed SER9 implementation address" >&2
             exit 1
           fi
+          if [[ -z "$STAKING_IMPL" || "$STAKING_IMPL" == "null" ]]; then
+            echo "Failed to parse deployed staking implementation address" >&2
+            exit 1
+          fi
           if [[ -z "$MANAGED_IMPL" || "$MANAGED_IMPL" == "null" ]]; then
             echo "Failed to parse deployed managed implementation address" >&2
             exit 1
@@ -108,6 +124,10 @@ jobs:
           if [[ "$SKIP_VERIFY" == "false" ]]; then
             echo "Verification enabled (best effort)."
             set +e
+            forge verify-contract "$STAKING_IMPL" src/Series9Staking.sol:Series9Staking \
+              --chain 143 \
+              --verifier blockscout \
+              --verifier-url https://api.socialscan.io/monad/v1/explorer/command_api/contract
             forge verify-contract "$SER9_IMPL" src/SER9Token.sol:SER9Token \
               --chain 143 \
               --verifier blockscout \
@@ -121,30 +141,41 @@ jobs:
             echo "Skipping verification (SKIP_VERIFY=true)."
           fi
 
-          UPGRADE_CALLDATA="$(cast calldata \
+          STAKING_UPGRADE_CALLDATA="$(cast calldata \
+            "upgradeToAndCall(address,bytes)" \
+            "$STAKING_IMPL" \
+            "$STAKING_DATA")"
+
+          UPGRADE_TOKENS_CALLDATA="$(cast calldata \
             "upgradeTokens(address,address,bytes,bytes)" \
             "$SER9_IMPL" \
             "$MANAGED_IMPL" \
             "$SER9_DATA" \
             "$MANAGED_DATA")"
 
-          SAFE_JSON_OUT="safe-tx-upgrade-tokens-${GITHUB_REF_NAME}.json"
+          SAFE_JSON_OUT="safe-tx-upgrade-all-${GITHUB_REF_NAME}.json"
           jq -n \
             --arg chainId "143" \
             --arg to "$STAKING_PROXY" \
-            --arg data "$UPGRADE_CALLDATA" \
+            --arg stakingData "$STAKING_UPGRADE_CALLDATA" \
+            --arg tokensData "$UPGRADE_TOKENS_CALLDATA" \
             '{
               version: "1.0",
               chainId: $chainId,
               meta: {
-                name: "Series9 Upgrade",
-                description: "Upgrade SER9 and managed token implementations"
+                name: "Series9 Upgrade All",
+                description: "Upgrade Staking, SER9 and managed token implementations"
               },
               transactions: [
                 {
                   to: $to,
                   value: "0",
-                  data: $data
+                  data: $stakingData
+                },
+                {
+                  to: $to,
+                  value: "0",
+                  data: $tokensData
                 }
               ]
             }' > "$SAFE_JSON_OUT"
@@ -153,8 +184,10 @@ jobs:
           jq -n \
             --arg chainId "143" \
             --arg stakingProxy "$STAKING_PROXY" \
+            --arg stakingImpl "$STAKING_IMPL" \
             --arg ser9Impl "$SER9_IMPL" \
             --arg managedImpl "$MANAGED_IMPL" \
+            --arg stakingTxHash "$STAKING_TX_HASH" \
             --arg ser9TxHash "$SER9_TX_HASH" \
             --arg managedTxHash "$MANAGED_TX_HASH" \
             --arg safeJson "$SAFE_JSON_OUT" \
@@ -164,6 +197,10 @@ jobs:
               chainId: $chainId,
               stakingProxy: $stakingProxy,
               implementations: {
+                staking: {
+                  address: $stakingImpl,
+                  txHash: $stakingTxHash
+                },
                 ser9: {
                   address: $ser9Impl,
                   txHash: $ser9TxHash
@@ -180,6 +217,7 @@ jobs:
 
           echo "run_file=$RUN_FILE" >> "$GITHUB_OUTPUT"
           echo "safe_json=$SAFE_JSON_OUT" >> "$GITHUB_OUTPUT"
+          echo "staking_impl=$STAKING_IMPL" >> "$GITHUB_OUTPUT"
           echo "ser9_impl=$SER9_IMPL" >> "$GITHUB_OUTPUT"
           echo "managed_impl=$MANAGED_IMPL" >> "$GITHUB_OUTPUT"
 
@@ -207,6 +245,7 @@ jobs:
             echo ""
             echo "- Release: \`${{ github.ref_name }}\`"
             echo "- Staking Proxy: \`${STAKING_PROXY}\`"
+            echo "- New Staking implementation: \`${{ steps.deploy.outputs.staking_impl }}\`"
             echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
             echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
             echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
