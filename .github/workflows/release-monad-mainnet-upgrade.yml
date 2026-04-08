@@ -55,11 +55,12 @@ jobs:
         env:
           FOUNDRY_PROFILE: deploy
           SKIP_VERIFY_INPUT: ${{ vars.SKIP_VERIFY }}
+          MONADVISION_VERIFIER_URL: https://sourcify-api-monad.blockvision.org/
         run: |
           set -euo pipefail
 
-          # Default to skipping verification on CI to avoid "Chain 143 not supported".
-          # Set repository variable SKIP_VERIFY=false only when you explicitly want verification.
+          # Verify on MonadVision by default.
+          # Set repository variable SKIP_VERIFY=true only when you explicitly want to skip verification.
           if [[ -n "${SKIP_VERIFY_INPUT:-}" ]]; then
             case "${SKIP_VERIFY_INPUT,,}" in
               true|false)
@@ -71,7 +72,7 @@ jobs:
                 ;;
             esac
           else
-            export SKIP_VERIFY="true"
+            export SKIP_VERIFY="false"
           fi
 
           SER9_DATA="${SER9_UPGRADE_DATA:-}"
@@ -122,21 +123,19 @@ jobs:
           fi
 
           if [[ "$SKIP_VERIFY" == "false" ]]; then
-            echo "Verification enabled (best effort)."
-            set +e
+            echo "Verifying contracts on MonadVision via Sourcify..."
             forge verify-contract "$STAKING_IMPL" src/Series9Staking.sol:Series9Staking \
               --chain 143 \
-              --verifier blockscout \
-              --verifier-url https://api.socialscan.io/monad/v1/explorer/command_api/contract
+              --verifier sourcify \
+              --verifier-url "$MONADVISION_VERIFIER_URL"
             forge verify-contract "$SER9_IMPL" src/SER9Token.sol:SER9Token \
               --chain 143 \
-              --verifier blockscout \
-              --verifier-url https://api.socialscan.io/monad/v1/explorer/command_api/contract
+              --verifier sourcify \
+              --verifier-url "$MONADVISION_VERIFIER_URL"
             forge verify-contract "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken \
               --chain 143 \
-              --verifier blockscout \
-              --verifier-url https://api.socialscan.io/monad/v1/explorer/command_api/contract
-            set -e
+              --verifier sourcify \
+              --verifier-url "$MONADVISION_VERIFIER_URL"
           else
             echo "Skipping verification (SKIP_VERIFY=true)."
           fi
@@ -212,6 +211,10 @@ jobs:
               },
               safeTxJson: $safeJson,
               skipVerify: $skipVerify,
+              verifier: {
+                provider: "MonadVision",
+                url: "https://sourcify-api-monad.blockvision.org/"
+              },
               generatedAt: $generatedAt
             }' > "$RUN_FILE"
 
@@ -245,9 +248,11 @@ jobs:
             echo ""
             echo "- Release: \`${{ github.ref_name }}\`"
             echo "- Staking Proxy: \`${STAKING_PROXY}\`"
-            echo "- New Staking implementation: \`${{ steps.deploy.outputs.staking_impl }}\`"
-            echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
-            echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
-            echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
-            echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
-          } >> "$GITHUB_STEP_SUMMARY"
+             echo "- New Staking implementation: \`${{ steps.deploy.outputs.staking_impl }}\`"
+             echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
+             echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
+             echo "- Verification provider: \`MonadVision (Sourcify)\`"
+             echo "- Verification URL: \`https://sourcify-api-monad.blockvision.org/\`"
+             echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
+             echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
+           } >> "$GITHUB_STEP_SUMMARY"
