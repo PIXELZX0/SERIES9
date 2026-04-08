@@ -1,7 +1,6 @@
 export const en = {
   appTitle: 'SER9 Full DApp',
-  appSubtitle:
-    'Monad Mainnet staking and managed-token control panel for users and creators.',
+  appSubtitle: 'Monad Mainnet SER9 / MONAD staking panel.',
   connectWallet: 'Connect Wallet',
   walletConnectTitle: 'Connect Wallet',
   walletConnectDescription: 'Choose a wallet to continue.',

@@ -1,6 +1,6 @@
 export const ko = {
   appTitle: 'SER9 풀 DApp',
-  appSubtitle: 'Monad Mainnet 기반 스테이킹/관리토큰 사용자·생성자 운영 패널입니다.',
+  appSubtitle: 'Monad Mainnet 기반 SER9 / MONAD 스테이킹 패널입니다.',
   connectWallet: '지갑 연결',
   walletConnectTitle: '지갑 연결',
   walletConnectDescription: '연결할 지갑을 선택하세요.',
