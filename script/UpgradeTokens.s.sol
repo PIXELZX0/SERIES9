@@ -19,7 +19,7 @@ import {Series9Staking} from "../src/Series9Staking.sol";
 ///   PRIVATE_KEY=0x... STAKING_PROXY=0x... forge script script/UpgradeTokens.s.sol \
 ///     --rpc-url $MONAD_RPC_URL --broadcast --ffi --profile deploy
 contract UpgradeTokens is Script {
-    string constant VERIFIER_URL = "https://api.socialscan.io/monad/v1/explorer/command_api/contract";
+    string constant VERIFIER_URL = "https://sourcify-api-monad.blockvision.org/api";
     string constant CHAIN_ID = "143";
 
     function run() external {
@@ -80,23 +80,25 @@ contract UpgradeTokens is Script {
     }
 
     function _verify(address contractAddr, string memory contractName) internal {
-        string[] memory cmd = new string[](10);
+        string[] memory cmd = new string[](12);
         cmd[0] = "forge";
         cmd[1] = "verify-contract";
         cmd[2] = vm.toString(contractAddr);
         cmd[3] = contractName;
         cmd[4] = "--chain";
         cmd[5] = CHAIN_ID;
-        cmd[6] = "--verifier";
-        cmd[7] = "blockscout";
-        cmd[8] = "--verifier-url";
-        cmd[9] = VERIFIER_URL;
+        cmd[6] = "--rpc-url";
+        cmd[7] = vm.envString("MONAD_RPC_URL");
+        cmd[8] = "--verifier";
+        cmd[9] = "sourcify";
+        cmd[10] = "--verifier-url";
+        cmd[11] = VERIFIER_URL;
 
         console.log("Verifying:", contractName, "at", contractAddr);
         try vm.ffi(cmd) returns (bytes memory result) {
             console.log(string(result));
         } catch {
-            console.log("  [WARN] Verification failed, verify manually");
+            console.log("  [WARN] MonadVision verification failed, verify manually");
         }
     }
 }

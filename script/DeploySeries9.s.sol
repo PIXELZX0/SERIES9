@@ -21,7 +21,7 @@ import {Series9Staking} from "../src/Series9Staking.sol";
 ///   PRIVATE_KEY=0x... SAFE_ADDRESS=0x... PERMIT2_ADDRESS=0x... forge script script/DeploySeries9.s.sol \
 ///     --rpc-url $MONAD_RPC_URL --broadcast --ffi --profile deploy
 contract DeploySeries9 is Script {
-    string constant VERIFIER_URL = "https://api.socialscan.io/monad/v1/explorer/command_api/contract";
+    string constant VERIFIER_URL = "https://sourcify-api-monad.blockvision.org/api";
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -120,18 +120,6 @@ contract DeploySeries9 is Script {
         string[] memory cmd;
 
         if (bytes(constructorArgs).length == 0) {
-            cmd = new string[](10);
-            cmd[0] = "forge";
-            cmd[1] = "verify-contract";
-            cmd[2] = vm.toString(contractAddr);
-            cmd[3] = contractName;
-            cmd[4] = "--chain";
-            cmd[5] = "143";
-            cmd[6] = "--verifier";
-            cmd[7] = "blockscout";
-            cmd[8] = "--verifier-url";
-            cmd[9] = VERIFIER_URL;
-        } else {
             cmd = new string[](12);
             cmd[0] = "forge";
             cmd[1] = "verify-contract";
@@ -139,19 +127,35 @@ contract DeploySeries9 is Script {
             cmd[3] = contractName;
             cmd[4] = "--chain";
             cmd[5] = "143";
-            cmd[6] = "--verifier";
-            cmd[7] = "blockscout";
-            cmd[8] = "--verifier-url";
-            cmd[9] = VERIFIER_URL;
-            cmd[10] = "--constructor-args";
-            cmd[11] = constructorArgs;
+            cmd[6] = "--rpc-url";
+            cmd[7] = vm.envString("MONAD_RPC_URL");
+            cmd[8] = "--verifier";
+            cmd[9] = "sourcify";
+            cmd[10] = "--verifier-url";
+            cmd[11] = VERIFIER_URL;
+        } else {
+            cmd = new string[](14);
+            cmd[0] = "forge";
+            cmd[1] = "verify-contract";
+            cmd[2] = vm.toString(contractAddr);
+            cmd[3] = contractName;
+            cmd[4] = "--chain";
+            cmd[5] = "143";
+            cmd[6] = "--rpc-url";
+            cmd[7] = vm.envString("MONAD_RPC_URL");
+            cmd[8] = "--verifier";
+            cmd[9] = "sourcify";
+            cmd[10] = "--verifier-url";
+            cmd[11] = VERIFIER_URL;
+            cmd[12] = "--constructor-args";
+            cmd[13] = constructorArgs;
         }
 
         console.log("Verifying:", contractName, "at", contractAddr);
         try vm.ffi(cmd) returns (bytes memory result) {
             console.log(string(result));
         } catch {
-            console.log("  [WARN] Verification failed, verify manually");
+            console.log("  [WARN] MonadVision verification failed, verify manually");
         }
     }
 }
