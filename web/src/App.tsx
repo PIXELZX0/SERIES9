@@ -18,15 +18,10 @@ import { managedTokenAbi, ser9Abi, stakingAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
 import { type MessageKey } from './i18n';
 import { useI18n } from './i18n/useI18n';
-import { equalsAddress, formatTokenAmount, shortenAddress } from './utils/format';
-import {
-  parseAddressStrict,
-  parseMaxMultiplierBps,
-  parseNonNegativeBps,
-  parseOptionalTokenAmountOrZero,
-  parsePositiveTokenAmount,
-  parseRampStartBps,
-} from './utils/validation';
+import { formatTokenAmount, shortenAddress } from './utils/format';
+import { parsePositiveTokenAmount } from './utils/validation';
+
+type ActionModalType = 'ser9Stake' | 'ser9Unstake' | 'monadStake' | 'monadUnstake';
 
 type TokenConfigValue = {
   exists: boolean;
@@ -136,15 +131,8 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ManagedTokenCard({
-  token,
-  userAddress,
-}: {
-  token: Address;
-  userAddress: Address | undefined;
-}) {
+function ManagedTokenCard({ token }: { token: Address }) {
   const { t } = useI18n();
-  const scopedUser = userAddress ?? zeroAddress;
 
   const tokenConfigRead = useReadContract({
     address: contracts.stakingProxy,
@@ -209,36 +197,6 @@ function ManagedTokenCard({
     args: [token],
   });
 
-  const userBalanceRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'balanceOf',
-    args: [scopedUser],
-    query: {
-      enabled: Boolean(userAddress),
-    },
-  });
-
-  const feeStakeRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'feeStakeBalance',
-    args: [token, scopedUser],
-    query: {
-      enabled: Boolean(userAddress),
-    },
-  });
-
-  const pendingFeeRewardRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'pendingFeeRewards',
-    args: [token, scopedUser],
-    query: {
-      enabled: Boolean(userAddress),
-    },
-  });
-
   const tokenConfig = parseTokenConfig(tokenConfigRead.data);
   const tokenMintPolicy = parseTokenMintPolicy(tokenMintPolicyRead.data);
   const symbol = symbolRead.data ?? '-';
@@ -254,10 +212,6 @@ function ManagedTokenCard({
         <div>
           <span>{t('tokenAddress')}</span>
           <strong>{shortenAddress(token)}</strong>
-        </div>
-        <div>
-          <span>{t('creator')}</span>
-          <strong>{shortenAddress(tokenConfig?.creator)}</strong>
         </div>
         <div>
           <span>{t('mintRate')}</span>
@@ -301,18 +255,6 @@ function ManagedTokenCard({
           <span>{t('decimals')}</span>
           <strong>{decimalsRead.data?.toString() ?? '18'}</strong>
         </div>
-        <div>
-          <span>{t('yourTokenBalance')}</span>
-          <strong>{formatTokenAmount(userBalanceRead.data)}</strong>
-        </div>
-        <div>
-          <span>{t('yourFeeStake')}</span>
-          <strong>{formatTokenAmount(feeStakeRead.data)}</strong>
-        </div>
-        <div>
-          <span>{t('yourPendingFeeRewards')}</span>
-          <strong>{formatTokenAmount(pendingFeeRewardRead.data)}</strong>
-        </div>
       </div>
     </article>
   );
@@ -340,51 +282,19 @@ export default function App() {
   const [connectingConnectorUid, setConnectingConnectorUid] = useState<string | null>(null);
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
   const [isTxModalOpen, setIsTxModalOpen] = useState(false);
-  const [showAdvancedActions, setShowAdvancedActions] = useState(false);
+  const [activeActionModal, setActiveActionModal] = useState<ActionModalType | null>(null);
   const walletModalPanelRef = useRef<HTMLElement | null>(null);
   const walletModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const txModalPanelRef = useRef<HTMLElement | null>(null);
   const txModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
-
-  const [ser9ApproveAmount, setSer9ApproveAmount] = useState('');
-  const [ser9ApproveSpender, setSer9ApproveSpender] = useState<string>(contracts.stakingProxy);
-
-  const [managedApproveToken, setManagedApproveToken] = useState('');
-  const [managedApproveAmount, setManagedApproveAmount] = useState('');
-  const [managedApproveSpender, setManagedApproveSpender] = useState<string>(contracts.stakingProxy);
+  const actionModalPanelRef = useRef<HTMLElement | null>(null);
+  const actionModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const [quickStakeAmount, setQuickStakeAmount] = useState('');
   const [monadStakeAmount, setMonadStakeAmount] = useState('');
   const [monadUnstakeAmount, setMonadUnstakeAmount] = useState('');
 
-  const [stakeAmount, setStakeAmount] = useState('');
   const [unstakeAmount, setUnstakeAmount] = useState('');
-
-  const [createName, setCreateName] = useState('');
-  const [createSymbol, setCreateSymbol] = useState('');
-  const [createMintRate, setCreateMintRate] = useState('');
-  const [createMaxSupply, setCreateMaxSupply] = useState('');
-  const [createMaxMultiplierBps, setCreateMaxMultiplierBps] = useState('10000');
-  const [createRampStartBps, setCreateRampStartBps] = useState('0');
-  const [createFeeEnabled, setCreateFeeEnabled] = useState(false);
-  const [createFeeBps, setCreateFeeBps] = useState('0');
-
-  const [mintToken, setMintToken] = useState('');
-  const [mintAmount, setMintAmount] = useState('');
-
-  const [burnToken, setBurnToken] = useState('');
-  const [burnAmount, setBurnAmount] = useState('');
-
-  const [feeStakeToken, setFeeStakeToken] = useState('');
-  const [feeStakeAmount, setFeeStakeAmount] = useState('');
-
-  const [feeUnstakeToken, setFeeUnstakeToken] = useState('');
-  const [feeUnstakeAmount, setFeeUnstakeAmount] = useState('');
-
-  const [feeClaimToken, setFeeClaimToken] = useState('');
-
-  const [creatorToken, setCreatorToken] = useState('');
-  const [creatorFeeBps, setCreatorFeeBps] = useState('');
 
   const normalizedConnectedAddress = address ? getAddress(address) : undefined;
   const addressForReads = normalizedConnectedAddress ?? zeroAddress;
@@ -425,16 +335,6 @@ export default function App() {
     functionName: 'managedTokensLength',
   });
 
-  const ser9BalanceRead = useReadContract({
-    address: contracts.ser9Proxy,
-    abi: ser9Abi,
-    functionName: 'balanceOf',
-    args: [addressForReads],
-    query: {
-      enabled: Boolean(normalizedConnectedAddress),
-    },
-  });
-
   const ser9AllowanceRead = useReadContract({
     address: contracts.ser9Proxy,
     abi: ser9Abi,
@@ -455,50 +355,10 @@ export default function App() {
     },
   });
 
-  const userLockedRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'lockedBalance',
-    args: [addressForReads],
-    query: {
-      enabled: Boolean(normalizedConnectedAddress),
-    },
-  });
-
-  const userUnlockedRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'unlockedStake',
-    args: [addressForReads],
-    query: {
-      enabled: Boolean(normalizedConnectedAddress),
-    },
-  });
-
   const userEarnedRead = useReadContract({
     address: contracts.stakingProxy,
     abi: stakingAbi,
     functionName: 'earned',
-    args: [addressForReads],
-    query: {
-      enabled: Boolean(normalizedConnectedAddress),
-    },
-  });
-
-  const userUnusedRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'availableUnusedLocked',
-    args: [addressForReads],
-    query: {
-      enabled: Boolean(normalizedConnectedAddress),
-    },
-  });
-
-  const userUsedRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'usedLockedSer9',
     args: [addressForReads],
     query: {
       enabled: Boolean(normalizedConnectedAddress),
@@ -574,27 +434,7 @@ export default function App() {
     return items;
   }, [managedTokenListRead.data]);
 
-  const creatorTokenAddress = isAddress(creatorToken) ? getAddress(creatorToken) : undefined;
-  const mintTokenAddress = isAddress(mintToken) ? getAddress(mintToken) : undefined;
-
-  const creatorTokenConfigRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'tokenConfigs',
-    args: creatorTokenAddress ? [creatorTokenAddress] : undefined,
-    query: {
-      enabled: Boolean(creatorTokenAddress),
-    },
-  });
-
-  const creatorTokenConfig = parseTokenConfig(creatorTokenConfigRead.data);
-  const connectedIsCreator = equalsAddress(creatorTokenConfig?.creator, normalizedConnectedAddress);
-
   const onWrongChain = isConnected && chainId !== networkConfig.chainId;
-
-  const datalistTokens = useMemo(() => {
-    return managedTokens.map((token) => token.toLowerCase());
-  }, [managedTokens]);
 
   const parsedQuickStakeAmount = useMemo(() => {
     const amount = quickStakeAmount.trim();
@@ -609,46 +449,12 @@ export default function App() {
     }
   }, [quickStakeAmount]);
 
-  const parsedMintAmount = useMemo(() => {
-    const amount = mintAmount.trim();
-    if (!amount) {
-      return null;
-    }
-
-    try {
-      return parsePositiveTokenAmount(amount);
-    } catch {
-      return null;
-    }
-  }, [mintAmount]);
-
-  const previewMintCollateralRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'previewMintCollateral',
-    args:
-      mintTokenAddress && parsedMintAmount !== null
-        ? [mintTokenAddress, parsedMintAmount]
-        : undefined,
-    query: {
-      enabled: Boolean(mintTokenAddress && parsedMintAmount !== null),
-    },
-  });
-
   const quickStakeNeedsApproval =
     parsedQuickStakeAmount !== null && (ser9AllowanceRead.data ?? 0n) < parsedQuickStakeAmount;
-  const quickStakeSliderValue = useMemo(() => {
-    const parsed = Number(quickStakeAmount);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      return 0;
-    }
-
-    return Math.min(parsed, 1000);
-  }, [quickStakeAmount]);
   const normalizedPathname = (typeof window !== 'undefined' ? window.location.pathname : '/')
     .replace(/\/+$/, '') || '/';
-  const isTokensListPage = normalizedPathname === '/tokens';
-  const isTokenCreatePage = normalizedPathname === '/tokens/create';
+  const isTokensListPage = normalizedPathname === '/tokens' || normalizedPathname === '/tokens/create';
+  const isTokenCreatePage = false;
   const isHomePage = !isTokensListPage && !isTokenCreatePage;
   const hasTxActivity =
     tx.isWalletPrompt ||
@@ -658,14 +464,6 @@ export default function App() {
     Boolean(tx.errorDetail) ||
     Boolean(formError) ||
     Boolean(tx.txHash);
-
-  const txStatusSummary =
-    formError ??
-    (tx.errorKey ? t(tx.errorKey) : null) ??
-    (tx.isSuccess ? t('txSuccess') : null) ??
-    (tx.isConfirming ? t('txPending') : null) ??
-    (tx.isWalletPrompt ? t('walletPrompt') : null) ??
-    '-';
 
   useEffect(() => {
     if (hasTxActivity) {
@@ -768,7 +566,54 @@ export default function App() {
   }, [isTxModalOpen]);
 
   useEffect(() => {
-    if (!isWalletModalOpen && !isTxModalOpen) {
+    if (!activeActionModal) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setActiveActionModal(null);
+        return;
+      }
+
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const panel = actionModalPanelRef.current;
+      if (!panel) {
+        return;
+      }
+
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+
+      if (focusable.length === 0) {
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [activeActionModal]);
+
+  useEffect(() => {
+    if (!isWalletModalOpen && !isTxModalOpen && !activeActionModal) {
       return;
     }
 
@@ -776,6 +621,8 @@ export default function App() {
     document.body.style.overflow = 'hidden';
     if (isWalletModalOpen) {
       walletModalCloseButtonRef.current?.focus();
+    } else if (activeActionModal) {
+      actionModalCloseButtonRef.current?.focus();
     } else {
       txModalCloseButtonRef.current?.focus();
     }
@@ -783,7 +630,7 @@ export default function App() {
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [isWalletModalOpen, isTxModalOpen]);
+  }, [activeActionModal, isWalletModalOpen, isTxModalOpen]);
 
   function mapLocalError(error: unknown): string {
     if (!(error instanceof Error)) {
@@ -859,9 +706,10 @@ export default function App() {
 
     try {
       const request = requestFactory();
-      await tx.execute(t(actionKey), request);
+      return await tx.execute(t(actionKey), request);
     } catch (error) {
       setFormError(mapLocalError(error));
+      return undefined;
     }
   }
 
@@ -900,41 +748,12 @@ export default function App() {
     );
   }
 
-  function createManagedTokenRequest() {
-    const name = createName.trim();
-    const symbol = createSymbol.trim();
-
-    if (!name || !symbol) {
-      throw new Error('INVALID_AMOUNT');
-    }
-
-    return {
-      address: contracts.stakingProxy,
-      abi: stakingAbi,
-      functionName: 'createManagedTokenWithPolicy' as const,
-      args: [
-        name,
-        symbol,
-        parsePositiveTokenAmount(createMintRate),
-        createFeeEnabled,
-        createFeeEnabled ? parseNonNegativeBps(createFeeBps) : 0,
-        parseOptionalTokenAmountOrZero(createMaxSupply),
-        parseMaxMultiplierBps(createMaxMultiplierBps),
-        parseRampStartBps(createRampStartBps),
-      ] as const,
-    };
-  }
-
-  async function runQuickStakeFlow() {
-    await runStakeWithAutoApprove(quickStakeAmount);
-  }
-
   async function runStakeWithAutoApprove(rawAmount: string) {
     resetErrors();
 
     if (!normalizedConnectedAddress) {
       setFormError(t('connectHint'));
-      return;
+      return undefined;
     }
 
     try {
@@ -942,15 +761,19 @@ export default function App() {
       const allowance = ser9AllowanceRead.data ?? 0n;
 
       if (allowance < amount) {
-        await tx.execute(t('ser9Approve'), {
+        const approveHash = await tx.execute(t('ser9Approve'), {
           address: contracts.ser9Proxy,
           abi: ser9Abi,
           functionName: 'approve',
           args: [contracts.stakingProxy, maxUint256],
         });
+
+        if (!approveHash) {
+          return undefined;
+        }
       }
 
-      await tx.execute(t('stake'), {
+      return await tx.execute(t('stake'), {
         address: contracts.stakingProxy,
         abi: stakingAbi,
         functionName: 'stake',
@@ -958,6 +781,7 @@ export default function App() {
       });
     } catch (error) {
       setFormError(mapLocalError(error));
+      return undefined;
     }
   }
 
@@ -965,7 +789,7 @@ export default function App() {
     resetErrors();
 
     try {
-      await tx.executeSend(t('monadStake'), {
+      return await tx.executeSend(t('monadStake'), {
         to: contracts.stakingProxy,
         value: parsePositiveTokenAmount(monadStakeAmount),
         data: encodeFunctionData({
@@ -976,7 +800,121 @@ export default function App() {
       });
     } catch (error) {
       setFormError(mapLocalError(error));
+      return undefined;
     }
+  }
+
+  async function submitActionModal() {
+    if (!activeActionModal) {
+      return;
+    }
+
+    if (activeActionModal === 'ser9Stake') {
+      const hash = await runStakeWithAutoApprove(quickStakeAmount);
+      if (hash) {
+        setActiveActionModal(null);
+      }
+      return;
+    }
+
+    if (activeActionModal === 'ser9Unstake') {
+      const hash = await runWrite('unstake', () => ({
+        address: contracts.stakingProxy,
+        abi: stakingAbi,
+        functionName: 'unstake',
+        args: [parsePositiveTokenAmount(unstakeAmount)],
+      }));
+      if (hash) {
+        setActiveActionModal(null);
+      }
+      return;
+    }
+
+    if (activeActionModal === 'monadStake') {
+      const hash = await runMonadStakeFlow();
+      if (hash) {
+        setActiveActionModal(null);
+      }
+      return;
+    }
+
+    const hash = await runWrite('requestMonadUnstake', () => ({
+      address: contracts.stakingProxy,
+      abi: stakingAbi,
+      functionName: 'requestUnstakeMonad' as const,
+      args: [parsePositiveTokenAmount(monadUnstakeAmount)] as const,
+    }));
+    if (hash) {
+      setActiveActionModal(null);
+    }
+  }
+
+  function getActionModalTitle(action: ActionModalType) {
+    switch (action) {
+      case 'ser9Stake':
+        return t('stake');
+      case 'ser9Unstake':
+        return t('unstake');
+      case 'monadStake':
+        return t('monadStake');
+      case 'monadUnstake':
+        return t('requestMonadUnstake');
+    }
+  }
+
+  function renderActionModalForm() {
+    if (!activeActionModal) {
+      return null;
+    }
+
+    if (activeActionModal === 'ser9Stake') {
+      return (
+        <form className="single-form" onSubmit={(event) => onSubmit(event, submitActionModal)}>
+          <input value={quickStakeAmount} onChange={(event) => setQuickStakeAmount(event.target.value)} placeholder={t('amount')} />
+          {isConnected ? (
+            <p className="muted">
+              {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
+            </p>
+          ) : (
+            <p className="muted">{t('connectHint')}</p>
+          )}
+          <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
+            {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
+          </button>
+        </form>
+      );
+    }
+
+    if (activeActionModal === 'ser9Unstake') {
+      return (
+        <form className="single-form" onSubmit={(event) => onSubmit(event, submitActionModal)}>
+          <input value={unstakeAmount} onChange={(event) => setUnstakeAmount(event.target.value)} placeholder={t('amount')} />
+          <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
+            {t('unstake')}
+          </button>
+        </form>
+      );
+    }
+
+    if (activeActionModal === 'monadStake') {
+      return (
+        <form className="single-form" onSubmit={(event) => onSubmit(event, submitActionModal)}>
+          <input value={monadStakeAmount} onChange={(event) => setMonadStakeAmount(event.target.value)} placeholder={t('amount')} />
+          <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
+            {t('monadStake')}
+          </button>
+        </form>
+      );
+    }
+
+    return (
+      <form className="single-form" onSubmit={(event) => onSubmit(event, submitActionModal)}>
+        <input value={monadUnstakeAmount} onChange={(event) => setMonadUnstakeAmount(event.target.value)} placeholder={t('amount')} />
+        <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
+          {t('requestMonadUnstake')}
+        </button>
+      </form>
+    );
   }
 
   return (
@@ -989,9 +927,6 @@ export default function App() {
             </a>
             <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
               {t('navTokens')}
-            </a>
-            <a href="/tokens/create" className={isTokenCreatePage ? 'active' : ''}>
-              {t('navCreateToken')}
             </a>
           </nav>
           <h1>{t('appTitle')}</h1>
@@ -1058,10 +993,6 @@ export default function App() {
           <strong>{networkConfig.chainId}</strong>
         </div>
         <div>
-          <span>Role</span>
-          <strong>{connectedIsCreator ? t('roleCreator') : t('roleUser')}</strong>
-        </div>
-        <div>
           <button type="button" className="secondary" onClick={() => void queryClient.invalidateQueries()}>
             {t('refresh')}
           </button>
@@ -1109,33 +1040,9 @@ export default function App() {
           <section className="card">
             <h2>{t('quickStakeSection')}</h2>
             <p className="muted">{t('quickStakeHint')}</p>
-            <div className="slider-wrap">
-              <div className="slider-head">
-                <label htmlFor="quick-stake-slider">{t('quickStakeSliderLabel')}</label>
-                <strong>{quickStakeSliderValue}</strong>
-              </div>
-              <input
-                id="quick-stake-slider"
-                type="range"
-                min="0"
-                max="1000"
-                step="1"
-                value={quickStakeSliderValue}
-                onChange={(event) => setQuickStakeAmount(event.target.value)}
-                disabled={!isConnected || onWrongChain}
-              />
-              <small>{t('quickStakeSliderHint')}</small>
-            </div>
-            <form className="single-form" onSubmit={(event) => onSubmit(event, runQuickStakeFlow)}>
-              <input
-                value={quickStakeAmount}
-                onChange={(event) => setQuickStakeAmount(event.target.value)}
-                placeholder={t('amount')}
-              />
-              <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
-                {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
-              </button>
-            </form>
+            <button type="button" className="primary" disabled={!isConnected || onWrongChain} onClick={() => setActiveActionModal('ser9Stake')}>
+              {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
+            </button>
             {isConnected ? (
               <p className="muted">
                 {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
@@ -1145,45 +1052,6 @@ export default function App() {
             )}
           </section>
         </>
-      )}
-
-      {isTokenCreatePage && (
-        <section className="card">
-          <h2>{t('tokensCreatePageTitle')}</h2>
-          <p className="muted">{t('tokensCreatePageHint')}</p>
-          <form
-            className="single-form"
-            onSubmit={(event) => onSubmit(event, () => runWrite('createManagedToken', createManagedTokenRequest))}
-          >
-            <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder={t('tokenName')} />
-            <input value={createSymbol} onChange={(e) => setCreateSymbol(e.target.value)} placeholder={t('tokenSymbol')} />
-            <input value={createMintRate} onChange={(e) => setCreateMintRate(e.target.value)} placeholder={t('mintRatePerToken')} />
-            <input value={createMaxSupply} onChange={(e) => setCreateMaxSupply(e.target.value)} placeholder={t('maxSupplyOptional')} />
-            <input
-              value={createMaxMultiplierBps}
-              onChange={(e) => setCreateMaxMultiplierBps(e.target.value)}
-              placeholder={t('maxMultiplierBpsInput')}
-            />
-            <input
-              value={createRampStartBps}
-              onChange={(e) => setCreateRampStartBps(e.target.value)}
-              placeholder={t('rampStartBpsInput')}
-            />
-            <label className="checkbox-row">
-              <input type="checkbox" checked={createFeeEnabled} onChange={(e) => setCreateFeeEnabled(e.target.checked)} />
-              {t('enableFee')}
-            </label>
-            <input
-              value={createFeeBps}
-              onChange={(e) => setCreateFeeBps(e.target.value)}
-              placeholder={t('initialFeeBps')}
-              disabled={!createFeeEnabled}
-            />
-            <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
-              {t('createManagedToken')}
-            </button>
-          </form>
-        </section>
       )}
 
       {isHomePage && (
@@ -1197,26 +1065,13 @@ export default function App() {
                 <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
               </div>
               <div className="status-actions">
-                <form className="single-form" onSubmit={(event) => onSubmit(event, () => runStakeWithAutoApprove(stakeAmount))}>
-                  <h3>{t('stake')}</h3>
-                  <input value={stakeAmount} onChange={(event) => setStakeAmount(event.target.value)} placeholder={t('amount')} />
-                  <button type="submit" disabled={!isConnected || onWrongChain}>
-                    {t('stake')}
-                  </button>
-                </form>
+                <button type="button" onClick={() => setActiveActionModal('ser9Stake')} disabled={!isConnected || onWrongChain}>
+                  {t('stake')}
+                </button>
 
-                <form onSubmit={(event) => onSubmit(event, () => runWrite('unstake', () => ({
-                  address: contracts.stakingProxy,
-                  abi: stakingAbi,
-                  functionName: 'unstake',
-                  args: [parsePositiveTokenAmount(unstakeAmount)],
-                })))}>
-                  <h3>{t('unstake')}</h3>
-                  <input value={unstakeAmount} onChange={(event) => setUnstakeAmount(event.target.value)} placeholder={t('amount')} />
-                  <button type="submit" disabled={!isConnected || onWrongChain}>
-                    {t('unstake')}
-                  </button>
-                </form>
+                <button type="button" onClick={() => setActiveActionModal('ser9Unstake')} disabled={!isConnected || onWrongChain}>
+                  {t('unstake')}
+                </button>
 
                 <form onSubmit={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({
                   address: contracts.stakingProxy,
@@ -1242,26 +1097,13 @@ export default function App() {
               </div>
               <p className="muted">{t('monadStakingDescription')}</p>
               <div className="status-actions">
-                <form onSubmit={(event) => onSubmit(event, runMonadStakeFlow)}>
-                  <h3>{t('monadStake')}</h3>
-                  <input value={monadStakeAmount} onChange={(event) => setMonadStakeAmount(event.target.value)} placeholder={t('amount')} />
-                  <button type="submit" disabled={!isConnected || onWrongChain}>
-                    {t('monadStake')}
-                  </button>
-                </form>
+                <button type="button" onClick={() => setActiveActionModal('monadStake')} disabled={!isConnected || onWrongChain}>
+                  {t('monadStake')}
+                </button>
 
-                <form onSubmit={(event) => onSubmit(event, () => runWrite('requestMonadUnstake', () => ({
-                  address: contracts.stakingProxy,
-                  abi: stakingAbi,
-                  functionName: 'requestUnstakeMonad' as const,
-                  args: [parsePositiveTokenAmount(monadUnstakeAmount)] as const,
-                })))}>
-                  <h3>{t('requestMonadUnstake')}</h3>
-                  <input value={monadUnstakeAmount} onChange={(event) => setMonadUnstakeAmount(event.target.value)} placeholder={t('amount')} />
-                  <button type="submit" disabled={!isConnected || onWrongChain}>
-                    {t('requestMonadUnstake')}
-                  </button>
-                </form>
+                <button type="button" onClick={() => setActiveActionModal('monadUnstake')} disabled={!isConnected || onWrongChain}>
+                  {t('requestMonadUnstake')}
+                </button>
 
                 <form onSubmit={(event) => onSubmit(event, () => runWrite('claimSer9Rewards', () => ({
                   address: contracts.stakingProxy,
@@ -1278,24 +1120,6 @@ export default function App() {
             </article>
           </section>
 
-          <section className="card">
-            <h2>{t('userState')}</h2>
-            {isConnected ? (
-              <>
-                <div className="metric-grid">
-                  <MetricCard label={t('ser9Balance')} value={formatTokenAmount(ser9BalanceRead.data)} />
-                  <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
-                  <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
-                  <MetricCard label={t('unlockedBalance')} value={formatTokenAmount(userUnlockedRead.data)} />
-                  <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
-                  <MetricCard label={t('unusedLocked')} value={formatTokenAmount(userUnusedRead.data)} />
-                  <MetricCard label={t('usedLocked')} value={formatTokenAmount(userUsedRead.data)} />
-                </div>
-              </>
-            ) : (
-              <p className="muted">{t('connectHint')}</p>
-            )}
-          </section>
         </>
       )}
 
@@ -1307,231 +1131,41 @@ export default function App() {
           ) : (
             <div className="token-list">
               {managedTokens.map((token) => (
-                <ManagedTokenCard key={token} token={token} userAddress={normalizedConnectedAddress} />
+                <ManagedTokenCard key={token} token={token} />
               ))}
             </div>
           )}
         </section>
       )}
 
-      {(isTokensListPage || isHomePage) && (
-        <>
-          <section className="card">
-            <div className="section-head">
-              <h2>{t('userActions')}</h2>
+      {activeActionModal && (
+        <div className="modal-backdrop">
+          <section
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label={getActionModalTitle(activeActionModal)}
+            ref={actionModalPanelRef}
+            tabIndex={-1}
+          >
+            <div className="tx-header">
+              <h2>{getActionModalTitle(activeActionModal)}</h2>
               <button
+                ref={actionModalCloseButtonRef}
                 type="button"
                 className="secondary"
-                aria-expanded={showAdvancedActions}
-                aria-controls="advanced-actions-grid"
-                onClick={() => setShowAdvancedActions((prev) => !prev)}
+                onClick={() => setActiveActionModal(null)}
               >
-                {showAdvancedActions ? t('hideAdvancedActions') : t('showAdvancedActions')}
+                {t('close')}
               </button>
             </div>
-            {!showAdvancedActions && <p className="muted">{t('advancedActionsHint')}</p>}
-            {showAdvancedActions && (
-              <div id="advanced-actions-grid" className="action-grid">
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('ser9Approve', () => ({
-            address: contracts.ser9Proxy,
-            abi: ser9Abi,
-            functionName: 'approve',
-            args: [parseAddressStrict(ser9ApproveSpender), parsePositiveTokenAmount(ser9ApproveAmount)],
-          })))}>
-            <h3>{t('ser9Approve')}</h3>
-            <input value={ser9ApproveSpender} onChange={(e) => setSer9ApproveSpender(e.target.value)} placeholder={t('spender')} />
-            <input value={ser9ApproveAmount} onChange={(e) => setSer9ApproveAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('approve')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('managedApprove', () => ({
-            address: parseAddressStrict(managedApproveToken),
-            abi: managedTokenAbi,
-            functionName: 'approve',
-            args: [parseAddressStrict(managedApproveSpender), parsePositiveTokenAmount(managedApproveAmount)],
-          })))}>
-            <h3>{t('managedApprove')}</h3>
-            <input list="managed-token-list" value={managedApproveToken} onChange={(e) => setManagedApproveToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <input value={managedApproveSpender} onChange={(e) => setManagedApproveSpender(e.target.value)} placeholder={t('spender')} />
-            <input value={managedApproveAmount} onChange={(e) => setManagedApproveAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('approve')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runStakeWithAutoApprove(stakeAmount))}>
-            <h3>{t('stake')}</h3>
-            <input value={stakeAmount} onChange={(e) => setStakeAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('stake')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('unstake', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'unstake',
-            args: [parsePositiveTokenAmount(unstakeAmount)],
-          })))}>
-            <h3>{t('unstake')}</h3>
-            <input value={unstakeAmount} onChange={(e) => setUnstakeAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('unstake')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'claimRewards',
-            args: [],
-          })))}>
-            <h3>{t('claimRewards')}</h3>
-            <button type="submit">{t('claimRewards')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('createManagedToken', createManagedTokenRequest))}>
-            <h3>{t('createManagedToken')}</h3>
-            <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder={t('tokenName')} />
-            <input value={createSymbol} onChange={(e) => setCreateSymbol(e.target.value)} placeholder={t('tokenSymbol')} />
-            <input value={createMintRate} onChange={(e) => setCreateMintRate(e.target.value)} placeholder={t('mintRatePerToken')} />
-            <input value={createMaxSupply} onChange={(e) => setCreateMaxSupply(e.target.value)} placeholder={t('maxSupplyOptional')} />
-            <input
-              value={createMaxMultiplierBps}
-              onChange={(e) => setCreateMaxMultiplierBps(e.target.value)}
-              placeholder={t('maxMultiplierBpsInput')}
-            />
-            <input
-              value={createRampStartBps}
-              onChange={(e) => setCreateRampStartBps(e.target.value)}
-              placeholder={t('rampStartBpsInput')}
-            />
-            <label className="checkbox-row">
-              <input type="checkbox" checked={createFeeEnabled} onChange={(e) => setCreateFeeEnabled(e.target.checked)} />
-              {t('enableFee')}
-            </label>
-            <input value={createFeeBps} onChange={(e) => setCreateFeeBps(e.target.value)} placeholder={t('initialFeeBps')} disabled={!createFeeEnabled} />
-            <button type="submit">{t('createManagedToken')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('mintManagedToken', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'mintManagedToken',
-            args: [parseAddressStrict(mintToken), parsePositiveTokenAmount(mintAmount)],
-          })))}>
-            <h3>{t('mintManagedToken')}</h3>
-            <input list="managed-token-list" value={mintToken} onChange={(e) => setMintToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <input value={mintAmount} onChange={(e) => setMintAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('mintManagedToken')}</button>
-            {mintTokenAddress && parsedMintAmount !== null && (
-              <p className="muted">
-                {t('previewMintCollateral')}: {formatTokenAmount(previewMintCollateralRead.data)}
-              </p>
-            )}
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('burnAndUnlock', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'burnAndUnlock',
-            args: [parseAddressStrict(burnToken), parsePositiveTokenAmount(burnAmount)],
-          })))}>
-            <h3>{t('burnAndUnlock')}</h3>
-            <input list="managed-token-list" value={burnToken} onChange={(e) => setBurnToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <input value={burnAmount} onChange={(e) => setBurnAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('burnAndUnlock')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('stakeFeeToken', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'stakeFeeToken',
-            args: [parseAddressStrict(feeStakeToken), parsePositiveTokenAmount(feeStakeAmount)],
-          })))}>
-            <h3>{t('stakeFeeToken')}</h3>
-            <input list="managed-token-list" value={feeStakeToken} onChange={(e) => setFeeStakeToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <input value={feeStakeAmount} onChange={(e) => setFeeStakeAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('stakeFeeToken')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('unstakeFeeToken', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'unstakeFeeToken',
-            args: [parseAddressStrict(feeUnstakeToken), parsePositiveTokenAmount(feeUnstakeAmount)],
-          })))}>
-            <h3>{t('unstakeFeeToken')}</h3>
-            <input list="managed-token-list" value={feeUnstakeToken} onChange={(e) => setFeeUnstakeToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <input value={feeUnstakeAmount} onChange={(e) => setFeeUnstakeAmount(e.target.value)} placeholder={t('amount')} />
-            <button type="submit">{t('unstakeFeeToken')}</button>
-          </form>
-
-          <form onSubmit={(event) => onSubmit(event, () => runWrite('claimFeeRewards', () => ({
-            address: contracts.stakingProxy,
-            abi: stakingAbi,
-            functionName: 'claimFeeRewards',
-            args: [parseAddressStrict(feeClaimToken)],
-          })))}>
-            <h3>{t('claimFeeRewards')}</h3>
-            <input list="managed-token-list" value={feeClaimToken} onChange={(e) => setFeeClaimToken(e.target.value)} placeholder={t('tokenAddress')} />
-            <button type="submit">{t('claimFeeRewards')}</button>
-          </form>
-              </div>
-            )}
+            {renderActionModalForm()}
           </section>
-
-          <section className="card">
-            <h2>{t('creatorControls')}</h2>
-            <form
-              className="single-form"
-              onSubmit={(event) => onSubmit(event, () => runWrite(
-                'setTokenFeeBps',
-                () => ({
-                  address: contracts.stakingProxy,
-                  abi: stakingAbi,
-                  functionName: 'setTokenFeeBps',
-                  args: [parseAddressStrict(creatorToken), parseNonNegativeBps(creatorFeeBps)],
-                }),
-                () => (connectedIsCreator ? null : t('creatorOnly')),
-              ))}
-            >
-              <input list="managed-token-list" value={creatorToken} onChange={(e) => setCreatorToken(e.target.value)} placeholder={t('selectedToken')} />
-              <input value={creatorFeeBps} onChange={(e) => setCreatorFeeBps(e.target.value)} placeholder={t('feeBps')} />
-              <button type="submit">{t('setTokenFeeBps')}</button>
-            </form>
-          </section>
-
-          <datalist id="managed-token-list">
-            {datalistTokens.map((token) => (
-              <option key={token} value={token} />
-            ))}
-          </datalist>
-
-          <section className="card tx-card">
-            <div className="tx-header">
-              <h2>{t('txStatus')}</h2>
-              <button type="button" className="secondary" onClick={() => setIsTxModalOpen(true)}>
-                {t('openTxStatusModal')}
-              </button>
-            </div>
-            <p className="muted" role="status" aria-live="polite">
-              {txStatusSummary}
-            </p>
-          </section>
-        </>
-      )}
-
-      {isTokenCreatePage && (
-        <section className="card tx-card">
-          <div className="tx-header">
-            <h2>{t('txStatus')}</h2>
-            <button type="button" className="secondary" onClick={() => setIsTxModalOpen(true)}>
-              {t('openTxStatusModal')}
-            </button>
-          </div>
-          <p className="muted" role="status" aria-live="polite">
-            {txStatusSummary}
-          </p>
-        </section>
+        </div>
       )}
 
       {isTxModalOpen && (
-        <div className="modal-backdrop" onClick={() => setIsTxModalOpen(false)}>
+        <div className="modal-backdrop">
           <section
             className="modal-panel"
             role="dialog"
@@ -1539,7 +1173,6 @@ export default function App() {
             aria-label={t('txStatus')}
             ref={txModalPanelRef}
             tabIndex={-1}
-            onClick={(event) => event.stopPropagation()}
           >
             <div className="tx-header">
               <h2>{t('txStatus')}</h2>
@@ -1558,7 +1191,7 @@ export default function App() {
       )}
 
       {isWalletModalOpen && !isConnected && (
-        <div className="modal-backdrop" onClick={() => setIsWalletModalOpen(false)}>
+        <div className="modal-backdrop">
           <section
             className="modal-panel"
             role="dialog"
@@ -1566,7 +1199,6 @@ export default function App() {
             aria-label={t('walletConnectTitle')}
             ref={walletModalPanelRef}
             tabIndex={-1}
-            onClick={(event) => event.stopPropagation()}
           >
             <div className="tx-header">
               <h2>{t('walletConnectTitle')}</h2>
