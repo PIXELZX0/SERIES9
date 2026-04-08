@@ -82,6 +82,9 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
 
         address previousRecipient = feeRecipient;
         feeRecipient = newFeeRecipient;
+        isFeeExempt[newFeeRecipient] = true;
+
+        emit FeeExemptUpdated(newFeeRecipient, true);
         emit FeeRecipientUpdated(previousRecipient, newFeeRecipient);
     }
 

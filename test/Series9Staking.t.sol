@@ -1256,6 +1256,7 @@ contract Series9StakingTest is Test {
 
         staking.setTokenFeeRecipient(token, newRecipient);
         assertEq(Series9ManagedToken(token).feeRecipient(), newRecipient);
+        assertTrue(Series9ManagedToken(token).isFeeExempt(newRecipient));
     }
 
     function testNonOwnerCannotSetTokenFeeRecipient() public {
