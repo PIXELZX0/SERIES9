@@ -10,7 +10,7 @@ import {
   useReadContracts,
   useSwitchChain,
 } from 'wagmi';
-import { getAddress, isAddress, maxUint256, zeroAddress, type Address } from 'viem';
+import { encodeFunctionData, getAddress, isAddress, maxUint256, zeroAddress, type Address } from 'viem';
 
 import { explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
@@ -354,6 +354,8 @@ export default function App() {
   const [managedApproveSpender, setManagedApproveSpender] = useState<string>(contracts.stakingProxy);
 
   const [quickStakeAmount, setQuickStakeAmount] = useState('');
+  const [monadStakeAmount, setMonadStakeAmount] = useState('');
+  const [monadUnstakeAmount, setMonadUnstakeAmount] = useState('');
 
   const [stakeAmount, setStakeAmount] = useState('');
   const [unstakeAmount, setUnstakeAmount] = useState('');
@@ -505,6 +507,32 @@ export default function App() {
 
   const monBalanceRead = useBalance({
     address: normalizedConnectedAddress,
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const totalMonadStakedRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'totalMonadStaked',
+  });
+
+  const userMonadStakedRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'monadStakedBalance',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const userMonadEarnedRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'monadEarned',
+    args: [addressForReads],
     query: {
       enabled: Boolean(normalizedConnectedAddress),
     },
@@ -933,6 +961,24 @@ export default function App() {
     }
   }
 
+  async function runMonadStakeFlow() {
+    resetErrors();
+
+    try {
+      await tx.executeSend(t('monadStake'), {
+        to: contracts.stakingProxy,
+        value: parsePositiveTokenAmount(monadStakeAmount),
+        data: encodeFunctionData({
+          abi: stakingAbi,
+          functionName: 'stakeMonad',
+          args: [],
+        }),
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
@@ -1150,16 +1196,85 @@ export default function App() {
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
                 <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
               </div>
+              <div className="status-actions">
+                <form className="single-form" onSubmit={(event) => onSubmit(event, () => runStakeWithAutoApprove(stakeAmount))}>
+                  <h3>{t('stake')}</h3>
+                  <input value={stakeAmount} onChange={(event) => setStakeAmount(event.target.value)} placeholder={t('amount')} />
+                  <button type="submit" disabled={!isConnected || onWrongChain}>
+                    {t('stake')}
+                  </button>
+                </form>
+
+                <form onSubmit={(event) => onSubmit(event, () => runWrite('unstake', () => ({
+                  address: contracts.stakingProxy,
+                  abi: stakingAbi,
+                  functionName: 'unstake',
+                  args: [parsePositiveTokenAmount(unstakeAmount)],
+                })))}>
+                  <h3>{t('unstake')}</h3>
+                  <input value={unstakeAmount} onChange={(event) => setUnstakeAmount(event.target.value)} placeholder={t('amount')} />
+                  <button type="submit" disabled={!isConnected || onWrongChain}>
+                    {t('unstake')}
+                  </button>
+                </form>
+
+                <form onSubmit={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({
+                  address: contracts.stakingProxy,
+                  abi: stakingAbi,
+                  functionName: 'claimRewards',
+                  args: [],
+                })))}>
+                  <h3>{t('claimRewards')}</h3>
+                  <button type="submit" disabled={!isConnected || onWrongChain}>
+                    {t('claimRewards')}
+                  </button>
+                </form>
+              </div>
             </article>
 
             <article className="status-card">
               <h2>{t('monadStakingStatus')}</h2>
               <div className="metric-grid">
-                <MetricCard label={t('networkLabel')} value={isConnected ? networkConfig.chainName : '-'} />
+                <MetricCard label={t('totalMonadStaked')} value={formatTokenAmount(totalMonadStakedRead.data)} />
+                <MetricCard label={t('yourMonadStake')} value={formatTokenAmount(userMonadStakedRead.data)} />
                 <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
-                <MetricCard label={t('monadStakingIntegration')} value={t('monadStakingNotConfiguredShort')} />
+                <MetricCard label={t('yourMonadSer9Rewards')} value={formatTokenAmount(userMonadEarnedRead.data)} />
               </div>
-              <p className="muted">{t('monadStakingNotConfigured')}</p>
+              <p className="muted">{t('monadStakingDescription')}</p>
+              <div className="status-actions">
+                <form onSubmit={(event) => onSubmit(event, runMonadStakeFlow)}>
+                  <h3>{t('monadStake')}</h3>
+                  <input value={monadStakeAmount} onChange={(event) => setMonadStakeAmount(event.target.value)} placeholder={t('amount')} />
+                  <button type="submit" disabled={!isConnected || onWrongChain}>
+                    {t('monadStake')}
+                  </button>
+                </form>
+
+                <form onSubmit={(event) => onSubmit(event, () => runWrite('requestMonadUnstake', () => ({
+                  address: contracts.stakingProxy,
+                  abi: stakingAbi,
+                  functionName: 'requestUnstakeMonad' as const,
+                  args: [parsePositiveTokenAmount(monadUnstakeAmount)] as const,
+                })))}>
+                  <h3>{t('requestMonadUnstake')}</h3>
+                  <input value={monadUnstakeAmount} onChange={(event) => setMonadUnstakeAmount(event.target.value)} placeholder={t('amount')} />
+                  <button type="submit" disabled={!isConnected || onWrongChain}>
+                    {t('requestMonadUnstake')}
+                  </button>
+                </form>
+
+                <form onSubmit={(event) => onSubmit(event, () => runWrite('claimSer9Rewards', () => ({
+                  address: contracts.stakingProxy,
+                  abi: stakingAbi,
+                  functionName: 'claimRewards' as const,
+                  args: [] as const,
+                })))}>
+                  <h3>{t('claimSer9Rewards')}</h3>
+                  <button type="submit" disabled={!isConnected || onWrongChain}>
+                    {t('claimSer9Rewards')}
+                  </button>
+                </form>
+              </div>
             </article>
           </section>
 
