@@ -1392,6 +1392,64 @@ contract Series9StakingTest is Test {
         assertEq(alice.balance, aliceBefore + 4 ether);
     }
 
+    function testMonadUnstakeUsesExistingLiquidBalanceBeforeUndelegating() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        vm.deal(bob, 10 ether);
+        vm.prank(bob);
+        staking.stakeMonad{value: 3 ether}();
+
+        vm.prank(bob);
+        uint256 requestId = staking.requestUnstakeMonad(2 ether);
+
+        (,, uint64 minClaimEpoch,) = staking.monadUnstakeRequest(bob, requestId);
+        assertEq(minClaimEpoch, 4);
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+
+        monadStakingMock.setEpoch(4, false);
+        uint256 bobBefore = bob.balance;
+
+        vm.prank(bob);
+        staking.claimUnstakedMonad(requestId);
+
+        assertEq(bob.balance, bobBefore + 2 ether);
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+    }
+
+    function testMonadUnstakeDoesNotDoubleQueueWhenPendingUndelegationAlreadyCoversShortfall() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        vm.prank(alice);
+        staking.requestUnstakeMonad(4 ether);
+
+        assertEq(staking.totalPendingUndelegateMonad(), 4 ether);
+        assertEq(staking.totalDelegatedMonad(), 6 ether);
+
+        vm.deal(bob, 20 ether);
+        vm.prank(bob);
+        staking.stakeMonad{value: 4 ether}();
+
+        vm.prank(bob);
+        staking.requestUnstakeMonad(2 ether);
+
+        assertEq(staking.totalPendingUndelegateMonad(), 4 ether);
+        assertEq(staking.totalDelegatedMonad(), 6 ether);
+    }
+
     function _installMonadPrecompileMock() internal {
         MonadStakingMock mockImplementation = new MonadStakingMock();
         address precompileAddress = address(uint160(0x1000));

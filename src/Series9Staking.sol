@@ -667,7 +667,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         (uint64 epoch,) = _getEpoch();
         uint64 minClaimEpoch = epoch + UNSTAKE_DELAY_EPOCHS;
-        uint64 withdrawEpoch = _queueUnstakeFromDelegations(amount, epoch);
+        uint256 availableForClaims = _availableMonadForUserClaims();
+        uint256 coveredByLiquidOrPending = availableForClaims + totalPendingUndelegateMonad;
+        uint256 undelegateAmount = pendingMonadUnstakePrincipal > coveredByLiquidOrPending
+            ? pendingMonadUnstakePrincipal - coveredByLiquidOrPending
+            : 0;
+
+        uint64 withdrawEpoch = _queueUnstakeFromDelegations(undelegateAmount, epoch);
         if (withdrawEpoch > minClaimEpoch) {
             minClaimEpoch = withdrawEpoch;
         }
