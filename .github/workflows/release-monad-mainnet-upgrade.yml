@@ -132,6 +132,7 @@ jobs:
 
             if forge verify-contract "$contract_address" "$contract_name" \
               --chain 143 \
+              --rpc-url "$MONAD_RPC_URL" \
               --verifier sourcify \
               --verifier-url "$MONADVISION_VERIFIER_URL"; then
               echo "Verification succeeded for ${contract_label}."
