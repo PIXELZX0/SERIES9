@@ -26,6 +26,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 private constant MONAD_SCORE_PRECISION = 1e18;
     uint256 private constant MONAD_TARGET_COUNT = 5;
     uint256 private constant MONAD_SCAN_LIMIT = 100;
+    uint64 private constant UNSTAKE_DELAY_EPOCHS = 3;
     uint64 private constant MONAD_PRECOMPILE_ADDRESS = 0x1000;
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
@@ -64,6 +65,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     }
 
     struct MonadUnstakeRequest {
+        uint256 amount;
+        uint64 requestEpoch;
+        uint64 minClaimEpoch;
+        bool claimed;
+    }
+
+    struct Ser9UnstakeRequest {
         uint256 amount;
         uint64 requestEpoch;
         uint64 minClaimEpoch;
@@ -138,6 +146,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     PendingUndelegateTicket[] public pendingUndelegateTickets;
     mapping(address => uint256) public monadUnstakeRequestCount;
     mapping(address => mapping(uint256 => MonadUnstakeRequest)) private _monadUnstakeRequests;
+    mapping(address => uint256) public ser9UnstakeRequestCount;
+    mapping(address => mapping(uint256 => Ser9UnstakeRequest)) private _ser9UnstakeRequests;
 
     error ZeroAmount();
     error InvalidTokenAddress();
@@ -223,6 +233,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event MonadRewardRateUpdated(uint256 previousRate, uint256 newRate);
     event MonadRebalanceKeeperUpdated(address indexed keeper, bool allowed);
     event MonadStaked(address indexed user, uint256 amount);
+    event Ser9UnstakeRequested(
+        address indexed user, uint256 indexed requestId, uint256 amount, uint64 requestEpoch, uint64 minClaimEpoch
+    );
+    event Ser9UnstakeClaimed(address indexed user, uint256 indexed requestId, uint256 amount);
     event MonadUnstakeRequested(
         address indexed user, uint256 indexed requestId, uint256 amount, uint64 requestEpoch, uint64 minClaimEpoch
     );
@@ -585,9 +599,38 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         totalStaked -= amount;
         _syncRewardWeight(msg.sender);
 
-        IERC20(address(ser9)).safeTransfer(msg.sender, amount);
+        (uint64 epoch,) = _getEpoch();
+        uint64 minClaimEpoch = epoch + UNSTAKE_DELAY_EPOCHS;
 
-        emit Unstaked(msg.sender, amount);
+        uint256 requestId = ser9UnstakeRequestCount[msg.sender];
+        ser9UnstakeRequestCount[msg.sender] = requestId + 1;
+        _ser9UnstakeRequests[msg.sender][requestId] =
+            Ser9UnstakeRequest({amount: amount, requestEpoch: epoch, minClaimEpoch: minClaimEpoch, claimed: false});
+
+        emit Ser9UnstakeRequested(msg.sender, requestId, amount, epoch, minClaimEpoch);
+    }
+
+    function claimUnstaked(uint256 requestId) external whenNotPaused nonReentrant {
+        if (requestId >= ser9UnstakeRequestCount[msg.sender]) {
+            revert InvalidUnstakeRequest();
+        }
+
+        Ser9UnstakeRequest storage request = _ser9UnstakeRequests[msg.sender][requestId];
+        if (request.claimed) {
+            revert UnstakeRequestAlreadyClaimed();
+        }
+
+        (uint64 currentEpoch,) = _getEpoch();
+        if (currentEpoch < request.minClaimEpoch) {
+            revert UnstakeRequestNotClaimable(currentEpoch, request.minClaimEpoch);
+        }
+
+        request.claimed = true;
+
+        IERC20(address(ser9)).safeTransfer(msg.sender, request.amount);
+
+        emit Ser9UnstakeClaimed(msg.sender, requestId, request.amount);
+        emit Unstaked(msg.sender, request.amount);
     }
 
     function stakeMonad() external payable whenNotPaused nonReentrant updateReward(msg.sender) {
@@ -622,9 +665,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         totalMonadStaked -= amount;
         pendingMonadUnstakePrincipal += amount;
 
-        (uint64 epoch, bool inEpochDelayPeriod) = _getEpoch();
-        uint64 minClaimEpoch = epoch + 1;
-        uint64 withdrawEpoch = _queueUnstakeFromDelegations(amount, epoch, inEpochDelayPeriod);
+        (uint64 epoch,) = _getEpoch();
+        uint64 minClaimEpoch = epoch + UNSTAKE_DELAY_EPOCHS;
+        uint64 withdrawEpoch = _queueUnstakeFromDelegations(amount, epoch);
         if (withdrawEpoch > minClaimEpoch) {
             minClaimEpoch = withdrawEpoch;
         }
@@ -692,6 +735,19 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         MonadUnstakeRequest storage request = _monadUnstakeRequests[user][requestId];
+        return (request.amount, request.requestEpoch, request.minClaimEpoch, request.claimed);
+    }
+
+    function ser9UnstakeRequest(address user, uint256 requestId)
+        external
+        view
+        returns (uint256 amount, uint64 requestEpoch, uint64 minClaimEpoch, bool claimed)
+    {
+        if (requestId >= ser9UnstakeRequestCount[user]) {
+            revert InvalidUnstakeRequest();
+        }
+
+        Ser9UnstakeRequest storage request = _ser9UnstakeRequests[user][requestId];
         return (request.amount, request.requestEpoch, request.minClaimEpoch, request.claimed);
     }
 
@@ -1295,7 +1351,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return balance - protocolMonadYieldAccrued;
     }
 
-    function _queueUnstakeFromDelegations(uint256 amount, uint64 epoch, bool inEpochDelayPeriod)
+    function _queueUnstakeFromDelegations(uint256 amount, uint64 epoch)
         internal
         returns (uint64 maxClaimableEpoch)
     {
@@ -1308,8 +1364,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 continue;
             }
 
-            (uint256 undelegatedAmount, uint64 claimableEpoch) =
-                _undelegateFromValidator(validatorId, remaining, epoch, inEpochDelayPeriod);
+            (uint256 undelegatedAmount, uint64 claimableEpoch) = _undelegateFromValidator(validatorId, remaining, epoch);
             if (undelegatedAmount == 0) {
                 continue;
             }
@@ -1321,7 +1376,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
     }
 
-    function _undelegateFromValidator(uint64 validatorId, uint256 requestedAmount, uint64 epoch, bool inEpochDelayPeriod)
+    function _undelegateFromValidator(uint64 validatorId, uint256 requestedAmount, uint64 epoch)
         internal
         returns (uint256 undelegatedAmount, uint64 claimableEpoch)
     {
@@ -1332,7 +1387,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 activeStake = delegatedAmount;
         try _monadStaking().getDelegator(validatorId, address(this)) returns (
-            uint256 stake,
+            uint256 validatorStake,
             uint256,
             uint256,
             uint256,
@@ -1340,7 +1395,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             uint64,
             uint64
         ) {
-            activeStake = stake;
+            activeStake = validatorStake;
         } catch {}
 
         if (activeStake == 0) {
@@ -1370,7 +1425,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             return (0, 0);
         }
 
-        claimableEpoch = inEpochDelayPeriod ? epoch + 3 : epoch + 2;
+        claimableEpoch = epoch + UNSTAKE_DELAY_EPOCHS;
 
         validatorDelegatedAmount[validatorId] = delegatedAmount - undelegatedAmount;
         validatorPendingUndelegateAmount[validatorId] += undelegatedAmount;
@@ -1612,7 +1667,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             }
         }
 
-        (uint64 currentEpoch, bool inEpochDelayPeriod) = _getEpoch();
+        (uint64 currentEpoch,) = _getEpoch();
         uint256 trackedLength = trackedValidators.length;
         for (uint256 i = 0; i < trackedLength; ++i) {
             uint64 validatorId = trackedValidators[i];
@@ -1630,7 +1685,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             }
 
             if (delegatedAmount > targetAmount) {
-                _undelegateFromValidator(validatorId, delegatedAmount - targetAmount, currentEpoch, inEpochDelayPeriod);
+                _undelegateFromValidator(validatorId, delegatedAmount - targetAmount, currentEpoch);
             }
         }
 
