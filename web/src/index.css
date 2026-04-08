@@ -288,6 +288,31 @@ button:disabled {
   gap: 0.5rem;
 }
 
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.status-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.05rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.status-card h2 {
+  margin: 0;
+  font-size: 1.04rem;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.status-card p {
+  margin: 0;
+}
+
 .metric-card {
   padding: 0.7rem;
   display: grid;

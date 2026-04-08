@@ -3,6 +3,8 @@ export const en = {
   appSubtitle:
     'Monad Mainnet staking and managed-token control panel for users and creators.',
   connectWallet: 'Connect Wallet',
+  walletConnectTitle: 'Connect Wallet',
+  walletConnectDescription: 'Choose a wallet to continue.',
   disconnectWallet: 'Disconnect',
   connectPending: 'Waiting for wallet...',
   walletNotDetected: 'No Web3 wallet connector is available. Install a browser wallet or configure WalletConnect.',
@@ -26,6 +28,13 @@ export const en = {
   stakingOverview: 'Staking Overview',
   protocolState: 'Protocol State',
   userState: 'Your State',
+  ser9StakingStatus: 'SER9 Staking Status',
+  monadStakingStatus: 'MONAD Staking Status',
+  monBalance: 'MON Balance',
+  monadStakingIntegration: 'Integration',
+  monadStakingNotConfiguredShort: 'Not configured',
+  monadStakingNotConfigured:
+    'This app is connected to Monad Mainnet, but a dedicated native MON staking contract is not configured yet.',
   connectHint: 'Connect your wallet to view personal metrics and execute transactions.',
   paused: 'Paused',
   yes: 'Yes',

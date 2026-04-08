@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   useAccount,
+  useBalance,
   useChainId,
   useConnect,
   useDisconnect,
@@ -337,8 +338,11 @@ export default function App() {
   const [formError, setFormError] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [connectingConnectorUid, setConnectingConnectorUid] = useState<string | null>(null);
+  const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
   const [isTxModalOpen, setIsTxModalOpen] = useState(false);
   const [showAdvancedActions, setShowAdvancedActions] = useState(false);
+  const walletModalPanelRef = useRef<HTMLElement | null>(null);
+  const walletModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const txModalPanelRef = useRef<HTMLElement | null>(null);
   const txModalCloseButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -499,6 +503,13 @@ export default function App() {
     },
   });
 
+  const monBalanceRead = useBalance({
+    address: normalizedConnectedAddress,
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
   const managedTokenCount = Number(managedTokenCountRead.data ?? 0n);
 
   const managedTokenReadContracts = useMemo(
@@ -635,6 +646,53 @@ export default function App() {
   }, [hasTxActivity]);
 
   useEffect(() => {
+    if (!isWalletModalOpen) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsWalletModalOpen(false);
+        return;
+      }
+
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const panel = walletModalPanelRef.current;
+      if (!panel) {
+        return;
+      }
+
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+
+      if (focusable.length === 0) {
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isWalletModalOpen]);
+
+  useEffect(() => {
     if (!isTxModalOpen) {
       return;
     }
@@ -682,18 +740,22 @@ export default function App() {
   }, [isTxModalOpen]);
 
   useEffect(() => {
-    if (!isTxModalOpen) {
+    if (!isWalletModalOpen && !isTxModalOpen) {
       return;
     }
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    txModalCloseButtonRef.current?.focus();
+    if (isWalletModalOpen) {
+      walletModalCloseButtonRef.current?.focus();
+    } else {
+      txModalCloseButtonRef.current?.focus();
+    }
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [isTxModalOpen]);
+  }, [isWalletModalOpen, isTxModalOpen]);
 
   function mapLocalError(error: unknown): string {
     if (!(error instanceof Error)) {
@@ -744,6 +806,7 @@ export default function App() {
 
     try {
       await connectAsync({ connector });
+      setIsWalletModalOpen(false);
     } catch (error) {
       setConnectError(mapConnectError(error));
     } finally {
@@ -913,20 +976,17 @@ export default function App() {
               {connectors.length === 0 ? (
                 <p className="muted">{t('walletNotDetected')}</p>
               ) : (
-                connectors.map((connector) => {
-                  const isCurrent = isConnecting && connectingConnectorUid === connector.uid;
-                  return (
-                    <button
-                      key={connector.uid}
-                      type="button"
-                      className="primary"
-                      disabled={isConnecting}
-                      onClick={() => void connectWallet(connector)}
-                    >
-                      {isCurrent ? t('connectPending') : `${t('connectWallet')} · ${connector.name}`}
-                    </button>
-                  );
-                })
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={isConnecting}
+                  onClick={() => {
+                    setConnectError(null);
+                    setIsWalletModalOpen(true);
+                  }}
+                >
+                  {isConnecting ? t('connectPending') : t('connectWallet')}
+                </button>
               )}
               {connectError && <p className="error">{connectError}</p>}
             </div>
@@ -1082,6 +1142,27 @@ export default function App() {
 
       {isHomePage && (
         <>
+          <section className="summary-grid">
+            <article className="status-card">
+              <h2>{t('ser9StakingStatus')}</h2>
+              <div className="metric-grid">
+                <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
+                <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
+                <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
+              </div>
+            </article>
+
+            <article className="status-card">
+              <h2>{t('monadStakingStatus')}</h2>
+              <div className="metric-grid">
+                <MetricCard label={t('networkLabel')} value={isConnected ? networkConfig.chainName : '-'} />
+                <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
+                <MetricCard label={t('monadStakingIntegration')} value={t('monadStakingNotConfiguredShort')} />
+              </div>
+              <p className="muted">{t('monadStakingNotConfigured')}</p>
+            </article>
+          </section>
+
           <section className="card">
             <h2>{t('userState')}</h2>
             {isConnected ? (
@@ -1357,6 +1438,50 @@ export default function App() {
               </button>
             </div>
             {renderTxStatusContent()}
+          </section>
+        </div>
+      )}
+
+      {isWalletModalOpen && !isConnected && (
+        <div className="modal-backdrop" onClick={() => setIsWalletModalOpen(false)}>
+          <section
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('walletConnectTitle')}
+            ref={walletModalPanelRef}
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="tx-header">
+              <h2>{t('walletConnectTitle')}</h2>
+              <button
+                ref={walletModalCloseButtonRef}
+                type="button"
+                className="secondary"
+                onClick={() => setIsWalletModalOpen(false)}
+              >
+                {t('close')}
+              </button>
+            </div>
+            <p className="muted">{t('walletConnectDescription')}</p>
+            <div className="wallet-connectors">
+              {connectors.map((connector) => {
+                const isCurrent = isConnecting && connectingConnectorUid === connector.uid;
+                return (
+                  <button
+                    key={connector.uid}
+                    type="button"
+                    className="primary"
+                    disabled={isConnecting}
+                    onClick={() => void connectWallet(connector)}
+                  >
+                    {isCurrent ? t('connectPending') : `${t('connectWallet')} · ${connector.name}`}
+                  </button>
+                );
+              })}
+            </div>
+            {connectError && <p className="error">{connectError}</p>}
           </section>
         </div>
       )}
