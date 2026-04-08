@@ -32,6 +32,20 @@ export const stakingAbi = [
   },
   {
     type: 'function',
+    name: 'monadEarned',
+    inputs: [{ name: 'account', type: 'address', internalType: 'address' }],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'monadStakedBalance',
+    inputs: [{ name: '', type: 'address', internalType: 'address' }],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
     name: 'createManagedToken',
     inputs: [
       { name: 'name', type: 'string', internalType: 'string' },
@@ -254,6 +268,13 @@ export const stakingAbi = [
   },
   {
     type: 'function',
+    name: 'requestUnstakeMonad',
+    inputs: [{ name: 'amount', type: 'uint256', internalType: 'uint256' }],
+    outputs: [{ name: 'requestId', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
     name: 'rewardRatePerBlock',
     inputs: [],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
@@ -331,6 +352,13 @@ export const stakingAbi = [
     inputs: [{ name: 'amount', type: 'uint256', internalType: 'uint256' }],
     outputs: [],
     stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'stakeMonad',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'payable',
   },
   {
     type: 'function',
@@ -443,6 +471,13 @@ export const stakingAbi = [
   {
     type: 'function',
     name: 'totalRewardWeight',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'totalMonadStaked',
     inputs: [],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
     stateMutability: 'view',
