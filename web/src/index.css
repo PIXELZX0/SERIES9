@@ -313,6 +313,31 @@ button:disabled {
   margin: 0;
 }
 
+.status-actions {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.status-actions form {
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.45rem;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.status-actions h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.status-actions button {
+  justify-self: start;
+}
+
 .metric-card {
   padding: 0.7rem;
   display: grid;
