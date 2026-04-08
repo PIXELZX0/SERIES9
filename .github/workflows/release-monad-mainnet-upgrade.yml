@@ -55,7 +55,7 @@ jobs:
         env:
           FOUNDRY_PROFILE: deploy
           SKIP_VERIFY_INPUT: ${{ vars.SKIP_VERIFY }}
-          MONADVISION_VERIFIER_URL: https://sourcify-api-monad.blockvision.org/
+          MONADVISION_VERIFIER_URL: https://sourcify-api-monad.blockvision.org/api
         run: |
           set -euo pipefail
 
@@ -122,20 +122,39 @@ jobs:
             exit 1
           fi
 
+          VERIFICATION_STATUS="skipped"
+          VERIFICATION_FAILURES=""
+
+          verify_contract() {
+            local contract_address="$1"
+            local contract_name="$2"
+            local contract_label="$3"
+
+            if forge verify-contract "$contract_address" "$contract_name" \
+              --chain 143 \
+              --verifier sourcify \
+              --verifier-url "$MONADVISION_VERIFIER_URL"; then
+              echo "Verification succeeded for ${contract_label}."
+            else
+              echo "::warning title=Contract verification failed::${contract_label} verification failed; continuing to generate Safe Transaction Builder JSON."
+              if [[ -n "$VERIFICATION_FAILURES" ]]; then
+                VERIFICATION_FAILURES="${VERIFICATION_FAILURES},${contract_label}"
+              else
+                VERIFICATION_FAILURES="$contract_label"
+              fi
+            fi
+          }
+
           if [[ "$SKIP_VERIFY" == "false" ]]; then
             echo "Verifying contracts on MonadVision via Sourcify..."
-            forge verify-contract "$STAKING_IMPL" src/Series9Staking.sol:Series9Staking \
-              --chain 143 \
-              --verifier sourcify \
-              --verifier-url "$MONADVISION_VERIFIER_URL"
-            forge verify-contract "$SER9_IMPL" src/SER9Token.sol:SER9Token \
-              --chain 143 \
-              --verifier sourcify \
-              --verifier-url "$MONADVISION_VERIFIER_URL"
-            forge verify-contract "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken \
-              --chain 143 \
-              --verifier sourcify \
-              --verifier-url "$MONADVISION_VERIFIER_URL"
+            VERIFICATION_STATUS="success"
+            verify_contract "$STAKING_IMPL" src/Series9Staking.sol:Series9Staking "Series9Staking"
+            verify_contract "$SER9_IMPL" src/SER9Token.sol:SER9Token "SER9Token"
+            verify_contract "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken "Series9ManagedToken"
+
+            if [[ -n "$VERIFICATION_FAILURES" ]]; then
+              VERIFICATION_STATUS="partial_failure"
+            fi
           else
             echo "Skipping verification (SKIP_VERIFY=true)."
           fi
@@ -191,6 +210,8 @@ jobs:
             --arg managedTxHash "$MANAGED_TX_HASH" \
             --arg safeJson "$SAFE_JSON_OUT" \
             --arg skipVerify "$SKIP_VERIFY" \
+            --arg verificationStatus "$VERIFICATION_STATUS" \
+            --arg verificationFailures "$VERIFICATION_FAILURES" \
             --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{
               chainId: $chainId,
@@ -211,9 +232,11 @@ jobs:
               },
               safeTxJson: $safeJson,
               skipVerify: $skipVerify,
+              verificationStatus: $verificationStatus,
+              verificationFailures: $verificationFailures,
               verifier: {
                 provider: "MonadVision",
-                url: "https://sourcify-api-monad.blockvision.org/"
+                url: "https://sourcify-api-monad.blockvision.org/api"
               },
               generatedAt: $generatedAt
             }' > "$RUN_FILE"
@@ -248,11 +271,15 @@ jobs:
             echo ""
             echo "- Release: \`${{ github.ref_name }}\`"
             echo "- Staking Proxy: \`${STAKING_PROXY}\`"
-             echo "- New Staking implementation: \`${{ steps.deploy.outputs.staking_impl }}\`"
-             echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
-             echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
-             echo "- Verification provider: \`MonadVision (Sourcify)\`"
-             echo "- Verification URL: \`https://sourcify-api-monad.blockvision.org/\`"
-             echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
-             echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
-           } >> "$GITHUB_STEP_SUMMARY"
+            echo "- New Staking implementation: \`${{ steps.deploy.outputs.staking_impl }}\`"
+            echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
+            echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
+            echo "- Verification provider: \`MonadVision (Sourcify)\`"
+            echo "- Verification URL: \`https://sourcify-api-monad.blockvision.org/api\`"
+            echo "- Verification status: \`${VERIFICATION_STATUS}\`"
+            if [[ -n "${VERIFICATION_FAILURES}" ]]; then
+              echo "- Verification failures: \`${VERIFICATION_FAILURES}\`"
+            fi
+            echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
+            echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
+          } >> "$GITHUB_STEP_SUMMARY"
