@@ -362,6 +362,7 @@ export default function App() {
     args: [addressForReads],
     query: {
       enabled: Boolean(normalizedConnectedAddress),
+      refetchInterval: 10_000,
     },
   });
 
@@ -395,6 +396,7 @@ export default function App() {
     args: [addressForReads],
     query: {
       enabled: Boolean(normalizedConnectedAddress),
+      refetchInterval: 10_000,
     },
   });
 
