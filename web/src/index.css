@@ -540,8 +540,7 @@ button:disabled {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
-.status-actions > button,
-.status-actions form {
+.status-actions > button {
   min-height: 100%;
 }
 
@@ -551,21 +550,6 @@ button:disabled {
   justify-content: flex-start;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
   border-color: var(--line-strong);
-}
-
-.status-actions form {
-  padding: 0.95rem;
-  display: grid;
-  gap: 0.45rem;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.status-actions h3 {
-  margin: 0;
-  font-size: 0.9rem;
-  font-family: 'Space Grotesk', sans-serif;
 }
 
 .status-actions button {

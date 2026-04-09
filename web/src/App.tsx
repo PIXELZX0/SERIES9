@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useAccount,
   useBalance,
@@ -732,7 +732,7 @@ export default function App() {
     }
   }
 
-  function onSubmit(event: FormEvent<HTMLFormElement>, handler: () => void) {
+  function onSubmit(event: { preventDefault: () => void }, handler: () => void) {
     event.preventDefault();
     void handler();
   }
@@ -1137,17 +1137,18 @@ export default function App() {
                   {t('unstake')}
                 </button>
 
-                <form onSubmit={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({
-                  address: contracts.stakingProxy,
-                  abi: stakingAbi,
-                  functionName: 'claimRewards',
-                  args: [],
-                })))}>
-                  <h3>{t('claimRewards')}</h3>
-                  <button type="submit" disabled={!isConnected || onWrongChain}>
-                    {t('claimRewards')}
-                  </button>
-                </form>
+                <button
+                  type="button"
+                  onClick={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({
+                    address: contracts.stakingProxy,
+                    abi: stakingAbi,
+                    functionName: 'claimRewards',
+                    args: [],
+                  })))}
+                  disabled={!isConnected || onWrongChain}
+                >
+                  {t('claimRewards')}
+                </button>
               </div>
             </article>
 
@@ -1175,17 +1176,18 @@ export default function App() {
                   {t('requestMonadUnstake')}
                 </button>
 
-                <form onSubmit={(event) => onSubmit(event, () => runWrite('claimSer9Rewards', () => ({
-                  address: contracts.stakingProxy,
-                  abi: stakingAbi,
-                  functionName: 'claimRewards' as const,
-                  args: [] as const,
-                })))}>
-                  <h3>{t('claimSer9Rewards')}</h3>
-                  <button type="submit" disabled={!isConnected || onWrongChain}>
-                    {t('claimSer9Rewards')}
-                  </button>
-                </form>
+                <button
+                  type="button"
+                  onClick={(event) => onSubmit(event, () => runWrite('claimSer9Rewards', () => ({
+                    address: contracts.stakingProxy,
+                    abi: stakingAbi,
+                    functionName: 'claimRewards' as const,
+                    args: [] as const,
+                  })))}
+                  disabled={!isConnected || onWrongChain}
+                >
+                  {t('claimSer9Rewards')}
+                </button>
               </div>
             </article>
           </section>
