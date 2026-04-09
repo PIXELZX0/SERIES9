@@ -7,6 +7,7 @@ import {
   useChainId,
   useConnect,
   useDisconnect,
+  usePublicClient,
   useReadContract,
   useReadContracts,
   useSwitchChain,
@@ -267,6 +268,7 @@ export default function App() {
 
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
+  const publicClient = usePublicClient({ chainId: networkConfig.chainId });
 
   const { connectAsync, connectors, isPending: isConnecting } = useConnect();
   const { disconnect } = useDisconnect();
@@ -808,7 +810,7 @@ export default function App() {
     resetErrors();
 
     try {
-      return await tx.executeSend(t('monadStake'), {
+      const request = {
         to: contracts.stakingProxy,
         value: parsePositiveTokenAmount(monadStakeAmount),
         data: encodeFunctionData({
@@ -816,7 +818,34 @@ export default function App() {
           functionName: 'stakeMonad',
           args: [],
         }),
-      });
+      };
+
+      if (publicClient && address) {
+        const optimizedRequest = await (async () => {
+          const feeEstimate = await publicClient.estimateFeesPerGas();
+          const feeOverrides = 'gasPrice' in feeEstimate
+            ? { gasPrice: feeEstimate.gasPrice }
+            : {
+                maxFeePerGas: feeEstimate.maxFeePerGas,
+                maxPriorityFeePerGas: feeEstimate.maxPriorityFeePerGas,
+              };
+          const estimatedGas = await publicClient.estimateGas({
+            account: address,
+            ...request,
+            ...feeOverrides,
+          });
+
+          return {
+            ...request,
+            ...feeOverrides,
+            gas: (estimatedGas * 110n) / 100n,
+          };
+        })().catch(() => request);
+
+        return await tx.executeSend(t('monadStake'), optimizedRequest);
+      }
+
+      return await tx.executeSend(t('monadStake'), request);
     } catch (error) {
       setFormError(mapLocalError(error));
       return undefined;
