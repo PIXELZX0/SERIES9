@@ -50,6 +50,21 @@ jobs:
           FOUNDRY_PROFILE: deploy
         run: forge build
 
+      - name: Generate ABI JSON files
+        id: abi
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ABI_DIR="release-abis-${GITHUB_REF_NAME}"
+          mkdir -p "$ABI_DIR"
+
+          jq '.abi' out/Series9Staking.sol/Series9Staking.json > "$ABI_DIR/Series9Staking.abi.json"
+          jq '.abi' out/SER9Token.sol/SER9Token.json > "$ABI_DIR/SER9Token.abi.json"
+          jq '.abi' out/Series9ManagedToken.sol/Series9ManagedToken.json > "$ABI_DIR/Series9ManagedToken.abi.json"
+
+          echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
+
       - name: Deploy implementations and generate Safe Transaction Builder JSON
         id: deploy
         env:
@@ -256,6 +271,7 @@ jobs:
           path: |
             ${{ steps.deploy.outputs.safe_json }}
             ${{ steps.deploy.outputs.run_file }}
+            ${{ steps.abi.outputs.abi_dir }}
 
       - name: Attach artifacts to release
         if: github.event_name == 'release'
@@ -264,6 +280,7 @@ jobs:
           files: |
             ${{ steps.deploy.outputs.safe_json }}
             ${{ steps.deploy.outputs.run_file }}
+            ${{ steps.abi.outputs.abi_dir }}/*.json
 
       - name: Write job summary
         run: |
@@ -277,10 +294,11 @@ jobs:
             echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
             echo "- Verification provider: \`MonadVision (Sourcify)\`"
             echo "- Verification URL: \`https://sourcify-api-monad.blockvision.org/api\`"
-            echo "- Verification status: \`${VERIFICATION_STATUS}\`"
-            if [[ -n "${VERIFICATION_FAILURES}" ]]; then
-              echo "- Verification failures: \`${VERIFICATION_FAILURES}\`"
-            fi
-            echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
-            echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
-          } >> "$GITHUB_STEP_SUMMARY"
+             echo "- Verification status: \`${VERIFICATION_STATUS}\`"
+             if [[ -n "${VERIFICATION_FAILURES}" ]]; then
+               echo "- Verification failures: \`${VERIFICATION_FAILURES}\`"
+             fi
+             echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
+             echo "- ABI JSON directory: \`${{ steps.abi.outputs.abi_dir }}\`"
+             echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
+           } >> "$GITHUB_STEP_SUMMARY"
