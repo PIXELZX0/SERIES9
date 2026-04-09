@@ -537,7 +537,7 @@ button:disabled {
 .status-actions {
   display: grid;
   gap: 0.65rem;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .status-actions > button {
@@ -553,7 +553,13 @@ button:disabled {
 }
 
 .status-actions button {
-  justify-self: start;
+  justify-self: stretch;
+}
+
+@media (max-width: 640px) {
+  .status-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 .metric-card {

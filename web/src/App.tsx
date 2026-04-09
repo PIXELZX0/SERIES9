@@ -38,6 +38,29 @@ type TokenMintPolicyValue = {
   rampStartBps: number;
 };
 
+type MonadUnstakeRequestValue = {
+  amount: bigint;
+  requestEpoch: number;
+  minClaimEpoch: number;
+  claimed: boolean;
+};
+
+const monadStakingPrecompileAbi = [
+  {
+    type: 'function',
+    name: 'getEpoch',
+    inputs: [],
+    outputs: [
+      { name: 'epoch', type: 'uint64', internalType: 'uint64' },
+      { name: 'inEpochDelayPeriod', type: 'bool', internalType: 'bool' },
+    ],
+    stateMutability: 'nonpayable',
+  },
+] as const;
+
+const MONAD_STAKING_PRECOMPILE = getAddress('0x0000000000000000000000000000000000001000');
+const MONAD_EPOCH_APPROX_MS = 5.5 * 60 * 60 * 1000;
+
 function parseTokenConfig(raw: unknown): TokenConfigValue | null {
   if (!raw) {
     return null;
@@ -117,6 +140,55 @@ function parseTokenMintPolicy(raw: unknown): TokenMintPolicyValue | null {
         maxSupply: value.maxSupply,
         maxMultiplierBps: value.maxMultiplierBps,
         rampStartBps: Number(value.rampStartBps),
+      };
+    }
+  }
+
+  return null;
+}
+
+function parseMonadUnstakeRequest(raw: unknown): MonadUnstakeRequestValue | null {
+  if (!raw) {
+    return null;
+  }
+
+  if (Array.isArray(raw)) {
+    const [amount, requestEpoch, minClaimEpoch, claimed] = raw;
+
+    if (
+      typeof amount === 'bigint' &&
+      (typeof requestEpoch === 'number' || typeof requestEpoch === 'bigint') &&
+      (typeof minClaimEpoch === 'number' || typeof minClaimEpoch === 'bigint') &&
+      typeof claimed === 'boolean'
+    ) {
+      return {
+        amount,
+        requestEpoch: Number(requestEpoch),
+        minClaimEpoch: Number(minClaimEpoch),
+        claimed,
+      };
+    }
+  }
+
+  if (typeof raw === 'object') {
+    const value = raw as {
+      amount?: unknown;
+      requestEpoch?: unknown;
+      minClaimEpoch?: unknown;
+      claimed?: unknown;
+    };
+
+    if (
+      typeof value.amount === 'bigint' &&
+      (typeof value.requestEpoch === 'number' || typeof value.requestEpoch === 'bigint') &&
+      (typeof value.minClaimEpoch === 'number' || typeof value.minClaimEpoch === 'bigint') &&
+      typeof value.claimed === 'boolean'
+    ) {
+      return {
+        amount: value.amount,
+        requestEpoch: Number(value.requestEpoch),
+        minClaimEpoch: Number(value.minClaimEpoch),
+        claimed: value.claimed,
       };
     }
   }
@@ -410,7 +482,45 @@ export default function App() {
     },
   });
 
+  const monadUnstakeRequestCountRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'monadUnstakeRequestCount',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const currentMonadEpochRead = useReadContract({
+    address: MONAD_STAKING_PRECOMPILE,
+    abi: monadStakingPrecompileAbi,
+    functionName: 'getEpoch',
+    query: {
+      refetchInterval: 60_000,
+    },
+  });
+
   const managedTokenCount = Number(managedTokenCountRead.data ?? 0n);
+  const monadUnstakeRequestCount = Number(monadUnstakeRequestCountRead.data ?? 0n);
+
+  const monadUnstakeRequestContracts = useMemo(
+    () =>
+      Array.from({ length: monadUnstakeRequestCount }, (_, index) => ({
+        address: contracts.stakingProxy,
+        abi: stakingAbi,
+        functionName: 'monadUnstakeRequest' as const,
+        args: [addressForReads, BigInt(index)] as const,
+      })),
+    [addressForReads, monadUnstakeRequestCount],
+  );
+
+  const monadUnstakeRequestsRead = useReadContracts({
+    contracts: monadUnstakeRequestContracts,
+    query: {
+      enabled: Boolean(normalizedConnectedAddress) && monadUnstakeRequestContracts.length > 0,
+    },
+  });
 
   const managedTokenReadContracts = useMemo(
     () =>
@@ -445,6 +555,93 @@ export default function App() {
 
     return items;
   }, [managedTokenListRead.data]);
+
+  const pendingMonadUnstakeSummary = useMemo(() => {
+    let totalAmount = 0n;
+    let latestMinClaimEpoch = 0;
+
+    for (const result of monadUnstakeRequestsRead.data ?? []) {
+      if (result.status !== 'success') {
+        continue;
+      }
+
+      const request = parseMonadUnstakeRequest(result.result);
+      if (!request || request.claimed) {
+        continue;
+      }
+
+      totalAmount += request.amount;
+      latestMinClaimEpoch = Math.max(latestMinClaimEpoch, request.minClaimEpoch);
+    }
+
+    return {
+      totalAmount,
+      latestMinClaimEpoch,
+    };
+  }, [monadUnstakeRequestsRead.data]);
+
+  const currentMonadEpoch = useMemo(() => {
+    const value = currentMonadEpochRead.data as unknown;
+
+    if (!value) {
+      return null;
+    }
+
+    if (Array.isArray(value)) {
+      const [epoch] = value;
+      if (typeof epoch === 'number' || typeof epoch === 'bigint') {
+        return Number(epoch);
+      }
+    }
+
+    if (typeof value === 'object' && value !== null) {
+      const parsedValue = value as { epoch?: unknown };
+      if (typeof parsedValue.epoch === 'number' || typeof parsedValue.epoch === 'bigint') {
+        return Number(parsedValue.epoch);
+      }
+    }
+
+    return null;
+  }, [currentMonadEpochRead.data]);
+
+  const pendingMonadUnstakeRemainingTime = useMemo(() => {
+    if (pendingMonadUnstakeSummary.totalAmount === 0n) {
+      return null;
+    }
+
+    if (currentMonadEpoch === null) {
+      return '-';
+    }
+
+    const remainingEpochs = Math.max(pendingMonadUnstakeSummary.latestMinClaimEpoch - currentMonadEpoch, 0);
+    if (remainingEpochs === 0) {
+      return t('readyToClaim');
+    }
+
+    const remainingMilliseconds = remainingEpochs * MONAD_EPOCH_APPROX_MS;
+    const totalMinutes = Math.ceil(remainingMilliseconds / 60_000);
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const minutes = totalMinutes % 60;
+
+    if (locale === 'ko') {
+      const segments = [
+        days > 0 ? `${days}일` : null,
+        hours > 0 ? `${hours}시간` : null,
+        minutes > 0 ? `${minutes}분` : null,
+      ].filter((segment): segment is string => Boolean(segment));
+
+      return `약 ${segments.join(' ')}`;
+    }
+
+    const segments = [
+      days > 0 ? `${days}d` : null,
+      hours > 0 ? `${hours}h` : null,
+      minutes > 0 ? `${minutes}m` : null,
+    ].filter((segment): segment is string => Boolean(segment));
+
+    return `~${segments.join(' ')}`;
+  }, [currentMonadEpoch, locale, pendingMonadUnstakeSummary.latestMinClaimEpoch, pendingMonadUnstakeSummary.totalAmount, t]);
 
   const onWrongChain = isConnected && chainId !== networkConfig.chainId;
 
@@ -1193,6 +1390,15 @@ export default function App() {
               <div className="metric-grid">
                 <MetricCard label={t('totalMonadStaked')} value={formatTokenAmount(totalMonadStakedRead.data)} />
                 <MetricCard label={t('yourMonadStake')} value={formatTokenAmount(userMonadStakedRead.data)} />
+                {pendingMonadUnstakeSummary.totalAmount > 0n && (
+                  <MetricCard
+                    label={t('unstakingAmount')}
+                    value={formatTokenAmount(pendingMonadUnstakeSummary.totalAmount)}
+                  />
+                )}
+                {pendingMonadUnstakeRemainingTime && (
+                  <MetricCard label={t('unstakeRemainingTime')} value={pendingMonadUnstakeRemainingTime} />
+                )}
                 <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
                 <MetricCard label={t('yourMonadSer9Rewards')} value={formatRewardAmount(userMonadEarnedRead.data)} />
               </div>
