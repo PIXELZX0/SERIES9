@@ -26,6 +26,10 @@ export function formatTokenAmount(
   }).format(numeric);
 }
 
+export function formatRewardAmount(value: bigint | undefined, decimals = 18): string {
+  return formatTokenAmount(value, decimals, 12);
+}
+
 export function shortenAddress(address: Address | undefined, size = 4): string {
   if (!address) {
     return '-';

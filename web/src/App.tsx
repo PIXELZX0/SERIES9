@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   useAccount,
   useBalance,
+  useBlockNumber,
   useChainId,
   useConnect,
   useDisconnect,
@@ -18,7 +19,7 @@ import { managedTokenAbi, ser9Abi, stakingAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
 import { type MessageKey } from './i18n';
 import { useI18n } from './i18n/useI18n';
-import { formatTokenAmount, shortenAddress } from './utils/format';
+import { formatRewardAmount, formatTokenAmount, shortenAddress } from './utils/format';
 import { parsePositiveTokenAmount } from './utils/validation';
 
 type ActionModalType = 'ser9Stake' | 'ser9Unstake' | 'monadStake' | 'monadUnstake';
@@ -335,6 +336,13 @@ export default function App() {
     functionName: 'managedTokensLength',
   });
 
+  const latestBlockNumber = useBlockNumber({
+    watch: true,
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
   const ser9AllowanceRead = useReadContract({
     address: contracts.ser9Proxy,
     abi: ser9Abi,
@@ -466,6 +474,15 @@ export default function App() {
     Boolean(tx.errorDetail) ||
     Boolean(formError) ||
     Boolean(tx.txHash);
+
+  useEffect(() => {
+    if (!normalizedConnectedAddress || latestBlockNumber.data === undefined) {
+      return;
+    }
+
+    void userEarnedRead.refetch();
+    void userMonadEarnedRead.refetch();
+  }, [latestBlockNumber.data, normalizedConnectedAddress, userEarnedRead, userMonadEarnedRead]);
 
   useEffect(() => {
     if (hasTxActivity) {
@@ -1109,7 +1126,7 @@ export default function App() {
               <div className="metric-grid">
                 <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
-                <MetricCard label={t('earnedRewards')} value={formatTokenAmount(userEarnedRead.data)} />
+                <MetricCard label={t('earnedRewards')} value={formatRewardAmount(userEarnedRead.data)} />
               </div>
               <div className="status-actions">
                 <button type="button" onClick={() => setActiveActionModal('ser9Stake')} disabled={!isConnected || onWrongChain}>
@@ -1147,7 +1164,7 @@ export default function App() {
                 <MetricCard label={t('totalMonadStaked')} value={formatTokenAmount(totalMonadStakedRead.data)} />
                 <MetricCard label={t('yourMonadStake')} value={formatTokenAmount(userMonadStakedRead.data)} />
                 <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
-                <MetricCard label={t('yourMonadSer9Rewards')} value={formatTokenAmount(userMonadEarnedRead.data)} />
+                <MetricCard label={t('yourMonadSer9Rewards')} value={formatRewardAmount(userMonadEarnedRead.data)} />
               </div>
               <div className="status-actions">
                 <button type="button" onClick={() => setActiveActionModal('monadStake')} disabled={!isConnected || onWrongChain}>
