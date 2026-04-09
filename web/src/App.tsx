@@ -922,20 +922,36 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="hero">
-        <div>
-          <nav className="page-nav">
-            <a href="/" className={normalizedPathname === '/' ? 'active' : ''}>
-              {t('navHome')}
-            </a>
-            <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
-              {t('navTokens')}
-            </a>
-          </nav>
-          <h1>{t('appTitle')}</h1>
-          <p>{t('appSubtitle')}</p>
+        <div className="hero-copy">
+          <div className="hero-topline">
+            <nav className="page-nav">
+              <a href="/" className={normalizedPathname === '/' ? 'active' : ''}>
+                {t('navHome')}
+              </a>
+              <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
+                {t('navTokens')}
+              </a>
+            </nav>
+            <div className="section-title hero-kicker">{t('stakingOverview')}</div>
+          </div>
+          <div className="hero-copy-block">
+            <h1>{t('appTitle')}</h1>
+            <p className="hero-description">{t('appSubtitle')}</p>
+          </div>
+          <div className="hero-badges">
+            <span className="hero-badge">
+              {t('targetChain')}: {networkConfig.chainId}
+            </span>
+            <span className="hero-badge">
+              {t('managedTokenCount')}: {String(managedTokenCount)}
+            </span>
+            <span className={`hero-badge ${pausedRead.data ? 'is-paused' : 'is-live'}`}>
+              {t('paused')}: {pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
+            </span>
+          </div>
         </div>
 
-        <div className="header-actions">
+        <div className="header-actions hero-panel">
           <div className="lang-switch">
             <span>{t('languageLabel')}</span>
             <button
@@ -952,6 +968,12 @@ export default function App() {
             >
               {t('english')}
             </button>
+          </div>
+
+          <div className="hero-account-card">
+            <span>{t('account')}</span>
+            <strong>{normalizedConnectedAddress ? shortenAddress(normalizedConnectedAddress, 6) : '-'}</strong>
+            <small>{isConnected ? `${t('networkLabel')}: ${chainId}` : t('connectHint')}</small>
           </div>
 
           {!isConnected ? (
@@ -982,19 +1004,19 @@ export default function App() {
       </header>
 
       <section className="connection-summary card">
-        <div>
+        <div className="summary-tile">
           <span>{t('account')}</span>
           <strong>{normalizedConnectedAddress ? shortenAddress(normalizedConnectedAddress, 6) : '-'}</strong>
         </div>
-        <div>
+        <div className="summary-tile">
           <span>{t('networkLabel')}</span>
           <strong>{isConnected ? chainId : '-'}</strong>
         </div>
-        <div>
+        <div className="summary-tile summary-tile-accent">
           <span>{t('targetChain')}</span>
           <strong>{networkConfig.chainId}</strong>
         </div>
-        <div>
+        <div className="summary-tile summary-tile-action">
           <button type="button" className="secondary" onClick={() => void queryClient.invalidateQueries()}>
             {t('refresh')}
           </button>
@@ -1019,12 +1041,22 @@ export default function App() {
       {isTokensListPage && (
         <>
           <section className="card">
-            <h2>{t('tokensPageTitle')}</h2>
+            <div className="section-head section-head-highlight">
+              <div>
+                <div className="section-title section-title-inline">{t('sectionManagedTokens')}</div>
+                <h2>{t('tokensPageTitle')}</h2>
+              </div>
+            </div>
             <p className="muted">{t('tokensPageHint')}</p>
           </section>
 
           <section className="card">
-            <h2>{t('stakingOverview')}</h2>
+            <div className="section-head section-head-highlight">
+              <div>
+                <div className="section-title section-title-inline">{t('stakingOverview')}</div>
+                <h2>{t('stakingOverview')}</h2>
+              </div>
+            </div>
             <div className="section-title">{t('protocolState')}</div>
             <div className="metric-grid">
               <MetricCard
@@ -1040,7 +1072,12 @@ export default function App() {
           </section>
 
           <section className="card">
-            <h2>{t('quickStakeSection')}</h2>
+            <div className="section-head section-head-highlight">
+              <div>
+                <div className="section-title section-title-inline">SER9</div>
+                <h2>{t('quickStakeSection')}</h2>
+              </div>
+            </div>
             <p className="muted">{t('quickStakeHint')}</p>
             <button type="button" className="primary" disabled={!isConnected || onWrongChain} onClick={() => setActiveActionModal('ser9Stake')}>
               {quickStakeNeedsApproval ? t('approveAndStake') : t('stake')}
@@ -1058,9 +1095,17 @@ export default function App() {
 
       {isHomePage && (
         <>
+          <div className="section-title section-title-top">{t('userState')}</div>
           <section className="summary-grid">
             <article className="status-card">
-              <h2>{t('ser9StakingStatus')}</h2>
+              <div className="status-card-head">
+                <div>
+                  <div className="section-title section-title-inline">SER9</div>
+                  <h2>{t('ser9StakingStatus')}</h2>
+                </div>
+                <span className="pill">SER9</span>
+              </div>
+              <p className="status-card-copy muted">{t('quickStakeHint')}</p>
               <div className="metric-grid">
                 <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
@@ -1090,14 +1135,20 @@ export default function App() {
             </article>
 
             <article className="status-card">
-              <h2>{t('monadStakingStatus')}</h2>
+              <div className="status-card-head">
+                <div>
+                  <div className="section-title section-title-inline">MONAD</div>
+                  <h2>{t('monadStakingStatus')}</h2>
+                </div>
+                <span className="pill">MON</span>
+              </div>
+              <p className="status-card-copy muted">{t('monadStakingDescription')}</p>
               <div className="metric-grid">
                 <MetricCard label={t('totalMonadStaked')} value={formatTokenAmount(totalMonadStakedRead.data)} />
                 <MetricCard label={t('yourMonadStake')} value={formatTokenAmount(userMonadStakedRead.data)} />
                 <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
                 <MetricCard label={t('yourMonadSer9Rewards')} value={formatTokenAmount(userMonadEarnedRead.data)} />
               </div>
-              <p className="muted">{t('monadStakingDescription')}</p>
               <div className="status-actions">
                 <button type="button" onClick={() => setActiveActionModal('monadStake')} disabled={!isConnected || onWrongChain}>
                   {t('monadStake')}
@@ -1127,7 +1178,12 @@ export default function App() {
 
       {!isHomePage && (
         <section className="card">
-          <h2>{t('sectionManagedTokens')}</h2>
+          <div className="section-head section-head-highlight">
+            <div>
+              <div className="section-title section-title-inline">{t('sectionManagedTokens')}</div>
+              <h2>{t('sectionManagedTokens')}</h2>
+            </div>
+          </div>
           {managedTokens.length === 0 ? (
             <p className="muted">{t('noManagedTokens')}</p>
           ) : (

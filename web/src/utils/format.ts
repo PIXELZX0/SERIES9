@@ -13,12 +13,12 @@ export function formatTokenAmount(
 
   if (!Number.isFinite(numeric)) {
     return formatUnits(value, decimals);
+  }
+
   const minimumVisibleValue = 1 / 10 ** maximumFractionDigits;
 
   if (numeric > 0 && numeric < minimumVisibleValue) {
     return `<${minimumVisibleValue.toFixed(maximumFractionDigits)}`;
-  }
-
   }
 
   return new Intl.NumberFormat('en-US', {
