@@ -187,6 +187,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error InsufficientLiquidMonad(uint256 requiredAmount, uint256 availableAmount);
     error NoAvailableWithdrawId(uint64 validatorId);
     error MonadPayoutFailed();
+    error NotInitialized();
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -270,6 +271,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         _;
     }
 
+    modifier whenInitialized() {
+        if (address(ser9) == address(0) || lastUpdateBlock == 0) {
+            revert NotInitialized();
+        }
+        _;
+    }
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
@@ -295,14 +303,21 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         ser9 = SER9Token(ser9Token);
         rewardRatePerBlock = rewardPerBlock;
+        monadRewardRatePerBlock = rewardPerBlock / 8;
         tokenCreationFee = initialCreationFee;
         lastUpdateBlock = block.number;
+        monadLastUpdateBlock = block.number;
         managedTokenImplementation = managedTokenImplementation_;
     }
 
     function initializeV2() external reinitializer(2) {
-        monadLastUpdateBlock = block.number;
-        monadRewardRatePerBlock = rewardRatePerBlock / 8;
+        if (monadLastUpdateBlock == 0) {
+            monadLastUpdateBlock = block.number;
+        }
+
+        if (monadRewardRatePerBlock == 0) {
+            monadRewardRatePerBlock = rewardRatePerBlock / 8;
+        }
     }
 
     function setRewardRatePerBlock(uint256 newRewardRatePerBlock) external onlyOwner updateReward(address(0)) {
@@ -547,7 +562,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit TokenFeeExemptUpdated(token, account, isExempt);
     }
 
-    function stake(uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
+    function stake(uint256 amount) external whenInitialized whenNotPaused nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
@@ -563,6 +578,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function stakeWithPermit2(uint256 amount, IPermit2.PermitSingle calldata permitSingle, bytes calldata permitSignature)
         external
+        whenInitialized
         whenNotPaused
         nonReentrant
         updateReward(msg.sender)
@@ -633,7 +649,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit Unstaked(msg.sender, request.amount);
     }
 
-    function stakeMonad() external payable whenNotPaused nonReentrant updateReward(msg.sender) {
+    function stakeMonad() external payable whenInitialized whenNotPaused nonReentrant updateReward(msg.sender) {
         uint256 amount = msg.value;
         if (amount == 0) {
             revert ZeroAmount();
@@ -943,7 +959,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return _previewCollateralForMint(config.mintRate, policy, currentSupply, amount);
     }
 
-    function stakeFeeToken(address token, uint256 amount) external whenNotPaused nonReentrant {
+    function stakeFeeToken(address token, uint256 amount) external whenInitialized whenNotPaused nonReentrant {
         if (amount == 0) {
             revert ZeroAmount();
         }
@@ -968,7 +984,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 amount,
         IPermit2.PermitSingle calldata permitSingle,
         bytes calldata permitSignature
-    ) external whenNotPaused nonReentrant {
+    ) external whenInitialized whenNotPaused nonReentrant {
         if (amount == 0) {
             revert ZeroAmount();
         }

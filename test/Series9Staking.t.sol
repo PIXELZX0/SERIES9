@@ -261,6 +261,25 @@ contract Series9StakingTest is Test {
         assertEq(ser9.totalSupply(), INITIAL_SUPPLY);
     }
 
+    function testInitializeSetsMonadRewardDefaults() public view {
+        assertEq(staking.monadRewardRatePerBlock(), REWARD_PER_BLOCK / 8);
+        assertEq(staking.monadLastUpdateBlock(), block.number);
+    }
+
+    function testCannotStakeBeforeInitialize() public {
+        Series9Staking uninitializedStaking = new Series9Staking();
+
+        vm.expectRevert(Series9Staking.NotInitialized.selector);
+        uninitializedStaking.stake(1 ether);
+    }
+
+    function testCannotStakeMonadBeforeInitialize() public {
+        Series9Staking uninitializedStaking = new Series9Staking();
+
+        vm.expectRevert(Series9Staking.NotInitialized.selector);
+        uninitializedStaking.stakeMonad{value: 1 ether}();
+    }
+
     function testOwnerCannotMintSER9Directly() public {
         vm.expectRevert(SER9Token.UnauthorizedMinter.selector);
         ser9.mint(alice, 1 ether);
@@ -1275,8 +1294,13 @@ contract Series9StakingTest is Test {
     }
 
     function testInitializeV2SetsDefaultMonadRewardRate() public {
+        staking.setMonadRewardRatePerBlock(3 ether);
+        uint256 initialMonadUpdateBlock = staking.monadLastUpdateBlock();
+
         staking.initializeV2();
-        assertEq(staking.monadRewardRatePerBlock(), REWARD_PER_BLOCK / 8);
+
+        assertEq(staking.monadRewardRatePerBlock(), 3 ether);
+        assertEq(staking.monadLastUpdateBlock(), initialMonadUpdateBlock);
     }
 
     function testStakeMonadAccruesAndClaimsSER9Rewards() public {
