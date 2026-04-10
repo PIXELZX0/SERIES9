@@ -27,7 +27,7 @@ export function formatTokenAmount(
 }
 
 export function formatRewardAmount(value: bigint | undefined, decimals = 18): string {
-  return formatTokenAmount(value, decimals, 12);
+  return formatTokenAmount(value, decimals, 3);
 }
 
 export function shortenAddress(address: Address | undefined, size = 4): string {
