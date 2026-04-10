@@ -2,6 +2,7 @@
 pragma solidity ^0.8.22;
 
 import {Test} from "forge-std/Test.sol";
+import {StdStorage, stdStorage} from "forge-std/StdStorage.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC1822Proxiable} from "openzeppelin-contracts/contracts/interfaces/draft-IERC1822.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
@@ -217,6 +218,8 @@ contract MonadStakingMock is IMonadStaking {
 }
 
 contract Series9StakingTest is Test {
+    using stdStorage for StdStorage;
+
     SER9Token internal ser9;
     Series9Staking internal staking;
     Permit2Mock internal permit2;
@@ -749,7 +752,7 @@ contract Series9StakingTest is Test {
         uint256 maxMintableAmount = staking.maxMintable(alice, token);
         assertGt(maxMintableAmount, 0);
 
-        uint256 available = staking.availableUnusedLocked(alice);
+        uint256 available = staking.availableMintCollateral(alice);
         uint256 costAtMax = staking.previewMintCollateral(token, maxMintableAmount);
         assertLe(costAtMax, available);
 
@@ -784,7 +787,18 @@ contract Series9StakingTest is Test {
         staking.mintManagedToken(token, 100 ether);
 
         assertEq(staking.availableUnusedLocked(alice), 0);
+        assertEq(staking.availableMintCollateral(alice), 0);
         assertEq(staking.maxMintable(alice, token), 0);
+    }
+
+    function testAvailableUnusedLockedReflectsLegacyResidualLocksOnly() public {
+        _stake(alice, 100 ether);
+
+        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(60 ether);
+        stdstore.target(address(staking)).sig("usedLockedSer9(address)").with_key(alice).checked_write(40 ether);
+
+        assertEq(staking.availableUnusedLocked(alice), 20 ether);
+        assertEq(staking.availableMintCollateral(alice), 60 ether);
     }
 
     function testMaxMintableHandlesOneWeiBoundary() public {

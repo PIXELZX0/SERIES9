@@ -1,6 +1,13 @@
 export const stakingAbi = [
   {
     type: 'function',
+    name: 'availableMintCollateral',
+    inputs: [{ name: 'user', type: 'address', internalType: 'address' }],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
     name: 'availableUnusedLocked',
     inputs: [{ name: 'user', type: 'address', internalType: 'address' }],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],

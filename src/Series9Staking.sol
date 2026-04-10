@@ -953,8 +953,12 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return low;
     }
 
-    function availableUnusedLocked(address user) external view returns (uint256) {
+    function availableMintCollateral(address user) external view returns (uint256) {
         return stakedBalance[user] - usedLockedSer9[user];
+    }
+
+    function availableUnusedLocked(address user) external view returns (uint256) {
+        return lockedBalance[user] - usedLockedSer9[user];
     }
 
     function tokenMintPolicies(address token)
