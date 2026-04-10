@@ -604,6 +604,27 @@ export default function App() {
     return null;
   }, [currentMonadEpochRead.data]);
 
+  const firstClaimableMonadUnstakeRequestId = useMemo(() => {
+    if (currentMonadEpoch === null) {
+      return null;
+    }
+
+    for (const [index, result] of (monadUnstakeRequestsRead.data ?? []).entries()) {
+      if (result.status !== 'success') {
+        continue;
+      }
+
+      const request = parseMonadUnstakeRequest(result.result);
+      if (!request || request.claimed || request.minClaimEpoch > currentMonadEpoch) {
+        continue;
+      }
+
+      return BigInt(index);
+    }
+
+    return null;
+  }, [currentMonadEpoch, monadUnstakeRequestsRead.data]);
+
   const pendingMonadUnstakeRemainingTime = useMemo(() => {
     if (pendingMonadUnstakeSummary.totalAmount === 0n) {
       return null;
@@ -1407,8 +1428,24 @@ export default function App() {
                   {t('monadStake')}
                 </button>
 
-                <button type="button" onClick={() => setActiveActionModal('monadUnstake')} disabled={!isConnected || onWrongChain}>
-                  {t('requestMonadUnstake')}
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    if (firstClaimableMonadUnstakeRequestId !== null) {
+                      onSubmit(event, () => runWrite('claimUnstakedMonad', () => ({
+                        address: contracts.stakingProxy,
+                        abi: stakingAbi,
+                        functionName: 'claimUnstakedMonad' as const,
+                        args: [firstClaimableMonadUnstakeRequestId] as const,
+                      })));
+                      return;
+                    }
+
+                    setActiveActionModal('monadUnstake');
+                  }}
+                  disabled={!isConnected || onWrongChain}
+                >
+                  {firstClaimableMonadUnstakeRequestId !== null ? t('claimUnstakedMonad') : t('requestMonadUnstake')}
                 </button>
 
                 <button

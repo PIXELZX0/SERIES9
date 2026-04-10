@@ -39,6 +39,7 @@ export const en = {
   monadStakingDescription: 'Stake native MON and earn SER9 rewards through the staking contract.',
   monadStake: 'Stake MON',
   requestMonadUnstake: 'Request Unstake',
+  claimUnstakedMonad: 'Withdraw MON',
   claimSer9Rewards: 'Claim SER9 Rewards',
   connectHint: 'Connect your wallet to view personal metrics and execute transactions.',
   paused: 'Paused',
