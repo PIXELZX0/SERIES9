@@ -455,6 +455,16 @@ export default function App() {
     },
   });
 
+  const ser9BalanceRead = useReadContract({
+    address: contracts.ser9Proxy,
+    abi: ser9Abi,
+    functionName: 'balanceOf',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
   const totalMonadStakedRead = useReadContract({
     address: contracts.stakingProxy,
     abi: stakingAbi,
@@ -1143,9 +1153,14 @@ export default function App() {
         <form className="single-form" onSubmit={(event) => onSubmit(event, submitActionModal)}>
           <input value={quickStakeAmount} onChange={(event) => setQuickStakeAmount(event.target.value)} placeholder={t('amount')} />
           {isConnected ? (
-            <p className="muted">
-              {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
-            </p>
+            <>
+              <p className="muted">
+                {t('ser9Balance')}: {formatTokenAmount(ser9BalanceRead.data)}
+              </p>
+              <p className="muted">
+                {t('currentAllowance')}: {formatTokenAmount(ser9AllowanceRead.data)}
+              </p>
+            </>
           ) : (
             <p className="muted">{t('connectHint')}</p>
           )}
@@ -1171,6 +1186,13 @@ export default function App() {
       return (
         <form className="single-form" onSubmit={(event) => onSubmit(event, submitActionModal)}>
           <input value={monadStakeAmount} onChange={(event) => setMonadStakeAmount(event.target.value)} placeholder={t('amount')} />
+          {isConnected ? (
+            <p className="muted">
+              {t('monBalance')}: {formatTokenAmount(monBalanceRead.data?.value, monBalanceRead.data?.decimals)}
+            </p>
+          ) : (
+            <p className="muted">{t('connectHint')}</p>
+          )}
           <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
             {t('monadStake')}
           </button>
@@ -1411,7 +1433,6 @@ export default function App() {
                 {pendingMonadUnstakeRemainingTime && (
                   <MetricCard label={t('unstakeRemainingTime')} value={pendingMonadUnstakeRemainingTime} />
                 )}
-                <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
               </div>
               <div className="status-actions status-actions-two">
                 <button type="button" onClick={() => setActiveActionModal('monadStake')} disabled={!isConnected || onWrongChain}>
