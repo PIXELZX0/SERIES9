@@ -665,6 +665,11 @@ export default function App() {
   }, [currentMonadEpoch, locale, pendingMonadUnstakeSummary.latestMinClaimEpoch, pendingMonadUnstakeSummary.totalAmount, t]);
 
   const onWrongChain = isConnected && chainId !== networkConfig.chainId;
+  const totalClaimableRewards = userEarnedRead.data ?? 0n;
+  const monadClaimableRewards = userMonadEarnedRead.data ?? 0n;
+  const ser9ClaimableRewards = totalClaimableRewards > monadClaimableRewards
+    ? totalClaimableRewards - monadClaimableRewards
+    : 0n;
 
   const parsedQuickStakeAmount = useMemo(() => {
     const amount = quickStakeAmount.trim();
@@ -1373,42 +1378,14 @@ export default function App() {
               <div className="metric-grid">
                 <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
-                <MetricCard
-                  label={t('earnedRewards')}
-                  value={(
-                    <div className="metric-value-stack">
-                      <span className="metric-value-line">
-                        <span className="metric-value-prefix">{t('ser9UnclaimedStakingRewards')}</span>
-                        <span>{formatRewardAmount(userEarnedRead.data)}</span>
-                      </span>
-                      <span className="metric-value-line">
-                        <span className="metric-value-prefix">{t('monadSer9UnclaimedRewards')}</span>
-                        <span>{formatRewardAmount(userMonadEarnedRead.data)}</span>
-                      </span>
-                    </div>
-                  )}
-                />
               </div>
-              <div className="status-actions">
+              <div className="status-actions status-actions-two">
                 <button type="button" onClick={() => setActiveActionModal('ser9Stake')} disabled={!isConnected || onWrongChain}>
                   {t('stake')}
                 </button>
 
                 <button type="button" onClick={() => setActiveActionModal('ser9Unstake')} disabled={!isConnected || onWrongChain}>
                   {t('unstake')}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({
-                    address: contracts.stakingProxy,
-                    abi: stakingAbi,
-                    functionName: 'claimRewards',
-                    args: [],
-                  })))}
-                  disabled={!isConnected || onWrongChain}
-                >
-                  {t('claimRewards')}
                 </button>
               </div>
             </article>
@@ -1436,7 +1413,7 @@ export default function App() {
                 )}
                 <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
               </div>
-              <div className="status-actions">
+              <div className="status-actions status-actions-two">
                 <button type="button" onClick={() => setActiveActionModal('monadStake')} disabled={!isConnected || onWrongChain}>
                   {t('monadStake')}
                 </button>
@@ -1461,6 +1438,36 @@ export default function App() {
                   {firstClaimableMonadUnstakeRequestId !== null ? t('claimUnstakedMonad') : t('requestMonadUnstake')}
                 </button>
 
+              </div>
+            </article>
+
+            <article className="status-card">
+              <div className="status-card-head">
+                <div>
+                  <div className="section-title section-title-inline">SER9</div>
+                  <h2>{t('rewardsStatus')}</h2>
+                </div>
+                <span className="pill">{t('rewardsStatus')}</span>
+              </div>
+              <p className="status-card-copy muted">{t('rewardsDescription')}</p>
+              <div className="metric-grid">
+                <MetricCard label={t('totalClaimableRewards')} value={formatRewardAmount(totalClaimableRewards)} />
+                <MetricCard label={t('ser9UnclaimedStakingRewards')} value={formatRewardAmount(ser9ClaimableRewards)} />
+                <MetricCard label={t('monadSer9UnclaimedRewards')} value={formatRewardAmount(monadClaimableRewards)} />
+              </div>
+              <div className="status-actions status-actions-single">
+                <button
+                  type="button"
+                  onClick={(event) => onSubmit(event, () => runWrite('claimRewards', () => ({
+                    address: contracts.stakingProxy,
+                    abi: stakingAbi,
+                    functionName: 'claimRewards',
+                    args: [],
+                  })))}
+                  disabled={!isConnected || onWrongChain}
+                >
+                  {t('claimRewards')}
+                </button>
               </div>
             </article>
           </section>
