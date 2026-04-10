@@ -152,6 +152,7 @@ contract DeploySeries9 is Script {
         }
 
         console.log("Verifying:", contractName, "at", contractAddr);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         try vm.ffi(cmd) returns (bytes memory result) {
             console.log(string(result));
         } catch {

@@ -3,8 +3,6 @@ pragma solidity ^0.8.22;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {SER9Token} from "../src/SER9Token.sol";
-import {Series9ManagedToken} from "../src/Series9ManagedToken.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
 
 /// @notice Generates Safe Transaction Builder JSON for admin operations.
@@ -43,6 +41,7 @@ contract SafeBatchBase is Script {
     function _writeBatch(string memory name, string memory txs) internal {
         string memory json = string.concat(_header(), txs, "]}");
         string memory path = string.concat("safe-tx-", name, ".json");
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.writeFile(path, json);
         console.log("Written:", path);
         console.log("Import into Safe Transaction Builder: https://app.safe.global/transactions/tx-builder");
@@ -101,7 +100,7 @@ contract SafeUnpause is SafeBatchBase {
     }
 }
 
-/// @notice Upgrade all tokens (SER9 + managed) in one Safe transaction
+/// @notice Upgrade SER9 and update the managed token implementation in one Safe batch
 /// Usage:
 ///   STAKING_PROXY=0x... forge script script/SafeBatch.s.sol:SafeUpgradeTokens \
 ///     --sig "run(address,address)" <newSer9Impl> <newManagedImpl>
@@ -112,13 +111,13 @@ contract SafeUpgradeTokens is SafeBatchBase {
         console.log("New SER9 impl:", newSer9Impl);
         console.log("New Managed impl:", newManagedImpl);
 
-        _writeBatch(
-            "upgrade-tokens",
-            _tx(
-                staking,
-                abi.encodeCall(Series9Staking.upgradeTokens, (newSer9Impl, newManagedImpl, bytes(""), bytes("")))
-            )
+        string memory txs = string.concat(
+            _tx(staking, abi.encodeCall(Series9Staking.upgradeSer9, (newSer9Impl, bytes("")))),
+            ",",
+            _tx(staking, abi.encodeCall(Series9Staking.setManagedTokenImplementation, (newManagedImpl)))
         );
+
+        _writeBatch("upgrade-tokens", txs);
     }
 }
 

@@ -12,8 +12,11 @@ import {Series9Staking} from "../src/Series9Staking.sol";
 ///
 /// Flow:
 ///   1. Deployer EOA deploys new implementation contracts (just code, no privileges)
-///   2. Script outputs a Safe TX Builder JSON for the upgradeTokens() call
-///   3. Import JSON into Safe{Wallet} → multisig signs → executes upgrade
+///   2. Script outputs a Safe TX Builder JSON for the explicit SER9 upgrade and
+///      managed-token implementation update calls
+///   3. Managed tokens can then be upgraded individually via owner bootstrap
+///      calls or token-triggered upgrade requests
+///   4. Import JSON into Safe{Wallet} → multisig signs → executes upgrade
 ///
 /// Usage:
 ///   PRIVATE_KEY=0x... STAKING_PROXY=0x... forge script script/UpgradeTokens.s.sol \
@@ -28,9 +31,7 @@ contract UpgradeTokens is Script {
         bool skipVerify = vm.envOr("SKIP_VERIFY", false);
 
         string memory ser9DataHex = vm.envOr("SER9_UPGRADE_DATA", string(""));
-        string memory managedDataHex = vm.envOr("MANAGED_UPGRADE_DATA", string(""));
         bytes memory ser9Data = bytes(ser9DataHex).length == 0 ? bytes("") : vm.parseBytes(ser9DataHex);
-        bytes memory managedData = bytes(managedDataHex).length == 0 ? bytes("") : vm.parseBytes(managedDataHex);
 
         // --- Phase 1: Deploy new implementations (deployer EOA, no privileges) ---
         vm.startBroadcast(deployerPrivateKey);
@@ -55,22 +56,26 @@ contract UpgradeTokens is Script {
         }
 
         // --- Phase 3: Generate Safe TX Builder JSON ---
-        bytes memory upgradeCalldata = abi.encodeCall(
-            Series9Staking.upgradeTokens,
-            (newSer9Implementation, newManagedImplementation, ser9Data, managedData)
-        );
+        bytes memory upgradeSer9Calldata = abi.encodeCall(Series9Staking.upgradeSer9, (newSer9Implementation, ser9Data));
+        bytes memory setManagedImplCalldata =
+            abi.encodeCall(Series9Staking.setManagedTokenImplementation, (newManagedImplementation));
 
         string memory json = string.concat(
             '{"version":"1.0","chainId":"',
             CHAIN_ID,
-            '","meta":{"name":"Series9 Upgrade","description":"Upgrade SER9 and managed token implementations"},"transactions":[{"to":"',
+            '","meta":{"name":"Series9 Upgrade","description":"Upgrade SER9 and set the latest managed token implementation for individual token upgrades"},"transactions":[{"to":"',
             vm.toString(stakingProxy),
             '","value":"0","data":"',
-            vm.toString(upgradeCalldata),
+            vm.toString(upgradeSer9Calldata),
+            '"},{"to":"',
+            vm.toString(stakingProxy),
+            '","value":"0","data":"',
+            vm.toString(setManagedImplCalldata),
             '"}]}'
         );
 
         string memory outputPath = "safe-tx-upgrade-tokens.json";
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.writeFile(outputPath, json);
 
         console.log("\n=== Safe Transaction Builder ===");
@@ -95,6 +100,7 @@ contract UpgradeTokens is Script {
         cmd[11] = VERIFIER_URL;
 
         console.log("Verifying:", contractName, "at", contractAddr);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         try vm.ffi(cmd) returns (bytes memory result) {
             console.log(string(result));
         } catch {

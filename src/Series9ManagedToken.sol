@@ -6,9 +6,16 @@ import {UUPSUpgradeable} from "openzeppelin-contracts/contracts/proxy/utils/UUPS
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
 import {ERC20Upgradeable} from "openzeppelin-contracts-upgradeable/contracts/token/ERC20/ERC20Upgradeable.sol";
 
+interface ISeries9ManagedTokenStaking {
+    function managedTokenImplementation() external view returns (address);
+    function requestManagedTokenUpgrade() external;
+}
+
 contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, UUPSUpgradeable {
     uint16 public constant MAX_FEE_BPS = 1_000;
     uint16 private constant BPS_DENOMINATOR = 10_000;
+    bytes32 private constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
     bool public feeEnabled;
     uint16 public feeBps;
@@ -93,6 +100,10 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
         emit FeeExemptUpdated(account, exempt);
     }
 
+    function requestUpgrade() public {
+        _requestUpgradeIfNeeded();
+    }
+
     function _setFeeBps(uint16 newFeeBps) internal {
         if (newFeeBps > MAX_FEE_BPS) {
             revert FeeTooHigh();
@@ -103,6 +114,8 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
     }
 
     function _update(address from, address to, uint256 value) internal virtual override {
+        _requestUpgradeIfNeeded();
+
         if (
             !feeEnabled || from == address(0) || to == address(0) || feeBps == 0 || isFeeExempt[from] || isFeeExempt[to]
         ) {
@@ -121,7 +134,28 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
         super._update(from, to, netAmount);
     }
 
+    function _requestUpgradeIfNeeded() internal returns (bool upgraded) {
+        address staking = owner();
+        if (staking.code.length == 0) {
+            return false;
+        }
+
+        address latestImplementation = ISeries9ManagedTokenStaking(staking).managedTokenImplementation();
+        if (_currentImplementation() == latestImplementation) {
+            return false;
+        }
+
+        ISeries9ManagedTokenStaking(staking).requestManagedTokenUpgrade();
+        return true;
+    }
+
+    function _currentImplementation() internal view returns (address implementation) {
+        assembly {
+            implementation := sload(IMPLEMENTATION_SLOT)
+        }
+    }
+
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[48] private __gap;
+    uint256[48] private _gap;
 }

@@ -16,9 +16,10 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
   - 생성 시 `mintRate`(토큰 1개당 필요한 SER9)
   - 선택적 transfer fee(`feeEnabled`, `feeBps`)
   - staking 컨트랙트가 owner로서 mint/burn/fee 설정 제어
-- `upgradeTokens`:
-  - `SER9` + 생성된 모든 managed token을 한 번에 일괄 업그레이드
-  - 선검증(UUPS 호환성/코드 존재) 후 단일 트랜잭션으로 원자적 실행
+- 업그레이드 경로:
+  - `upgradeSer9(...)`로 `SER9`를 명시적으로 업그레이드
+  - `setManagedTokenImplementation(...)`로 최신 managed token implementation을 설정
+  - 각 managed token은 `requestUpgrade(...)`로 staking 계약에 자신의 업그레이드를 요청하거나, owner가 `upgradeManagedToken(...)`으로 개별 업그레이드 가능
 
 ## 주요 규칙
 
@@ -90,7 +91,7 @@ cast send <STAKING_ADDRESS> "setPermit2(address)" <PERMIT2_ADDRESS> \
   --rpc-url <MONAD_RPC_URL>
 ```
 
-운영 중 일괄 업그레이드(Owner):
+운영 중 업그레이드(Owner):
 
 ```bash
 export PRIVATE_KEY=<PRIVATE_KEY>
@@ -100,13 +101,16 @@ export STAKING_PROXY=<STAKING_PROXY_ADDRESS>
 # export NEW_SER9_IMPLEMENTATION=<SER9_IMPL>
 # export NEW_MANAGED_IMPLEMENTATION=<MANAGED_IMPL>
 
-# 선택: upgradeToAndCall용 calldata (hex, 예: 0x1234...)
+# 선택: SER9 upgradeToAndCall용 calldata (hex, 예: 0x1234...)
 # export SER9_UPGRADE_DATA=0x
-# export MANAGED_UPGRADE_DATA=0x
 
 forge script script/UpgradeTokens.s.sol:UpgradeTokens \
   --rpc-url <MONAD_RPC_URL> \
   --broadcast
+
+# 그 다음 managed token implementation을 적용할 개별 토큰은
+# owner가 upgradeManagedToken(token, data)를 호출하거나,
+# 각 토큰에서 requestUpgrade()를 호출해 개별 업그레이드합니다.
 ```
 
 ## GitHub Actions 릴리즈 자동화
@@ -116,7 +120,7 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 
 - 워크플로: `.github/workflows/release-monad-mainnet-upgrade.yml`
 - 배포 방식: `forge create`로 새 implementation 3개(Staking/SER9/ManagedToken) 배포 후 Safe JSON 생성
-- 생성 파일: `safe-tx-upgrade-all-<release-tag>.json` (트랜잭션 2개: `upgradeToAndCall` + `upgradeTokens`)
+- 생성 파일: `safe-tx-upgrade-all-<release-tag>.json` (트랜잭션 3개: `upgradeToAndCall` + `upgradeSer9` + `setManagedTokenImplementation`)
 
 필수 GitHub Secrets:
 
@@ -128,7 +132,6 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 
 - `STAKING_UPGRADE_DATA`
 - `SER9_UPGRADE_DATA`
-- `MANAGED_UPGRADE_DATA`
 
 선택 GitHub Variables:
 

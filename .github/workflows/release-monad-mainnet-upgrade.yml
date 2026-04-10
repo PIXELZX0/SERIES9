@@ -23,7 +23,6 @@ jobs:
       STAKING_PROXY: ${{ secrets.STAKING_PROXY }}
       STAKING_UPGRADE_DATA: ${{ secrets.STAKING_UPGRADE_DATA }}
       SER9_UPGRADE_DATA: ${{ secrets.SER9_UPGRADE_DATA }}
-      MANAGED_UPGRADE_DATA: ${{ secrets.MANAGED_UPGRADE_DATA }}
 
     steps:
       - name: Checkout
@@ -90,11 +89,9 @@ jobs:
             export SKIP_VERIFY="false"
           fi
 
-          SER9_DATA="${SER9_UPGRADE_DATA:-}"
-          MANAGED_DATA="${MANAGED_UPGRADE_DATA:-}"
           STAKING_DATA="${STAKING_UPGRADE_DATA:-}"
+          SER9_DATA="${SER9_UPGRADE_DATA:-}"
           if [[ -z "$SER9_DATA" ]]; then SER9_DATA="0x"; fi
-          if [[ -z "$MANAGED_DATA" ]]; then MANAGED_DATA="0x"; fi
           if [[ -z "$STAKING_DATA" ]]; then STAKING_DATA="0x"; fi
 
           echo "Deploying Staking implementation..."
@@ -180,25 +177,28 @@ jobs:
             "$STAKING_IMPL" \
             "$STAKING_DATA")"
 
-          UPGRADE_TOKENS_CALLDATA="$(cast calldata \
-            "upgradeTokens(address,address,bytes,bytes)" \
+          UPGRADE_SER9_CALLDATA="$(cast calldata \
+            "upgradeSer9(address,bytes)" \
             "$SER9_IMPL" \
-            "$MANAGED_IMPL" \
-            "$SER9_DATA" \
-            "$MANAGED_DATA")"
+            "$SER9_DATA")"
+
+          SET_MANAGED_IMPL_CALLDATA="$(cast calldata \
+            "setManagedTokenImplementation(address)" \
+            "$MANAGED_IMPL")"
 
           SAFE_JSON_OUT="safe-tx-upgrade-all-${GITHUB_REF_NAME}.json"
           jq -n \
             --arg chainId "143" \
             --arg to "$STAKING_PROXY" \
             --arg stakingData "$STAKING_UPGRADE_CALLDATA" \
-            --arg tokensData "$UPGRADE_TOKENS_CALLDATA" \
+            --arg ser9Data "$UPGRADE_SER9_CALLDATA" \
+            --arg managedImplData "$SET_MANAGED_IMPL_CALLDATA" \
             '{
               version: "1.0",
               chainId: $chainId,
               meta: {
                 name: "Series9 Upgrade All",
-                description: "Upgrade Staking, SER9 and managed token implementations"
+                description: "Upgrade Staking and SER9, then set the latest managed token implementation"
               },
               transactions: [
                 {
@@ -209,7 +209,12 @@ jobs:
                 {
                   to: $to,
                   value: "0",
-                  data: $tokensData
+                  data: $ser9Data
+                },
+                {
+                  to: $to,
+                  value: "0",
+                  data: $managedImplData
                 }
               ]
             }' > "$SAFE_JSON_OUT"
@@ -262,6 +267,8 @@ jobs:
           echo "staking_impl=$STAKING_IMPL" >> "$GITHUB_OUTPUT"
           echo "ser9_impl=$SER9_IMPL" >> "$GITHUB_OUTPUT"
           echo "managed_impl=$MANAGED_IMPL" >> "$GITHUB_OUTPUT"
+          echo "verification_status=$VERIFICATION_STATUS" >> "$GITHUB_OUTPUT"
+          echo "verification_failures=$VERIFICATION_FAILURES" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -294,10 +301,10 @@ jobs:
             echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
             echo "- Verification provider: \`MonadVision (Sourcify)\`"
             echo "- Verification URL: \`https://sourcify-api-monad.blockvision.org/api\`"
-             echo "- Verification status: \`${VERIFICATION_STATUS}\`"
-             if [[ -n "${VERIFICATION_FAILURES}" ]]; then
-               echo "- Verification failures: \`${VERIFICATION_FAILURES}\`"
-             fi
+             echo "- Verification status: \`${{ steps.deploy.outputs.verification_status }}\`"
+             if [[ -n "${{ steps.deploy.outputs.verification_failures }}" ]]; then
+               echo "- Verification failures: \`${{ steps.deploy.outputs.verification_failures }}\`"
+              fi
              echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
              echo "- ABI JSON directory: \`${{ steps.abi.outputs.abi_dir }}\`"
              echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"

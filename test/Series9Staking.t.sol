@@ -24,9 +24,16 @@ contract Series9ManagedTokenV2 is Series9ManagedToken {
     }
 }
 
+contract Series9ManagedTokenV3 is Series9ManagedToken {
+    function version() external pure returns (uint256) {
+        return 3;
+    }
+}
+
 contract NonUUPSImplementation {}
 
 contract WrongUUIDImplementation is IERC1822Proxiable {
+    // forge-lint: disable-next-line(mixed-case-function)
     function proxiableUUID() external pure returns (bytes32) {
         return bytes32(uint256(123));
     }
@@ -47,7 +54,7 @@ contract Permit2Mock is IPermit2 {
             allowanceAmount[from][token][msg.sender] = allowed - amount;
         }
 
-        IERC20(token).transferFrom(from, to, amount);
+        require(IERC20(token).transferFrom(from, to, amount), "Permit2: transfer failed");
     }
 }
 
@@ -250,9 +257,9 @@ contract Series9StakingTest is Test {
         ser9.setStakingContract(address(staking));
         ser9.transferOwnership(address(staking));
 
-        ser9.transfer(alice, 10_000 ether);
-        ser9.transfer(bob, 10_000 ether);
-        ser9.transfer(charlie, 10_000 ether);
+        assertTrue(ser9.transfer(alice, 10_000 ether));
+        assertTrue(ser9.transfer(bob, 10_000 ether));
+        assertTrue(ser9.transfer(charlie, 10_000 ether));
 
         _installMonadPrecompileMock();
     }
@@ -346,6 +353,7 @@ contract Series9StakingTest is Test {
         IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
                 token: address(ser9),
+                // forge-lint: disable-next-line(unsafe-typecast)
                 amount: uint160(CREATION_FEE),
                 expiration: uint48(block.timestamp + 1 days),
                 nonce: 0
@@ -372,6 +380,7 @@ contract Series9StakingTest is Test {
         IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
             details: IPermit2.PermitDetails({
                 token: address(ser9),
+                // forge-lint: disable-next-line(unsafe-typecast)
                 amount: uint160(CREATION_FEE),
                 expiration: uint48(block.timestamp + 1 days),
                 nonce: 0
@@ -877,7 +886,7 @@ contract Series9StakingTest is Test {
 
         vm.startPrank(alice);
         staking.mintManagedToken(token, 2_000 ether);
-        Series9ManagedToken(token).transfer(bob, 1_200 ether);
+        assertTrue(Series9ManagedToken(token).transfer(bob, 1_200 ether));
         vm.stopPrank();
 
         vm.startPrank(alice);
@@ -888,7 +897,7 @@ contract Series9StakingTest is Test {
         vm.startPrank(bob);
         Series9ManagedToken(token).approve(address(staking), type(uint256).max);
         staking.stakeFeeToken(token, 500 ether);
-        Series9ManagedToken(token).transfer(charlie, 200 ether);
+        assertTrue(Series9ManagedToken(token).transfer(charlie, 200 ether));
         vm.stopPrank();
 
         assertEq(staking.pendingFeeRewards(token, alice), 65 ether);
@@ -916,7 +925,7 @@ contract Series9StakingTest is Test {
 
         vm.startPrank(alice);
         staking.mintManagedToken(token, 1_000 ether);
-        Series9ManagedToken(token).transfer(bob, 1_000 ether);
+        assertTrue(Series9ManagedToken(token).transfer(bob, 1_000 ether));
         vm.stopPrank();
 
         vm.startPrank(bob);
@@ -964,46 +973,62 @@ contract Series9StakingTest is Test {
         staking.setManagedTokenImplementation(address(managedV2));
     }
 
-    function testUpgradeTokensUpgradesSer9AndAllManagedTokens() public {
-        address tokenA = _createToken(alice, "A", "A", 1 ether, false, 0);
-        address tokenB = _createToken(alice, "B", "B", 2 ether, true, 300);
-
+    function testUpgradeSer9UsesExplicitPath() public {
         SER9TokenV2 ser9V2 = new SER9TokenV2();
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
 
-        staking.upgradeTokens(address(ser9V2), address(managedV2), bytes(""), bytes(""));
+        staking.upgradeSer9(address(ser9V2), bytes(""));
 
         assertEq(SER9TokenV2(address(ser9)).version(), 2);
-        assertEq(Series9ManagedTokenV2(tokenA).version(), 2);
-        assertEq(Series9ManagedTokenV2(tokenB).version(), 2);
-        assertEq(staking.managedTokenImplementation(), address(managedV2));
     }
 
-    function testOnlyOwnerCanUpgradeTokens() public {
+    function testOnlyOwnerCanUpgradeSer9() public {
         SER9TokenV2 ser9V2 = new SER9TokenV2();
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
 
         vm.expectRevert();
         vm.prank(alice);
-        staking.upgradeTokens(address(ser9V2), address(managedV2), bytes(""), bytes(""));
+        staking.upgradeSer9(address(ser9V2), bytes(""));
     }
 
-    function testUpgradeTokensRevertsOnZeroAddressImplementation() public {
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-
+    function testUpgradeSer9RevertsOnZeroAddressImplementation() public {
         vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidImplementation.selector, address(0)));
-        staking.upgradeTokens(address(0), address(managedV2), bytes(""), bytes(""));
+        staking.upgradeSer9(address(0), bytes(""));
     }
 
-    function testUpgradeTokensRevertsOnEOAImplementation() public {
-        SER9TokenV2 ser9V2 = new SER9TokenV2();
+    function testOwnerCanUpgradeManagedTokenIndividually() public {
+        address tokenA = _createToken(alice, "A", "A", 1 ether, false, 0);
+        address tokenB = _createToken(alice, "B", "B", 2 ether, true, 300);
 
+        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
+        staking.setManagedTokenImplementation(address(managedV2));
+        staking.upgradeManagedToken(tokenA, bytes(""));
+
+        assertEq(Series9ManagedTokenV2(tokenA).version(), 2);
+        (bool tokenBHasVersion,) = address(tokenB).staticcall(abi.encodeWithSelector(Series9ManagedTokenV2.version.selector));
+        assertFalse(tokenBHasVersion);
+        assertEq(staking.managedTokenImplementation(), address(managedV2));
+    }
+
+    function testOnlyOwnerCanUpgradeManagedToken() public {
+        address token = _createToken(alice, "A", "A", 1 ether, false, 0);
+        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
+        staking.setManagedTokenImplementation(address(managedV2));
+
+        vm.expectRevert();
+        vm.prank(alice);
+        staking.upgradeManagedToken(token, bytes(""));
+    }
+
+    function testSetManagedTokenImplementationRevertsOnZeroAddressImplementation() public {
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidImplementation.selector, address(0)));
+        staking.setManagedTokenImplementation(address(0));
+    }
+
+    function testSetManagedTokenImplementationRevertsOnEOAImplementation() public {
         vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidImplementation.selector, alice));
-        staking.upgradeTokens(address(ser9V2), alice, bytes(""), bytes(""));
+        staking.setManagedTokenImplementation(alice);
     }
 
-    function testUpgradeTokensRevertsOnNonUUPSImplementation() public {
-        SER9TokenV2 ser9V2 = new SER9TokenV2();
+    function testSetManagedTokenImplementationRevertsOnNonUUPSImplementation() public {
         NonUUPSImplementation badManagedImpl = new NonUUPSImplementation();
 
         vm.expectRevert(
@@ -1011,11 +1036,10 @@ contract Series9StakingTest is Test {
                 Series9Staking.ImplementationNotUUPSCompatible.selector, address(badManagedImpl)
             )
         );
-        staking.upgradeTokens(address(ser9V2), address(badManagedImpl), bytes(""), bytes(""));
+        staking.setManagedTokenImplementation(address(badManagedImpl));
     }
 
-    function testUpgradeTokensRevertsOnWrongUUIDImplementation() public {
-        SER9TokenV2 ser9V2 = new SER9TokenV2();
+    function testSetManagedTokenImplementationRevertsOnWrongUUIDImplementation() public {
         WrongUUIDImplementation badManagedImpl = new WrongUUIDImplementation();
 
         vm.expectRevert(
@@ -1023,26 +1047,41 @@ contract Series9StakingTest is Test {
                 Series9Staking.UnsupportedProxiableUUID.selector, address(badManagedImpl), bytes32(uint256(123))
             )
         );
-        staking.upgradeTokens(address(ser9V2), address(badManagedImpl), bytes(""), bytes(""));
+        staking.setManagedTokenImplementation(address(badManagedImpl));
     }
 
-    function testUpgradeTokensPrevalidationPreventsPartialUpgrade() public {
+    function testManagedTokenCanRequestItsOwnUpgradeFromStaking() public {
         address token = _createToken(alice, "PRE", "PRE", 1 ether, false, 0);
+        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
+        Series9ManagedTokenV3 managedV3 = new Series9ManagedTokenV3();
 
-        SER9TokenV2 ser9V2 = new SER9TokenV2();
-        NonUUPSImplementation badManagedImpl = new NonUUPSImplementation();
+        staking.setManagedTokenImplementation(address(managedV2));
+        staking.upgradeManagedToken(token, bytes(""));
+        assertEq(Series9ManagedTokenV2(token).version(), 2);
 
-        vm.expectRevert();
-        staking.upgradeTokens(address(ser9V2), address(badManagedImpl), bytes(""), bytes(""));
-
-        (bool ser9HasVersion,) = address(ser9).staticcall(abi.encodeWithSelector(SER9TokenV2.version.selector));
-        (bool managedHasVersion,) =
-            address(token).staticcall(abi.encodeWithSelector(Series9ManagedTokenV2.version.selector));
-        assertFalse(ser9HasVersion);
-        assertFalse(managedHasVersion);
+        staking.setManagedTokenImplementation(address(managedV3));
+        Series9ManagedToken(token).requestUpgrade();
+        assertEq(Series9ManagedTokenV3(token).version(), 3);
     }
 
-    function testUpgradeTokensPreservesStateAndCreatorPrivileges() public {
+    function testManagedTokenAutoRequestsUpgradeOnTransfer() public {
+        _stake(alice, 200 ether);
+        address token = _createToken(alice, "AUTO", "AUT", 1 ether, false, 0);
+
+        vm.prank(alice);
+        staking.mintManagedToken(token, 20 ether);
+
+        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
+        staking.setManagedTokenImplementation(address(managedV2));
+
+        vm.prank(alice);
+        assertTrue(Series9ManagedToken(token).transfer(bob, 5 ether));
+
+        assertEq(Series9ManagedTokenV2(token).version(), 2);
+        assertEq(Series9ManagedToken(token).balanceOf(bob), 5 ether);
+    }
+
+    function testManagedTokenUpgradePreservesStateAndCreatorPrivileges() public {
         _stake(alice, 200 ether);
         address token = _createToken(alice, "STATE", "STA", 2 ether, true, 300);
 
@@ -1056,9 +1095,9 @@ contract Series9StakingTest is Test {
         uint256 debtBefore = staking.userTokenDebt(alice, token);
         uint256 feeBpsBefore = Series9ManagedToken(token).feeBps();
 
-        SER9TokenV2 ser9V2 = new SER9TokenV2();
         Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.upgradeTokens(address(ser9V2), address(managedV2), bytes(""), bytes(""));
+        staking.setManagedTokenImplementation(address(managedV2));
+        staking.upgradeManagedToken(token, bytes(""));
 
         assertEq(staking.stakedBalance(alice), stakedBefore);
         assertEq(staking.lockedBalance(alice), lockedBefore);
@@ -1071,7 +1110,7 @@ contract Series9StakingTest is Test {
         assertEq(Series9ManagedToken(token).feeBps(), 400);
     }
 
-    function testUpgradeTokensWorksForManyManagedTokens() public {
+    function testManagedTokensUpgradeIndividuallyWithoutBatchSemantics() public {
         address[] memory tokens = new address[](8);
         for (uint256 i = 0; i < tokens.length; ++i) {
             string memory suffix = vm.toString(i);
@@ -1080,13 +1119,23 @@ contract Series9StakingTest is Test {
             );
         }
 
-        SER9TokenV2 ser9V2 = new SER9TokenV2();
         Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.upgradeTokens(address(ser9V2), address(managedV2), bytes(""), bytes(""));
+        staking.setManagedTokenImplementation(address(managedV2));
 
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            assertEq(Series9ManagedTokenV2(tokens[i]).version(), 2);
-        }
+        staking.upgradeManagedToken(tokens[0], bytes(""));
+        staking.upgradeManagedToken(tokens[3], bytes(""));
+        staking.upgradeManagedToken(tokens[7], bytes(""));
+
+        assertEq(Series9ManagedTokenV2(tokens[0]).version(), 2);
+        assertEq(Series9ManagedTokenV2(tokens[3]).version(), 2);
+        assertEq(Series9ManagedTokenV2(tokens[7]).version(), 2);
+
+        (bool tokenOneHasVersion,) =
+            address(tokens[1]).staticcall(abi.encodeWithSelector(Series9ManagedTokenV2.version.selector));
+        (bool tokenTwoHasVersion,) =
+            address(tokens[2]).staticcall(abi.encodeWithSelector(Series9ManagedTokenV2.version.selector));
+        assertFalse(tokenOneHasVersion);
+        assertFalse(tokenTwoHasVersion);
     }
 
     function testPauseBlocksUserActions() public {
@@ -1319,6 +1368,85 @@ contract Series9StakingTest is Test {
         assertEq(claimed, 1 ether);
     }
 
+    function testStakeMonadAutoDelegatesUsingExistingTargets() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+
+        vm.deal(bob, 20 ether);
+        vm.prank(bob);
+        staking.stakeMonad{value: 3 ether}();
+
+        uint64 lastTargetValidatorId = staking.targetValidatorIds(4);
+        assertEq(staking.totalDelegatedMonad(), 13 ether);
+        assertEq(staking.validatorDelegatedAmount(lastTargetValidatorId), 2.6 ether);
+        assertEq(address(staking).balance, 0);
+    }
+
+    function testHarvestMonadValidatorRewardsClaimsAllTrackedValidators() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        monadStakingMock.setDelegatorRewards(1, address(staking), 1 ether);
+        monadStakingMock.setDelegatorRewards(5, address(staking), 2 ether);
+
+        staking.setMonadRebalanceKeeper(bob, true);
+        vm.prank(bob);
+        staking.harvestMonadValidatorRewards();
+
+        assertEq(staking.protocolMonadYieldAccrued(), 3 ether);
+        assertEq(address(staking).balance, 3 ether);
+    }
+
+    function testTransferExcessMonadYieldOnlyTransfersHarvestedYield() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+        staking.setMonadRebalanceKeeper(bob, true);
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        monadStakingMock.setDelegatorRewards(1, address(staking), 2 ether);
+
+        vm.prank(bob);
+        staking.harvestMonadValidatorRewards();
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(4 ether);
+
+        monadStakingMock.setEpoch(4, false);
+        staking.rebalanceMonadDelegations();
+
+        uint256 bobBefore = bob.balance;
+        vm.prank(bob);
+        staking.transferExcessMonadYield(payable(bob), 2 ether);
+
+        assertEq(bob.balance, bobBefore + 2 ether);
+        assertEq(staking.protocolMonadYieldAccrued(), 0);
+
+        uint256 aliceBefore = alice.balance;
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        assertEq(alice.balance, aliceBefore + 4 ether);
+    }
+
     function testRequestUnstakeMonadIsAlwaysDelayed() public {
         staking.initializeV2();
         _installMonadPrecompileMock();
@@ -1435,16 +1563,22 @@ contract Series9StakingTest is Test {
 
         (,, uint64 minClaimEpoch,) = staking.monadUnstakeRequest(bob, requestId);
         assertEq(minClaimEpoch, 4);
-        assertEq(staking.totalDelegatedMonad(), 10 ether);
+        assertEq(staking.totalDelegatedMonad(), 11 ether);
 
         monadStakingMock.setEpoch(4, false);
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 2 ether, 0));
+        vm.prank(bob);
+        staking.claimUnstakedMonad(requestId);
+
+        staking.rebalanceMonadDelegations();
+
         uint256 bobBefore = bob.balance;
 
         vm.prank(bob);
         staking.claimUnstakedMonad(requestId);
 
         assertEq(bob.balance, bobBefore + 2 ether);
-        assertEq(staking.totalDelegatedMonad(), 10 ether);
+        assertEq(staking.totalDelegatedMonad(), 9.4 ether);
     }
 
     function testMonadUnstakeDoesNotDoubleQueueWhenPendingUndelegationAlreadyCoversShortfall() public {

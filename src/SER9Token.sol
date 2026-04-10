@@ -47,5 +47,5 @@ contract SER9Token is Initializable, ERC20Upgradeable, OwnableUpgradeable, UUPSU
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[49] private __gap;
+    uint256[49] private _gap;
 }

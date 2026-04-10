@@ -216,8 +216,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 lockedAfter
     );
     event UnusedLockedUnlocked(address indexed user, uint256 amount, uint256 lockedAfter);
+    event Ser9Upgraded(address indexed ser9Proxy, address indexed newImplementation);
     event ManagedTokenImplementationUpdated(address previousImpl, address newImpl);
-    event TokensUpgraded(address ser9Proxy, address ser9Impl, address managedImpl, uint256 managedCount);
+    event ManagedTokenUpgraded(address indexed token, address indexed newImplementation);
 
     event TokenFeeBpsUpdated(address indexed token, uint16 feeBps);
     event TokenFeeExemptUpdated(address indexed token, address indexed account, bool isExempt);
@@ -245,10 +246,16 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event MonadUndelegateQueued(uint64 indexed validatorId, uint8 indexed withdrawId, uint256 amount, uint64 claimableEpoch);
     event MonadWithdrawProcessed(uint64 indexed validatorId, uint8 indexed withdrawId, uint256 amount);
     event MonadYieldAccrued(uint64 indexed validatorId, uint256 amount);
+    event MonadYieldTransferred(address indexed recipient, uint256 amount);
     event MonadTargetsUpdated(uint64[5] validatorIds, uint16[5] weightsBps, uint8 targetCount);
     event MonadRebalanced(uint256 totalMonadStaked, uint256 totalDelegatedMonad, uint256 totalPendingUndelegateMonad);
 
     modifier updateReward(address account) {
+        _updateReward(account);
+        _;
+    }
+
+    function _updateReward(address account) internal {
         rewardPerTokenStored = rewardPerToken();
         lastUpdateBlock = block.number;
         monadRewardPerTokenStored = monadRewardPerToken();
@@ -261,21 +268,28 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             userMonadRewardPerTokenPaid[account] = monadRewardPerTokenStored;
         }
 
-        _;
     }
 
     modifier onlyMonadRebalanceOperator() {
-        if (msg.sender != owner() && !monadRebalanceKeepers[msg.sender]) {
-            revert UnauthorizedRebalanceOperator();
-        }
+        _onlyMonadRebalanceOperator();
         _;
     }
 
+    function _onlyMonadRebalanceOperator() internal view {
+        if (msg.sender != owner() && !monadRebalanceKeepers[msg.sender]) {
+            revert UnauthorizedRebalanceOperator();
+        }
+    }
+
     modifier whenInitialized() {
+        _whenInitialized();
+        _;
+    }
+
+    function _whenInitialized() internal view {
         if (address(ser9) == address(0) || lastUpdateBlock == 0) {
             revert NotInitialized();
         }
-        _;
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -375,12 +389,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit ManagedTokenImplementationUpdated(previousImpl, newImplementation);
     }
 
-    function upgradeTokens(address newSer9Impl, address newManagedImpl, bytes calldata ser9Data, bytes calldata managedData)
-        external
-        onlyOwner
-    {
+    function upgradeSer9(address newSer9Impl, bytes calldata ser9Data) external onlyOwner {
         _validateImplementation(newSer9Impl);
-        _validateImplementation(newManagedImpl);
 
         address ser9Proxy = address(ser9);
         if (ser9Proxy.code.length == 0) {
@@ -392,29 +402,16 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             revert UnauthorizedTokenOwner(ser9Proxy, ser9Owner);
         }
 
-        uint256 managedCount = managedTokens.length;
-        for (uint256 i = 0; i < managedCount; ++i) {
-            address token = managedTokens[i];
-            if (token.code.length == 0) {
-                revert InvalidManagedToken();
-            }
-
-            address tokenOwner = Series9ManagedToken(token).owner();
-            if (tokenOwner != address(this)) {
-                revert UnauthorizedTokenOwner(token, tokenOwner);
-            }
-        }
-
         ser9.upgradeToAndCall(newSer9Impl, ser9Data);
+        emit Ser9Upgraded(ser9Proxy, newSer9Impl);
+    }
 
-        for (uint256 i = 0; i < managedCount; ++i) {
-            Series9ManagedToken(managedTokens[i]).upgradeToAndCall(newManagedImpl, managedData);
-        }
+    function upgradeManagedToken(address token, bytes calldata data) external onlyOwner {
+        _upgradeManagedToken(token, managedTokenImplementation, data);
+    }
 
-        address previousManagedImplementation = managedTokenImplementation;
-        managedTokenImplementation = newManagedImpl;
-        emit ManagedTokenImplementationUpdated(previousManagedImplementation, newManagedImpl);
-        emit TokensUpgraded(ser9Proxy, newSer9Impl, newManagedImpl, managedCount);
+    function requestManagedTokenUpgrade() external {
+        _upgradeManagedToken(msg.sender, managedTokenImplementation, bytes(""));
     }
 
     function createManagedToken(
@@ -657,8 +654,44 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         monadStakedBalance[msg.sender] += amount;
         totalMonadStaked += amount;
+        _autoDelegateMonadStake();
 
         emit MonadStaked(msg.sender, amount);
+    }
+
+    function harvestMonadValidatorRewards()
+        external
+        whenNotPaused
+        nonReentrant
+        onlyMonadRebalanceOperator
+        updateReward(address(0))
+    {
+        _harvestMonadValidatorRewards();
+    }
+
+    function transferExcessMonadYield(address payable recipient, uint256 amount)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyMonadRebalanceOperator
+    {
+        if (amount == 0) {
+            revert ZeroAmount();
+        }
+
+        uint256 availableAmount = _availableExcessMonadYield();
+        if (amount > availableAmount) {
+            revert InsufficientLiquidMonad(amount, availableAmount);
+        }
+
+        protocolMonadYieldAccrued -= amount;
+
+        (bool ok,) = recipient.call{value: amount}("");
+        if (!ok) {
+            revert MonadPayoutFailed();
+        }
+
+        emit MonadYieldTransferred(recipient, amount);
     }
 
     function requestUnstakeMonad(uint256 amount)
@@ -1373,6 +1406,100 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return balance - protocolMonadYieldAccrued;
     }
 
+    function _availableExcessMonadYield() internal view returns (uint256) {
+        uint256 balance = address(this).balance;
+        uint256 reservedForClaims = pendingMonadUnstakePrincipal;
+        if (balance <= reservedForClaims) {
+            return 0;
+        }
+
+        uint256 availableAmount = balance - reservedForClaims;
+        if (availableAmount > protocolMonadYieldAccrued) {
+            return protocolMonadYieldAccrued;
+        }
+
+        return availableAmount;
+    }
+
+    function _autoDelegateMonadStake() internal {
+        uint256 liquidAmount = _availableLiquidForActiveDelegation();
+        if (liquidAmount == 0) {
+            return;
+        }
+
+        uint256 selectedCount = targetValidatorCount;
+        if (selectedCount == 0) {
+            uint64 fallbackValidatorId = _fallbackTrackedValidator();
+            if (fallbackValidatorId == 0) {
+                return;
+            }
+
+            _delegateMonadAmountToValidator(fallbackValidatorId, liquidAmount);
+            return;
+        }
+
+        uint64[] memory selectedValidators = new uint64[](selectedCount);
+        uint256[] memory targetAmounts = new uint256[](selectedCount);
+        uint256 remaining = totalMonadStaked;
+
+        for (uint256 i = 0; i < selectedCount; ++i) {
+            selectedValidators[i] = targetValidatorIds[i];
+            if (i == selectedCount - 1) {
+                targetAmounts[i] = remaining;
+            } else {
+                targetAmounts[i] = Math.mulDiv(totalMonadStaked, targetValidatorWeightsBps[i], BPS_DENOMINATOR);
+                remaining -= targetAmounts[i];
+            }
+        }
+
+        for (uint256 i = 0; i < selectedCount && liquidAmount > 0; ++i) {
+            uint64 validatorId = selectedValidators[i];
+            uint256 delegatedAmount = validatorDelegatedAmount[validatorId];
+            uint256 targetAmount = targetAmounts[i];
+            if (delegatedAmount >= targetAmount) {
+                continue;
+            }
+
+            uint256 delegateAmount = targetAmount - delegatedAmount;
+            if (delegateAmount > liquidAmount) {
+                delegateAmount = liquidAmount;
+            }
+
+            if (_delegateMonadAmountToValidator(validatorId, delegateAmount)) {
+                liquidAmount -= delegateAmount;
+            }
+        }
+    }
+
+    function _fallbackTrackedValidator() internal view returns (uint64 validatorId) {
+        uint256 trackedLength = trackedValidators.length;
+        for (uint256 i = 0; i < trackedLength; ++i) {
+            uint64 candidateValidatorId = trackedValidators[i];
+            if (validatorDelegatedAmount[candidateValidatorId] > 0) {
+                return candidateValidatorId;
+            }
+        }
+    }
+
+    function _delegateMonadAmountToValidator(uint64 validatorId, uint256 amount) internal returns (bool delegated) {
+        if (validatorId == 0 || amount == 0) {
+            return false;
+        }
+
+        _trackValidator(validatorId);
+        try _monadStaking().delegate{value: amount}(validatorId) returns (bool success) {
+            if (!success) {
+                return false;
+            }
+        } catch {
+            return false;
+        }
+
+        validatorDelegatedAmount[validatorId] += amount;
+        totalDelegatedMonad += amount;
+        return true;
+    }
+
     function _queueUnstakeFromDelegations(uint256 amount, uint64 epoch)
         internal
         returns (uint64 maxClaimableEpoch)
@@ -1625,21 +1752,21 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             uint256 remainder = BPS_DENOMINATOR - (equalWeight * selectedCount);
             for (uint256 i = 0; i < selectedCount; ++i) {
                 uint256 weight = equalWeight + (i < remainder ? 1 : 0);
-                targetValidatorWeightsBps[i] = uint16(weight);
+                targetValidatorWeightsBps[i] = SafeCast.toUint16(weight);
             }
         } else {
             for (uint256 i = 0; i < selectedCount; ++i) {
                 uint256 weight = Math.mulDiv(candidates[i].score, BPS_DENOMINATOR, totalScore);
-                targetValidatorWeightsBps[i] = uint16(weight);
+                targetValidatorWeightsBps[i] = SafeCast.toUint16(weight);
                 assigned += weight;
             }
 
             if (assigned < BPS_DENOMINATOR) {
-                targetValidatorWeightsBps[0] += uint16(BPS_DENOMINATOR - assigned);
+                targetValidatorWeightsBps[0] += SafeCast.toUint16(BPS_DENOMINATOR - assigned);
             }
         }
 
-        targetValidatorCount = uint8(selectedCount);
+        targetValidatorCount = SafeCast.toUint8(selectedCount);
         emit MonadTargetsUpdated(targetValidatorIds, targetValidatorWeightsBps, targetValidatorCount);
     }
 
@@ -1730,18 +1857,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 continue;
             }
 
-            _trackValidator(validatorId);
-            try _monadStaking().delegate{value: delegateAmount}(validatorId) returns (bool success) {
-                if (!success) {
-                    continue;
-                }
-            } catch {
-                continue;
+            if (_delegateMonadAmountToValidator(validatorId, delegateAmount)) {
+                liquidAmount -= delegateAmount;
             }
-
-            validatorDelegatedAmount[validatorId] += delegateAmount;
-            totalDelegatedMonad += delegateAmount;
-            liquidAmount -= delegateAmount;
         }
     }
 
@@ -1759,7 +1877,24 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
     }
 
+    function _upgradeManagedToken(address token, address newImplementation, bytes memory data) internal {
+        _requireManagedToken(token);
+        _validateImplementation(newImplementation);
+
+        if (token.code.length == 0) {
+            revert InvalidManagedToken();
+        }
+
+        address tokenOwner = Series9ManagedToken(token).owner();
+        if (tokenOwner != address(this)) {
+            revert UnauthorizedTokenOwner(token, tokenOwner);
+        }
+
+        Series9ManagedToken(token).upgradeToAndCall(newImplementation, data);
+        emit ManagedTokenUpgraded(token, newImplementation);
+    }
+
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[26] private __gap;
+    uint256[26] private _gap;
 }
