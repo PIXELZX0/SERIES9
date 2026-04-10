@@ -579,6 +579,25 @@ button:disabled {
   font-size: 1rem;
 }
 
+.metric-value-stack {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.metric-value-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.metric-value-prefix {
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.78rem;
+}
+
 .token-list {
   display: grid;
   gap: 0.8rem;

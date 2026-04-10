@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   useAccount,
   useBalance,
@@ -196,11 +196,11 @@ function parseMonadUnstakeRequest(raw: unknown): MonadUnstakeRequestValue | null
   return null;
 }
 
-function MetricCard({ label, value }: { label: string; value: string }) {
+function MetricCard({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="metric-card">
       <span className="metric-label">{label}</span>
-      <strong className="metric-value">{value}</strong>
+      <div className="metric-value">{value}</div>
     </div>
   );
 }
@@ -1373,7 +1373,21 @@ export default function App() {
               <div className="metric-grid">
                 <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
-                <MetricCard label={t('earnedRewards')} value={formatRewardAmount(userEarnedRead.data)} />
+                <MetricCard
+                  label={t('earnedRewards')}
+                  value={(
+                    <div className="metric-value-stack">
+                      <span className="metric-value-line">
+                        <span className="metric-value-prefix">{t('ser9UnclaimedStakingRewards')}</span>
+                        <span>{formatRewardAmount(userEarnedRead.data)}</span>
+                      </span>
+                      <span className="metric-value-line">
+                        <span className="metric-value-prefix">{t('monadSer9UnclaimedRewards')}</span>
+                        <span>{formatRewardAmount(userMonadEarnedRead.data)}</span>
+                      </span>
+                    </div>
+                  )}
+                />
               </div>
               <div className="status-actions">
                 <button type="button" onClick={() => setActiveActionModal('ser9Stake')} disabled={!isConnected || onWrongChain}>
@@ -1421,7 +1435,6 @@ export default function App() {
                   <MetricCard label={t('unstakeRemainingTime')} value={pendingMonadUnstakeRemainingTime} />
                 )}
                 <MetricCard label={t('monBalance')} value={formatTokenAmount(monBalanceRead.data?.value)} />
-                <MetricCard label={t('yourMonadSer9Rewards')} value={formatRewardAmount(userMonadEarnedRead.data)} />
               </div>
               <div className="status-actions">
                 <button type="button" onClick={() => setActiveActionModal('monadStake')} disabled={!isConnected || onWrongChain}>
@@ -1448,18 +1461,6 @@ export default function App() {
                   {firstClaimableMonadUnstakeRequestId !== null ? t('claimUnstakedMonad') : t('requestMonadUnstake')}
                 </button>
 
-                <button
-                  type="button"
-                  onClick={(event) => onSubmit(event, () => runWrite('claimSer9Rewards', () => ({
-                    address: contracts.stakingProxy,
-                    abi: stakingAbi,
-                    functionName: 'claimRewards' as const,
-                    args: [] as const,
-                  })))}
-                  disabled={!isConnected || onWrongChain}
-                >
-                  {t('claimSer9Rewards')}
-                </button>
               </div>
             </article>
           </section>
