@@ -801,6 +801,63 @@ contract Series9StakingTest is Test {
         assertEq(staking.availableMintCollateral(alice), 60 ether);
     }
 
+    function testBurnAndUnlockAutoUnlocksLegacyUnusedLockedBalance() public {
+        _stake(alice, 100 ether);
+        address token = _createToken(alice, "AUTOBURN", "ABR", 2 ether, false, 0);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 30 ether);
+        vm.stopPrank();
+
+        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(80 ether);
+
+        vm.prank(alice);
+        staking.burnAndUnlock(token, 10 ether);
+
+        assertEq(staking.userTokenDebt(alice, token), 20 ether);
+        assertEq(staking.usedLockedSer9(alice), 40 ether);
+        assertEq(staking.lockedBalance(alice), 40 ether);
+        assertEq(staking.availableUnusedLocked(alice), 0);
+    }
+
+    function testUnstakeAutoUnlocksLegacyUnusedLockedBalance() public {
+        _stake(alice, 100 ether);
+        address token = _createToken(alice, "AUTOUNSTAKE", "AUS", 2 ether, false, 0);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 20 ether);
+        vm.stopPrank();
+
+        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(60 ether);
+
+        vm.prank(alice);
+        staking.unstake(60 ether);
+
+        assertEq(staking.lockedBalance(alice), 40 ether);
+        assertEq(staking.usedLockedSer9(alice), 40 ether);
+        assertEq(staking.stakedBalance(alice), 40 ether);
+        assertEq(staking.availableUnusedLocked(alice), 0);
+    }
+
+    function testMintManagedTokenAutoUnlocksLegacyUnusedLockedBalance() public {
+        _stake(alice, 100 ether);
+        address token = _createToken(alice, "AUTOMINT", "AMT", 2 ether, false, 0);
+
+        vm.startPrank(alice);
+        staking.mintManagedToken(token, 20 ether);
+        vm.stopPrank();
+
+        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(60 ether);
+
+        vm.prank(alice);
+        staking.mintManagedToken(token, 10 ether);
+
+        assertEq(staking.userTokenDebt(alice, token), 30 ether);
+        assertEq(staking.usedLockedSer9(alice), 60 ether);
+        assertEq(staking.lockedBalance(alice), 60 ether);
+        assertEq(staking.availableUnusedLocked(alice), 0);
+    }
+
     function testMaxMintableHandlesOneWeiBoundary() public {
         _stake(alice, 1);
         address token = _createTokenWithPolicy(alice, "ONEWEI", "OWI", 1 ether, false, 0, 1_000 ether, 20_000, 0);

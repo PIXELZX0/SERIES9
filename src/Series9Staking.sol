@@ -598,6 +598,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             revert ZeroAmount();
         }
 
+        _autoUnlockUnusedLocked(msg.sender);
+
         uint256 userStaked = stakedBalance[msg.sender];
         if (amount > userStaked) {
             revert InsufficientStakedBalance();
@@ -828,6 +830,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             revert ZeroAmount();
         }
 
+        _autoUnlockUnusedLocked(msg.sender);
+
         TokenConfig storage config = _requireManagedToken(token);
         TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
         uint256 currentSupply = Series9ManagedToken(token).totalSupply();
@@ -890,6 +894,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         userTokenCollateralUsed[msg.sender][token] = collateralUsedBefore - collateralRelease;
 
         lockedBalance[msg.sender] = userLocked - collateralRelease;
+        _autoUnlockUnusedLocked(msg.sender);
         _syncRewardWeight(msg.sender);
 
         Series9ManagedToken(token).burnFromAccount(msg.sender, burnAmount);
@@ -1283,6 +1288,17 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         if (!config.feeEnabled) {
             revert FeeDisabled();
         }
+    }
+
+    function _autoUnlockUnusedLocked(address account) internal {
+        uint256 userLocked = lockedBalance[account];
+        uint256 userUsed = usedLockedSer9[account];
+        if (userLocked <= userUsed) {
+            return;
+        }
+
+        lockedBalance[account] = userUsed;
+        emit UnusedLockedUnlocked(account, userLocked - userUsed, userUsed);
     }
 
     function _syncRewardWeight(address account) internal {
