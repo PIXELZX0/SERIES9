@@ -125,7 +125,7 @@ contract MonadStakingMock is IMonadStaking {
         info.stake -= amount;
         validatorInfo[validatorId].stake -= amount;
         withdrawalInfo[validatorId][msg.sender][withdrawId] =
-            WithdrawalRequestInfo({amount: amount, claimableEpoch: currentEpoch + 3});
+            WithdrawalRequestInfo({amount: amount, claimableEpoch: currentEpoch + 5});
         return true;
     }
 
@@ -1205,7 +1205,7 @@ contract Series9StakingTest is Test {
         assertEq(staking.stakedBalance(alice), 0);
         assertEq(ser9.balanceOf(alice), balanceBefore - stakeAmount);
 
-        monadStakingMock.setEpoch(4, false);
+        monadStakingMock.setEpoch(6, false);
         staking.claimUnstaked(0);
         assertEq(ser9.balanceOf(alice), balanceBefore);
         vm.stopPrank();
@@ -1288,15 +1288,15 @@ contract Series9StakingTest is Test {
         (uint256 amount, uint64 requestEpoch, uint64 minClaimEpoch, bool claimed) = staking.ser9UnstakeRequest(alice, 0);
         assertEq(amount, 100 ether);
         assertEq(requestEpoch, 1);
-        assertEq(minClaimEpoch, 4);
+        assertEq(minClaimEpoch, 6);
         assertFalse(claimed);
         assertEq(ser9.balanceOf(alice), balanceBefore - 100 ether);
 
-        monadStakingMock.setEpoch(3, false);
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.UnstakeRequestNotClaimable.selector, uint64(3), uint64(4)));
+        monadStakingMock.setEpoch(5, false);
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.UnstakeRequestNotClaimable.selector, uint64(5), uint64(6)));
         staking.claimUnstaked(0);
 
-        monadStakingMock.setEpoch(4, false);
+        monadStakingMock.setEpoch(6, false);
         staking.claimUnstaked(0);
         vm.stopPrank();
 
@@ -1430,7 +1430,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         uint256 requestId = staking.requestUnstakeMonad(4 ether);
 
-        monadStakingMock.setEpoch(4, false);
+        monadStakingMock.setEpoch(6, false);
         staking.rebalanceMonadDelegations();
 
         uint256 bobBefore = bob.balance;
@@ -1458,12 +1458,12 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         uint256 requestId = staking.requestUnstakeMonad(2 ether);
 
-        monadStakingMock.setEpoch(3, false);
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.UnstakeRequestNotClaimable.selector, uint64(3), uint64(4)));
+        monadStakingMock.setEpoch(5, false);
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.UnstakeRequestNotClaimable.selector, uint64(5), uint64(6)));
         vm.prank(alice);
         staking.claimUnstakedMonad(requestId);
 
-        monadStakingMock.setEpoch(4, false);
+        monadStakingMock.setEpoch(6, false);
         uint256 aliceBefore = alice.balance;
 
         vm.prank(alice);
@@ -1527,9 +1527,9 @@ contract Series9StakingTest is Test {
         uint256 requestId = staking.requestUnstakeMonad(4 ether);
 
         (,, uint64 minClaimEpoch,) = staking.monadUnstakeRequest(alice, requestId);
-        assertEq(minClaimEpoch, 4);
+        assertEq(minClaimEpoch, 6);
 
-        monadStakingMock.setEpoch(4, false);
+        monadStakingMock.setEpoch(6, false);
 
         vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 4 ether, 0));
         vm.prank(alice);
@@ -1562,10 +1562,10 @@ contract Series9StakingTest is Test {
         uint256 requestId = staking.requestUnstakeMonad(2 ether);
 
         (,, uint64 minClaimEpoch,) = staking.monadUnstakeRequest(bob, requestId);
-        assertEq(minClaimEpoch, 4);
+        assertEq(minClaimEpoch, 6);
         assertEq(staking.totalDelegatedMonad(), 11 ether);
 
-        monadStakingMock.setEpoch(4, false);
+        monadStakingMock.setEpoch(6, false);
         vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 2 ether, 0));
         vm.prank(bob);
         staking.claimUnstakedMonad(requestId);

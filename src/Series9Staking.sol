@@ -26,7 +26,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 private constant MONAD_SCORE_PRECISION = 1e18;
     uint256 private constant MONAD_TARGET_COUNT = 5;
     uint256 private constant MONAD_SCAN_LIMIT = 100;
-    uint64 private constant UNSTAKE_DELAY_EPOCHS = 3;
+    uint64 private constant UNSTAKE_DELAY_EPOCHS = 5;
     uint64 private constant MONAD_PRECOMPILE_ADDRESS = 0x1000;
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
