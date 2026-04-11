@@ -12,6 +12,11 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
   - fee 활성 토큰의 전송 수수료를 토큰별 스테이커에게 분배
   - Permit2 기반 서명 전송(`stakeWithPermit2`, `createManagedTokenWithPermit2`, `stakeFeeTokenWithPermit2`) 지원
   - 관리 토큰 생성 시 선택적 `maxSupply` + 동적 mint rate 정책(`maxMultiplierBps`, `rampStartBps`) 지원
+  - Monad epoch 조회 실패 시 fail-open 하지 않고 즉시 revert (`MonadEpochReadFailed`)
+  - pause 중에도 이미 만기 도달한 `claimUnstaked(...)`, `claimUnstakedMonad(...)` 원금 출금은 허용
+  - Monad unstake coverage queueing은 `processPendingMonadUnstakeCoverage(maxValidators)`로 누구나 진행 가능하고, 만기 도달한 undelegation 출금은 `processMaturedMonadUndelegations(maxTickets)`로 누구나 진행 가능
+  - `claimUnstakedMonad(...)`는 이미 backing/withdraw 처리가 끝난 요청만 청구하며, backlog를 durable 하게 전진시키는 경로는 위 permissionless processor들임
+  - validator/ticket 전역 처리는 cursor 기반 bounded batch로 나뉘므로 backlog가 큰 경우 여러 번 호출해 점진적으로 처리 가능
 - `Series9ManagedToken`:
   - 생성 시 `mintRate`(토큰 1개당 필요한 SER9)
   - 선택적 transfer fee(`feeEnabled`, `feeBps`)
@@ -33,6 +38,7 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 8. `burnAndUnlock`은 burn한 담보 비율만큼만 정확히 언락됨
 9. `SER9.mint`는 staking 컨트랙트 주소만 호출 가능하며, owner 직접 민트는 불가
 10. `maxSupply > 0`인 토큰은 공급량이 상한에 가까워질수록 민트 담보 비용이 증가하며, 상한 초과 mint는 revert
+11. Monad unstake backing queue / validator reward harvest / matured undelegation withdraw / delegation rebalance는 더 이상 전체 배열 full scan에 의존하지 않고 bounded multi-call progress를 사용
 
 ## 컨트랙트
 
@@ -47,6 +53,13 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 - `tokenMintPolicies(token)`
 - `effectiveMintRate(token)`
 - `previewMintCollateral(token, amount)`
+
+Monad unstake/undelegation 관련 주요 함수:
+
+- `requestUnstakeMonad(amount)`
+- `claimUnstakedMonad(requestId)`
+- `processPendingMonadUnstakeCoverage(maxValidators)`
+- `processMaturedMonadUndelegations(maxTickets)`
 
 ## 빠른 시작
 

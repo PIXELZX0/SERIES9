@@ -6,6 +6,7 @@ import {StdStorage, stdStorage} from "forge-std/StdStorage.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC1822Proxiable} from "openzeppelin-contracts/contracts/interfaces/draft-IERC1822.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {SafeCast} from "openzeppelin-contracts/contracts/utils/math/SafeCast.sol";
 
 import {SER9Token} from "../src/SER9Token.sol";
 import {Series9ManagedToken} from "../src/Series9ManagedToken.sol";
@@ -37,6 +38,12 @@ contract WrongUUIDImplementation is IERC1822Proxiable {
     // forge-lint: disable-next-line(mixed-case-function)
     function proxiableUUID() external pure returns (bytes32) {
         return bytes32(uint256(123));
+    }
+}
+
+contract Series9StakingHarness is Series9Staking {
+    function exposeDelegateMonadAmountToValidator(uint64 validatorId, uint256 amount) external returns (bool) {
+        return _delegateMonadAmountToValidator(validatorId, amount);
     }
 }
 
@@ -80,6 +87,7 @@ contract MonadStakingMock is IMonadStaking {
 
     uint64 internal currentEpoch;
     bool internal currentInDelayPeriod;
+    bool internal revertEpochRead;
     uint64[] internal executionValset;
 
     mapping(uint64 => ValidatorInfo) internal validatorInfo;
@@ -90,6 +98,10 @@ contract MonadStakingMock is IMonadStaking {
     function setEpoch(uint64 epoch_, bool inDelayPeriod_) external {
         currentEpoch = epoch_;
         currentInDelayPeriod = inDelayPeriod_;
+    }
+
+    function setEpochReadFailure(bool shouldFail) external {
+        revertEpochRead = shouldFail;
     }
 
     function setExecutionValidatorSet(uint64[] calldata validatorIds) external {
@@ -156,8 +168,24 @@ contract MonadStakingMock is IMonadStaking {
         return true;
     }
 
-    function getExecutionValidatorSet(uint32) external view returns (bool isDone, uint32 nextIndex, uint64[] memory valIds) {
-        return (true, 0, executionValset);
+    function getExecutionValidatorSet(uint32 startIndex)
+        external
+        view
+        returns (bool isDone, uint32 nextIndex, uint64[] memory valIds)
+    {
+        uint256 length = executionValset.length;
+        if (startIndex >= length) {
+            return (true, startIndex, new uint64[](0));
+        }
+
+        uint256 remaining = length - startIndex;
+        valIds = new uint64[](remaining);
+        for (uint256 i = 0; i < remaining; ++i) {
+            valIds[i] = executionValset[startIndex + i];
+        }
+
+        nextIndex = SafeCast.toUint32(length);
+        isDone = true;
     }
 
     function getValidator(uint64 validatorId)
@@ -213,15 +241,17 @@ contract MonadStakingMock is IMonadStaking {
     }
 
     function getEpoch() external view returns (uint64 epoch, bool inEpochDelayPeriod) {
+        require(!revertEpochRead, "mock: epoch read failed");
         return (currentEpoch, currentInDelayPeriod);
     }
 }
 
 contract Series9StakingTest is Test {
     using stdStorage for StdStorage;
+    using SafeCast for uint256;
 
     SER9Token internal ser9;
-    Series9Staking internal staking;
+    Series9StakingHarness internal staking;
     Permit2Mock internal permit2;
     MonadStakingMock internal monadStakingMock;
 
@@ -236,13 +266,13 @@ contract Series9StakingTest is Test {
     function setUp() public {
         SER9Token ser9Implementation = new SER9Token();
         Series9ManagedToken managedTokenImplementation = new Series9ManagedToken();
-        Series9Staking stakingImplementation = new Series9Staking();
+        Series9StakingHarness stakingImplementation = new Series9StakingHarness();
 
         ser9 = SER9Token(
             address(new ERC1967Proxy(address(ser9Implementation), abi.encodeCall(SER9Token.initialize, (address(this)))))
         );
 
-        staking = Series9Staking(
+        staking = Series9StakingHarness(
             payable(
                 new ERC1967Proxy(
                     address(stakingImplementation),
@@ -1241,6 +1271,23 @@ contract Series9StakingTest is Test {
         staking.unpause();
     }
 
+    function testPausedMaturedSer9ClaimStillSucceeds() public {
+        vm.startPrank(alice);
+        ser9.approve(address(staking), type(uint256).max);
+        staking.stake(100 ether);
+        staking.unstake(100 ether);
+        vm.stopPrank();
+
+        monadStakingMock.setEpoch(6, false);
+        staking.pause();
+
+        uint256 balanceBefore = ser9.balanceOf(alice);
+        vm.prank(alice);
+        staking.claimUnstaked(0);
+
+        assertEq(ser9.balanceOf(alice), balanceBefore + 100 ether);
+    }
+
     function testSetSer9StakingContract() public {
         address newStaking = makeAddr("newStaking");
 
@@ -1539,6 +1586,17 @@ contract Series9StakingTest is Test {
         assertEq(alice.balance, aliceBefore + 2 ether);
     }
 
+    function testEpochReadFailureFailsClosed() public {
+        vm.startPrank(alice);
+        ser9.approve(address(staking), type(uint256).max);
+        staking.stake(100 ether);
+        monadStakingMock.setEpochReadFailure(true);
+
+        vm.expectRevert(Series9Staking.MonadEpochReadFailed.selector);
+        staking.unstake(100 ether);
+        vm.stopPrank();
+    }
+
     function testRebalanceSelectsTopFiveAndAccruesProtocolYield() public {
         staking.initializeV2();
         _installMonadPrecompileMock();
@@ -1581,7 +1639,7 @@ contract Series9StakingTest is Test {
         assertTrue(hasValidatorSix);
     }
 
-    function testDelayedUnstakeClaimRequiresRebalanceWithdrawalStep() public {
+    function testDelayedUnstakeClaimRequiresPermissionlessMaturedProcessorWhenLiquidityIsStillPending() public {
         staking.initializeV2();
         _installMonadPrecompileMock();
         _configureValidatorSet123456();
@@ -1603,7 +1661,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.claimUnstakedMonad(requestId);
 
-        staking.rebalanceMonadDelegations();
+        staking.processMaturedMonadUndelegations(0);
 
         uint256 aliceBefore = alice.balance;
         vm.prank(alice);
@@ -1612,7 +1670,189 @@ contract Series9StakingTest is Test {
         assertEq(alice.balance, aliceBefore + 4 ether);
     }
 
-    function testMonadUnstakeUsesExistingLiquidBalanceBeforeUndelegating() public {
+    function testPausedMaturedMonadClaimStillSucceeds() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        vm.deal(alice, 20 ether);
+
+        vm.prank(alice);
+        staking.stakeMonad{value: 5 ether}();
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(2 ether);
+
+        monadStakingMock.setEpoch(6, false);
+        staking.pause();
+
+        uint256 aliceBefore = alice.balance;
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        assertEq(alice.balance, aliceBefore + 2 ether);
+    }
+
+    function testPausedMaturedMonadClaimStillNeedsExternalMaturedProcessor() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(4 ether);
+
+        monadStakingMock.setEpoch(6, false);
+        staking.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 4 ether, 0));
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        vm.prank(bob);
+        staking.processMaturedMonadUndelegations(0);
+
+        uint256 aliceBefore = alice.balance;
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        assertEq(alice.balance, aliceBefore + 4 ether);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+    }
+
+    function testRequestUnstakeMonadKeepsMinClaimEpochMaxUntilAllCoverageIsQueuedAcrossBatches() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 30);
+
+        vm.deal(alice, 100 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 60 ether}();
+
+        for (uint64 validatorId = 1; validatorId <= 30; ++validatorId) {
+            staking.exposeDelegateMonadAmountToValidator(validatorId, 2 ether);
+        }
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(60 ether);
+
+        (uint256 amount,, uint64 minClaimEpoch, bool claimed) = staking.monadUnstakeRequest(alice, requestId);
+        assertEq(amount, 60 ether);
+        assertEq(minClaimEpoch, type(uint64).max);
+        assertFalse(claimed);
+        assertEq(staking.totalPendingUndelegateMonad(), 50 ether);
+
+        uint64 coverageEpoch = staking.processPendingMonadUnstakeCoverage(0);
+        assertEq(coverageEpoch, 6);
+
+        (,, minClaimEpoch,) = staking.monadUnstakeRequest(alice, requestId);
+        assertEq(minClaimEpoch, 6);
+        assertEq(staking.totalPendingUndelegateMonad(), 60 ether);
+    }
+
+    function testClaimNeedingMoreThanOneMaturedWithdrawBatchDoesNotProgressOnRevert() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 30);
+
+        vm.deal(alice, 100 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 60 ether}();
+
+        for (uint64 validatorId = 1; validatorId <= 30; ++validatorId) {
+            staking.exposeDelegateMonadAmountToValidator(validatorId, 2 ether);
+        }
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(60 ether);
+
+        staking.processPendingMonadUnstakeCoverage(0);
+        monadStakingMock.setEpoch(6, false);
+
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 60 ether, 0));
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        assertEq(staking.totalPendingUndelegateMonad(), 60 ether);
+
+        uint256 processedFirstCall = staking.processMaturedMonadUndelegations(0);
+        assertEq(processedFirstCall, 25);
+        assertEq(staking.totalPendingUndelegateMonad(), 10 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 60 ether, 50 ether));
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+
+        assertEq(staking.totalPendingUndelegateMonad(), 10 ether);
+
+        uint256 processedSecondCall = staking.processMaturedMonadUndelegations(0);
+        assertEq(processedSecondCall, 5);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+
+        uint256 aliceBefore = alice.balance;
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+        assertEq(alice.balance, aliceBefore + 60 ether);
+    }
+
+    function testPermissionlessMaturedMonadUndelegationProcessing() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(4 ether);
+
+        monadStakingMock.setEpoch(6, false);
+
+        vm.prank(bob);
+        uint256 processed = staking.processMaturedMonadUndelegations(0);
+
+        assertGt(processed, 0);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+
+        uint256 aliceBefore = alice.balance;
+        vm.prank(alice);
+        staking.claimUnstakedMonad(requestId);
+        assertEq(alice.balance, aliceBefore + 4 ether);
+    }
+
+    function testMaturedMonadUndelegationProcessingMakesBoundedProgressAcrossCalls() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 100 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 60 ether}();
+        staking.rebalanceMonadDelegations();
+
+        for (uint256 i = 0; i < 30; ++i) {
+            vm.prank(alice);
+            staking.requestUnstakeMonad(1 ether);
+        }
+
+        assertEq(staking.totalPendingUndelegateMonad(), 30 ether);
+
+        monadStakingMock.setEpoch(6, false);
+
+        uint256 processedFirstCall = staking.processMaturedMonadUndelegations(0);
+        assertGt(processedFirstCall, 0);
+        assertGt(staking.totalPendingUndelegateMonad(), 0);
+
+        uint256 processedSecondCall = staking.processMaturedMonadUndelegations(0);
+        assertGt(processedSecondCall, 0);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+    }
+
+    function testMonadUnstakeClaimNoLongerNeedsKeeperRebalanceAfterQueuedUndelegationMatures() public {
         staking.initializeV2();
         _installMonadPrecompileMock();
         _configureValidatorSet123456();
@@ -1634,11 +1874,12 @@ contract Series9StakingTest is Test {
         assertEq(staking.totalDelegatedMonad(), 11 ether);
 
         monadStakingMock.setEpoch(6, false);
+
         vm.expectRevert(abi.encodeWithSelector(Series9Staking.InsufficientLiquidMonad.selector, 2 ether, 0));
         vm.prank(bob);
         staking.claimUnstakedMonad(requestId);
 
-        staking.rebalanceMonadDelegations();
+        staking.processMaturedMonadUndelegations(0);
 
         uint256 bobBefore = bob.balance;
 
@@ -1646,7 +1887,8 @@ contract Series9StakingTest is Test {
         staking.claimUnstakedMonad(requestId);
 
         assertEq(bob.balance, bobBefore + 2 ether);
-        assertEq(staking.totalDelegatedMonad(), 9.4 ether);
+        assertEq(staking.totalDelegatedMonad(), 11 ether);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
     }
 
     function testMonadUnstakeDoesNotDoubleQueueWhenPendingUndelegationAlreadyCoversShortfall() public {
@@ -1699,6 +1941,18 @@ contract Series9StakingTest is Test {
         for (uint64 i = 1; i <= 6; ++i) {
             monadStakingMock.setValidator(i, 0, 1_000 ether, 0);
         }
+    }
+
+    function _configureValidatorsRange(uint64 startValidatorId, uint64 endValidatorId) internal {
+        uint256 validatorCount = uint256(endValidatorId - startValidatorId + 1);
+        uint64[] memory validatorIds = new uint64[](validatorCount);
+
+        for (uint64 validatorId = startValidatorId; validatorId <= endValidatorId; ++validatorId) {
+            validatorIds[validatorId - startValidatorId] = validatorId;
+            monadStakingMock.setValidator(validatorId, 0, 1_000 ether, 0);
+        }
+
+        monadStakingMock.setExecutionValidatorSet(validatorIds);
     }
 
     function _stake(address user, uint256 stakeAmount) internal {
