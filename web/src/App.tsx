@@ -38,7 +38,7 @@ type TokenMintPolicyValue = {
   rampStartBps: number;
 };
 
-type MonadUnstakeRequestValue = {
+type UnstakeRequestValue = {
   amount: bigint;
   requestEpoch: number;
   minClaimEpoch: number;
@@ -147,7 +147,7 @@ function parseTokenMintPolicy(raw: unknown): TokenMintPolicyValue | null {
   return null;
 }
 
-function parseMonadUnstakeRequest(raw: unknown): MonadUnstakeRequestValue | null {
+function parseUnstakeRequest(raw: unknown): UnstakeRequestValue | null {
   if (!raw) {
     return null;
   }
@@ -437,6 +437,16 @@ export default function App() {
     },
   });
 
+  const userLockedRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'lockedBalance',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
   const userEarnedRead = useReadContract({
     address: contracts.stakingProxy,
     abi: stakingAbi,
@@ -502,6 +512,16 @@ export default function App() {
     },
   });
 
+  const ser9UnstakeRequestCountRead = useReadContract({
+    address: contracts.stakingProxy,
+    abi: stakingAbi,
+    functionName: 'ser9UnstakeRequestCount',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
   const currentMonadEpochRead = useReadContract({
     address: MONAD_STAKING_PRECOMPILE,
     abi: monadStakingPrecompileAbi,
@@ -513,6 +533,14 @@ export default function App() {
 
   const managedTokenCount = Number(managedTokenCountRead.data ?? 0n);
   const monadUnstakeRequestCount = Number(monadUnstakeRequestCountRead.data ?? 0n);
+  const ser9UnstakeRequestCount = Number(ser9UnstakeRequestCountRead.data ?? 0n);
+
+  const userUnlockedBalance = useMemo(() => {
+    const stakedBalance = userStakedRead.data ?? 0n;
+    const lockedBalance = userLockedRead.data ?? 0n;
+
+    return stakedBalance > lockedBalance ? stakedBalance - lockedBalance : 0n;
+  }, [userLockedRead.data, userStakedRead.data]);
 
   const monadUnstakeRequestContracts = useMemo(
     () =>
@@ -525,10 +553,28 @@ export default function App() {
     [addressForReads, monadUnstakeRequestCount],
   );
 
+  const ser9UnstakeRequestContracts = useMemo(
+    () =>
+      Array.from({ length: ser9UnstakeRequestCount }, (_, index) => ({
+        address: contracts.stakingProxy,
+        abi: stakingAbi,
+        functionName: 'ser9UnstakeRequest' as const,
+        args: [addressForReads, BigInt(index)] as const,
+      })),
+    [addressForReads, ser9UnstakeRequestCount],
+  );
+
   const monadUnstakeRequestsRead = useReadContracts({
     contracts: monadUnstakeRequestContracts,
     query: {
       enabled: Boolean(normalizedConnectedAddress) && monadUnstakeRequestContracts.length > 0,
+    },
+  });
+
+  const ser9UnstakeRequestsRead = useReadContracts({
+    contracts: ser9UnstakeRequestContracts,
+    query: {
+      enabled: Boolean(normalizedConnectedAddress) && ser9UnstakeRequestContracts.length > 0,
     },
   });
 
@@ -575,7 +621,7 @@ export default function App() {
         continue;
       }
 
-      const request = parseMonadUnstakeRequest(result.result);
+      const request = parseUnstakeRequest(result.result);
       if (!request || request.claimed) {
         continue;
       }
@@ -589,6 +635,36 @@ export default function App() {
       latestMinClaimEpoch,
     };
   }, [monadUnstakeRequestsRead.data]);
+
+  const pendingSer9UnstakeAmount = useMemo(() => {
+    if (ser9UnstakeRequestCount === 0) {
+      return 0n;
+    }
+
+    const results = ser9UnstakeRequestsRead.data;
+    if (!results || results.length !== ser9UnstakeRequestCount) {
+      return undefined;
+    }
+
+    let totalAmount = 0n;
+
+    for (const result of results) {
+      if (result.status !== 'success') {
+        return undefined;
+      }
+
+      const request = parseUnstakeRequest(result.result);
+      if (!request) {
+        return undefined;
+      }
+
+      if (!request.claimed) {
+        totalAmount += request.amount;
+      }
+    }
+
+    return totalAmount;
+  }, [ser9UnstakeRequestCount, ser9UnstakeRequestsRead.data]);
 
   const currentMonadEpoch = useMemo(() => {
     const value = currentMonadEpochRead.data as unknown;
@@ -624,7 +700,7 @@ export default function App() {
         continue;
       }
 
-      const request = parseMonadUnstakeRequest(result.result);
+      const request = parseUnstakeRequest(result.result);
       if (!request || request.claimed || request.minClaimEpoch > currentMonadEpoch) {
         continue;
       }
@@ -1175,6 +1251,13 @@ export default function App() {
       return (
         <form className="single-form" onSubmit={(event) => onSubmit(event, submitActionModal)}>
           <input value={unstakeAmount} onChange={(event) => setUnstakeAmount(event.target.value)} placeholder={t('amount')} />
+          {isConnected ? (
+            <p className="muted">
+              {t('unlockedBalance')}: {formatTokenAmount(userUnlockedBalance)}
+            </p>
+          ) : (
+            <p className="muted">{t('connectHint')}</p>
+          )}
           <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
             {t('unstake')}
           </button>
@@ -1400,6 +1483,8 @@ export default function App() {
               <div className="metric-grid">
                 <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
+                <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
+                <MetricCard label={t('ser9UnstakingAmount')} value={formatTokenAmount(pendingSer9UnstakeAmount)} />
               </div>
               <div className="status-actions status-actions-two">
                 <button type="button" onClick={() => setActiveActionModal('ser9Stake')} disabled={!isConnected || onWrongChain}>

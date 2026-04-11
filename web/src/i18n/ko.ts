@@ -33,6 +33,7 @@ export const ko = {
   totalMonadStaked: '전체 MON 스테이킹',
   yourMonadStake: '내 MON 스테이킹',
   unstakingAmount: '언스테이킹 중인 MON',
+  ser9UnstakingAmount: '언스테이킹 중인 SER9',
   unstakeRemainingTime: '언스테이킹 완료까지',
   ser9UnclaimedStakingRewards: 'SER9 미청구 스테이킹 보상',
   monadSer9UnclaimedRewards: 'MONAD SER9 미청구 보상',

@@ -33,6 +33,7 @@ export const en = {
   totalMonadStaked: 'Total MON Staked',
   yourMonadStake: 'Your MON Stake',
   unstakingAmount: 'MON Unstaking',
+  ser9UnstakingAmount: 'SER9 Unstaking',
   unstakeRemainingTime: 'Time Until Unstake Completes',
   ser9UnclaimedStakingRewards: 'SER9 Unclaimed Staking Rewards',
   monadSer9UnclaimedRewards: 'MONAD SER9 Unclaimed Rewards',

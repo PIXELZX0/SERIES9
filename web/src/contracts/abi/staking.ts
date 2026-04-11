@@ -82,6 +82,28 @@ export const stakingAbi = [
   },
   {
     type: 'function',
+    name: 'ser9UnstakeRequest',
+    inputs: [
+      { name: 'user', type: 'address', internalType: 'address' },
+      { name: 'requestId', type: 'uint256', internalType: 'uint256' },
+    ],
+    outputs: [
+      { name: 'amount', type: 'uint256', internalType: 'uint256' },
+      { name: 'requestEpoch', type: 'uint64', internalType: 'uint64' },
+      { name: 'minClaimEpoch', type: 'uint64', internalType: 'uint64' },
+      { name: 'claimed', type: 'bool', internalType: 'bool' },
+    ],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'ser9UnstakeRequestCount',
+    inputs: [{ name: '', type: 'address', internalType: 'address' }],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
     name: 'createManagedToken',
     inputs: [
       { name: 'name', type: 'string', internalType: 'string' },
