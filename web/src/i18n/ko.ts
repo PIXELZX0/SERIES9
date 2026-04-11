@@ -45,6 +45,7 @@ export const ko = {
   monadStake: 'MON 스테이킹',
   requestMonadUnstake: '언스테이킹 요청',
   claimUnstakedMonad: 'MON 출금',
+  claimUnstakedSer9: 'SER9 출금',
   claimSer9Rewards: 'SER9 보상 청구',
   connectHint: '개인 지표 조회 및 트랜잭션 실행을 위해 지갑을 연결하세요.',
   paused: '일시정지',

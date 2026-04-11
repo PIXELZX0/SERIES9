@@ -45,6 +45,7 @@ export const en = {
   monadStake: 'Stake MON',
   requestMonadUnstake: 'Request Unstake',
   claimUnstakedMonad: 'Withdraw MON',
+  claimUnstakedSer9: 'Withdraw SER9',
   claimSer9Rewards: 'Claim SER9 Rewards',
   connectHint: 'Connect your wallet to view personal metrics and execute transactions.',
   paused: 'Paused',

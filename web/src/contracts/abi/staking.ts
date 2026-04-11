@@ -46,6 +46,13 @@ export const stakingAbi = [
   },
   {
     type: 'function',
+    name: 'claimUnstaked',
+    inputs: [{ name: 'requestId', type: 'uint256', internalType: 'uint256' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
     name: 'monadEarned',
     inputs: [{ name: 'account', type: 'address', internalType: 'address' }],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
