@@ -61,6 +61,32 @@ const monadStakingPrecompileAbi = [
 const MONAD_STAKING_PRECOMPILE = getAddress('0x0000000000000000000000000000000000001000');
 const MONAD_EPOCH_APPROX_MS = 5.5 * 60 * 60 * 1000;
 
+function formatApproxRemainingEpochTime(locale: string, remainingEpochs: number): string {
+  const remainingMilliseconds = remainingEpochs * MONAD_EPOCH_APPROX_MS;
+  const totalMinutes = Math.ceil(remainingMilliseconds / 60_000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (locale === 'ko') {
+    const segments = [
+      days > 0 ? `${days}일` : null,
+      hours > 0 ? `${hours}시간` : null,
+      minutes > 0 ? `${minutes}분` : null,
+    ].filter((segment): segment is string => Boolean(segment));
+
+    return `약 ${segments.join(' ')}`;
+  }
+
+  const segments = [
+    days > 0 ? `${days}d` : null,
+    hours > 0 ? `${hours}h` : null,
+    minutes > 0 ? `${minutes}m` : null,
+  ].filter((segment): segment is string => Boolean(segment));
+
+  return `~${segments.join(' ')}`;
+}
+
 function parseTokenConfig(raw: unknown): TokenConfigValue | null {
   if (!raw) {
     return null;
@@ -636,9 +662,12 @@ export default function App() {
     };
   }, [monadUnstakeRequestsRead.data]);
 
-  const pendingSer9UnstakeAmount = useMemo(() => {
+  const pendingSer9UnstakeSummary = useMemo(() => {
     if (ser9UnstakeRequestCount === 0) {
-      return 0n;
+      return {
+        totalAmount: 0n,
+        latestMinClaimEpoch: 0,
+      };
     }
 
     const results = ser9UnstakeRequestsRead.data;
@@ -647,6 +676,7 @@ export default function App() {
     }
 
     let totalAmount = 0n;
+    let latestMinClaimEpoch = 0;
 
     for (const result of results) {
       if (result.status !== 'success') {
@@ -660,10 +690,14 @@ export default function App() {
 
       if (!request.claimed) {
         totalAmount += request.amount;
+        latestMinClaimEpoch = Math.max(latestMinClaimEpoch, request.minClaimEpoch);
       }
     }
 
-    return totalAmount;
+    return {
+      totalAmount,
+      latestMinClaimEpoch,
+    };
   }, [ser9UnstakeRequestCount, ser9UnstakeRequestsRead.data]);
 
   const currentMonadEpoch = useMemo(() => {
@@ -725,30 +759,29 @@ export default function App() {
       return t('readyToClaim');
     }
 
-    const remainingMilliseconds = remainingEpochs * MONAD_EPOCH_APPROX_MS;
-    const totalMinutes = Math.ceil(remainingMilliseconds / 60_000);
-    const days = Math.floor(totalMinutes / (60 * 24));
-    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
-    const minutes = totalMinutes % 60;
+    return formatApproxRemainingEpochTime(locale, remainingEpochs);
+  }, [currentMonadEpoch, locale, pendingMonadUnstakeSummary.latestMinClaimEpoch, pendingMonadUnstakeSummary.totalAmount, t]);
 
-    if (locale === 'ko') {
-      const segments = [
-        days > 0 ? `${days}일` : null,
-        hours > 0 ? `${hours}시간` : null,
-        minutes > 0 ? `${minutes}분` : null,
-      ].filter((segment): segment is string => Boolean(segment));
-
-      return `약 ${segments.join(' ')}`;
+  const pendingSer9UnstakeRemainingTime = useMemo(() => {
+    if (pendingSer9UnstakeSummary === undefined) {
+      return ser9UnstakeRequestCount > 0 ? '-' : null;
     }
 
-    const segments = [
-      days > 0 ? `${days}d` : null,
-      hours > 0 ? `${hours}h` : null,
-      minutes > 0 ? `${minutes}m` : null,
-    ].filter((segment): segment is string => Boolean(segment));
+    if (pendingSer9UnstakeSummary.totalAmount === 0n) {
+      return null;
+    }
 
-    return `~${segments.join(' ')}`;
-  }, [currentMonadEpoch, locale, pendingMonadUnstakeSummary.latestMinClaimEpoch, pendingMonadUnstakeSummary.totalAmount, t]);
+    if (currentMonadEpoch === null) {
+      return '-';
+    }
+
+    const remainingEpochs = Math.max(pendingSer9UnstakeSummary.latestMinClaimEpoch - currentMonadEpoch, 0);
+    if (remainingEpochs === 0) {
+      return t('readyToClaim');
+    }
+
+    return formatApproxRemainingEpochTime(locale, remainingEpochs);
+  }, [currentMonadEpoch, locale, pendingSer9UnstakeSummary, ser9UnstakeRequestCount, t]);
 
   const onWrongChain = isConnected && chainId !== networkConfig.chainId;
   const totalClaimableRewards = userEarnedRead.data ?? 0n;
@@ -1484,7 +1517,10 @@ export default function App() {
                 <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
                 <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
-                <MetricCard label={t('ser9UnstakingAmount')} value={formatTokenAmount(pendingSer9UnstakeAmount)} />
+                <MetricCard label={t('ser9UnstakingAmount')} value={formatTokenAmount(pendingSer9UnstakeSummary?.totalAmount)} />
+                {pendingSer9UnstakeRemainingTime && (
+                  <MetricCard label={t('unstakeRemainingTime')} value={pendingSer9UnstakeRemainingTime} />
+                )}
               </div>
               <div className="status-actions status-actions-two">
                 <button type="button" onClick={() => setActiveActionModal('ser9Stake')} disabled={!isConnected || onWrongChain}>
