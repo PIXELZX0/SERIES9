@@ -1,0 +1,177 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775879757655,
+  "projectRoot": "/Users/yuchan/Desktop/프로젝트/tokenproject",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "lib",
+      "src",
+      "test"
+    ],
+    "gitBranches": {
+      "defaultBranch": "master",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "abi": {
+      "path": "abi",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1775879757620,
+      "keyFiles": [
+        "SER9Token.json",
+        "Series9ManagedToken.json",
+        "Series9Staking.json"
+      ]
+    },
+    "broadcast": {
+      "path": "broadcast",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775879757625,
+      "keyFiles": []
+    },
+    "cache": {
+      "path": "cache",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775879757630,
+      "keyFiles": [
+        "solidity-files-cache.json",
+        "test-failures"
+      ]
+    },
+    "lib": {
+      "path": "lib",
+      "purpose": "Library code",
+      "fileCount": 0,
+      "lastAccessed": 1775879757632,
+      "keyFiles": []
+    },
+    "out": {
+      "path": "out",
+      "purpose": "Build output",
+      "fileCount": 0,
+      "lastAccessed": 1775879757633,
+      "keyFiles": []
+    },
+    "safe": {
+      "path": "safe",
+      "purpose": null,
+      "fileCount": 9,
+      "lastAccessed": 1775879757634,
+      "keyFiles": [
+        "pause.json",
+        "set-creation-fee.json",
+        "set-fee-recipient.json",
+        "set-reward-rate.json",
+        "set-staking-contract.json"
+      ]
+    },
+    "script": {
+      "path": "script",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1775879757634,
+      "keyFiles": [
+        "DeploySeries9.s.sol",
+        "FixSetup.s.sol",
+        "SafeBatch.s.sol",
+        "UpgradeTokens.s.sol"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 4,
+      "lastAccessed": 1775879757635,
+      "keyFiles": [
+        "SER9Token.sol",
+        "Series9ManagedToken.sol",
+        "Series9Staking.sol"
+      ]
+    },
+    "test": {
+      "path": "test",
+      "purpose": "Test files",
+      "fileCount": 1,
+      "lastAccessed": 1775879757635,
+      "keyFiles": [
+        "Series9Staking.t.sol"
+      ]
+    },
+    "web": {
+      "path": "web",
+      "purpose": null,
+      "fileCount": 12,
+      "lastAccessed": 1775879757636,
+      "keyFiles": [
+        "README.md",
+        "eslint.config.js",
+        "index.html",
+        "package-lock.json",
+        "package.json"
+      ]
+    },
+    "test/mocks": {
+      "path": "test/mocks",
+      "purpose": "Mock data",
+      "fileCount": 0,
+      "lastAccessed": 1775879757640,
+      "keyFiles": []
+    },
+    "web/dist": {
+      "path": "web/dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 3,
+      "lastAccessed": 1775879757646,
+      "keyFiles": [
+        "favicon.svg",
+        "icons.svg",
+        "index.html"
+      ]
+    },
+    "web/node_modules": {
+      "path": "web/node_modules",
+      "purpose": "Dependencies",
+      "fileCount": 1,
+      "lastAccessed": 1775879757654,
+      "keyFiles": []
+    },
+    "web/public": {
+      "path": "web/public",
+      "purpose": "Public files",
+      "fileCount": 2,
+      "lastAccessed": 1775879757655,
+      "keyFiles": [
+        "favicon.svg",
+        "icons.svg"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
