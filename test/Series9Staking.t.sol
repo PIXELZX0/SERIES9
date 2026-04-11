@@ -826,12 +826,9 @@ contract Series9StakingTest is Test {
 
         vm.startPrank(alice);
         staking.mintManagedToken(token, 20 ether);
-        vm.stopPrank();
-
         stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(60 ether);
-
-        vm.prank(alice);
         staking.unstake(60 ether);
+        vm.stopPrank();
 
         assertEq(staking.lockedBalance(alice), 40 ether);
         assertEq(staking.usedLockedSer9(alice), 40 ether);
@@ -1381,9 +1378,9 @@ contract Series9StakingTest is Test {
 
         vm.startPrank(alice);
         staking.mintManagedToken(token, 20 ether);
-
         vm.expectRevert(Series9Staking.InsufficientUnlockedBalance.selector);
         staking.unstake(61 ether);
+
         vm.stopPrank();
     }
 
