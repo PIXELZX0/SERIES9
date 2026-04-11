@@ -16,7 +16,7 @@
   --accent: #f5f5f5;
   --accent-soft: rgba(125, 255, 177, 0.14);
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.42);
-  --radius: 8px;
+  --radius: 0;
 }
 
 * {
@@ -154,7 +154,7 @@ a {
   display: inline-flex;
   align-items: center;
   padding: 0.5rem 0.85rem;
-  border-radius: 999px;
+  border-radius: var(--radius);
   border: 1px solid var(--line);
   text-decoration: none;
   color: var(--muted);
@@ -185,7 +185,7 @@ a {
   align-items: center;
   min-height: 2rem;
   padding: 0.45rem 0.72rem;
-  border-radius: 999px;
+  border-radius: var(--radius);
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
   color: var(--ink);
@@ -275,7 +275,7 @@ button {
   justify-content: center;
   gap: 0.4rem;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 0.68rem 0.95rem;
   cursor: pointer;
   color: var(--ink);
@@ -460,7 +460,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   padding: 0.58rem 0.84rem;
-  border-radius: 6px;
+  border-radius: var(--radius);
   border: 1px solid var(--line);
   text-decoration: none;
   color: var(--ink);
@@ -637,7 +637,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   padding: 0.28rem 0.65rem;
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.06);
   color: var(--ink);
   font-size: 0.74rem;
@@ -691,7 +691,7 @@ button:disabled {
 input,
 select {
   width: 100%;
-  border-radius: 10px;
+  border-radius: var(--radius);
   border: 1px solid var(--line-strong);
   padding: 0.54rem 0.62rem;
   background: #090909;
@@ -834,7 +834,7 @@ input[type='range']::-moz-range-thumb {
   max-height: min(80vh, 720px);
   overflow: auto;
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: #0b0b0b;
   padding: 1rem;
   box-shadow: var(--shadow-lg);
