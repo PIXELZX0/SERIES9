@@ -745,6 +745,27 @@ export default function App() {
     return null;
   }, [currentMonadEpoch, monadUnstakeRequestsRead.data]);
 
+  const firstClaimableSer9UnstakeRequestId = useMemo(() => {
+    if (currentMonadEpoch === null) {
+      return null;
+    }
+
+    for (const [index, result] of (ser9UnstakeRequestsRead.data ?? []).entries()) {
+      if (result.status !== 'success') {
+        continue;
+      }
+
+      const request = parseUnstakeRequest(result.result);
+      if (!request || request.claimed || request.minClaimEpoch > currentMonadEpoch) {
+        continue;
+      }
+
+      return BigInt(index);
+    }
+
+    return null;
+  }, [currentMonadEpoch, ser9UnstakeRequestsRead.data]);
+
   const pendingMonadUnstakeRemainingTime = useMemo(() => {
     if (pendingMonadUnstakeSummary.totalAmount === 0n) {
       return null;
@@ -1527,8 +1548,24 @@ export default function App() {
                   {t('stake')}
                 </button>
 
-                <button type="button" onClick={() => setActiveActionModal('ser9Unstake')} disabled={!isConnected || onWrongChain}>
-                  {t('unstake')}
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    if (firstClaimableSer9UnstakeRequestId !== null) {
+                      onSubmit(event, () => runWrite('claimUnstakedSer9', () => ({
+                        address: contracts.stakingProxy,
+                        abi: stakingAbi,
+                        functionName: 'claimUnstaked' as const,
+                        args: [firstClaimableSer9UnstakeRequestId] as const,
+                      })));
+                      return;
+                    }
+
+                    setActiveActionModal('ser9Unstake');
+                  }}
+                  disabled={!isConnected || onWrongChain}
+                >
+                  {firstClaimableSer9UnstakeRequestId !== null ? t('claimUnstakedSer9') : t('unstake')}
                 </button>
               </div>
             </article>
