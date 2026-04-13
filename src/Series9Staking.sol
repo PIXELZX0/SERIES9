@@ -24,10 +24,14 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 private constant PRECISION = 1e18;
     uint256 private constant BPS_DENOMINATOR = 10_000;
     uint256 private constant MONAD_SCORE_PRECISION = 1e18;
+    uint256 private constant MONAD_BLOCKS_PER_YEAR = 31_536_000;
+    uint256 private constant MONAD_DELEGATED_SHARE_FLOOR_BPS = 3_000;
+    uint256 private constant MONAD_DELEGATED_SHARE_CEILING_BPS = BPS_DENOMINATOR;
+    uint256 private constant MONAD_DELEGATED_SHARE_APY_CEILING = 1e18;
     uint256 private constant MONAD_TARGET_COUNT = 5;
-    uint256 private constant MONAD_SCAN_LIMIT = 100;
     uint256 private constant MONAD_VALIDATOR_BATCH_LIMIT = 25;
     uint256 private constant MONAD_TICKET_BATCH_LIMIT = 25;
+    uint256 private constant MONAD_COMPACTION_BATCH_LIMIT = 50;
     uint64 private constant UNSTAKE_DELAY_EPOCHS = 5;
     uint64 private constant MONAD_PRECOMPILE_ADDRESS = 0x1000;
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -92,6 +96,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 commission;
     }
 
+    struct UnstakeCandidate {
+        uint64 validatorId;
+        uint256 score;
+        uint256 commission;
+        bool hasKnownScore;
+    }
+
     SER9Token public ser9;
     IPermit2 public permit2;
     address public managedTokenImplementation;
@@ -144,6 +155,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint8 public targetValidatorCount;
 
     mapping(uint64 => ValidatorSample) public validatorSamples;
+    mapping(uint64 => uint256) public cachedValidatorScore;
+    mapping(uint64 => bool) public hasCachedValidatorScore;
     mapping(uint64 => uint256) public validatorDelegatedAmount;
     mapping(uint64 => uint256) public validatorPendingUndelegateAmount;
     mapping(uint64 => uint8) public nextWithdrawIdByValidator;
@@ -201,7 +214,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error UnstakeRequestAlreadyClaimed();
     error UnstakeRequestNotClaimable(uint64 currentEpoch, uint64 minClaimEpoch);
     error InsufficientLiquidMonad(uint256 requiredAmount, uint256 availableAmount);
-    error NoAvailableWithdrawId(uint64 validatorId);
     error MonadPayoutFailed();
     error NotInitialized();
     error MonadEpochReadFailed();
@@ -339,6 +351,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         lastUpdateBlock = block.number;
         monadLastUpdateBlock = block.number;
         managedTokenImplementation = managedTokenImplementation_;
+        cachedMonadDelegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
     }
 
     function initializeV2() external reinitializer(2) {
@@ -348,6 +361,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         if (monadRewardRatePerBlock == 0) {
             monadRewardRatePerBlock = rewardRatePerBlock / 8;
+        }
+
+        if (cachedMonadDelegatedShareBps == 0) {
+            cachedMonadDelegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
         }
     }
 
@@ -1485,8 +1502,42 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return availableAmount;
     }
 
+    function _delegatedShareBpsFromApy(uint256 observedApy) internal pure returns (uint256) {
+        if (observedApy >= MONAD_DELEGATED_SHARE_APY_CEILING) {
+            return MONAD_DELEGATED_SHARE_CEILING_BPS;
+        }
+
+        return MONAD_DELEGATED_SHARE_FLOOR_BPS
+            + Math.mulDiv(
+                observedApy,
+                MONAD_DELEGATED_SHARE_CEILING_BPS - MONAD_DELEGATED_SHARE_FLOOR_BPS,
+                MONAD_DELEGATED_SHARE_APY_CEILING
+            );
+    }
+
+    function _targetDelegatedPrincipal() internal view returns (uint256) {
+        uint256 delegatedShareBps = cachedMonadDelegatedShareBps;
+        if (delegatedShareBps == 0) {
+            delegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
+        }
+        if (delegatedShareBps >= BPS_DENOMINATOR) {
+            return totalMonadStaked;
+        }
+
+        return Math.mulDiv(totalMonadStaked, delegatedShareBps, BPS_DENOMINATOR);
+    }
+
     function _autoDelegateMonadStake() internal {
+        uint256 targetDelegatedPrincipal = _targetDelegatedPrincipal();
+        if (totalDelegatedMonad >= targetDelegatedPrincipal) {
+            return;
+        }
+
         uint256 liquidAmount = _availableLiquidForActiveDelegation();
+        uint256 headroom = targetDelegatedPrincipal - totalDelegatedMonad;
+        if (liquidAmount > headroom) {
+            liquidAmount = headroom;
+        }
         if (liquidAmount == 0) {
             return;
         }
@@ -1504,14 +1555,14 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint64[] memory selectedValidators = new uint64[](selectedCount);
         uint256[] memory targetAmounts = new uint256[](selectedCount);
-        uint256 remaining = totalMonadStaked;
+        uint256 remaining = targetDelegatedPrincipal;
 
         for (uint256 i = 0; i < selectedCount; ++i) {
             selectedValidators[i] = targetValidatorIds[i];
             if (i == selectedCount - 1) {
                 targetAmounts[i] = remaining;
             } else {
-                targetAmounts[i] = Math.mulDiv(totalMonadStaked, targetValidatorWeightsBps[i], BPS_DENOMINATOR);
+                targetAmounts[i] = Math.mulDiv(targetDelegatedPrincipal, targetValidatorWeightsBps[i], BPS_DENOMINATOR);
                 remaining -= targetAmounts[i];
             }
         }
@@ -1601,27 +1652,20 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             cursor = 0;
         }
         uint256 scanned;
+        uint256 windowSize = trackedLength < maxValidators ? trackedLength : maxValidators;
+        UnstakeCandidate[] memory candidates = new UnstakeCandidate[](windowSize);
+        uint256 candidateCount;
 
-        while (scanned < trackedLength && scanned < maxValidators && remaining > 0) {
+        while (scanned < trackedLength && scanned < maxValidators) {
             uint64 validatorId = trackedValidators[cursor];
-            if (validatorDelegatedAmount[validatorId] == 0) {
-                unchecked {
-                    ++scanned;
-                    ++cursor;
-                }
-                if (cursor == trackedLength) {
-                    cursor = 0;
-                }
-                continue;
-            }
-
-            (uint256 undelegatedAmount, uint64 claimableEpoch) = _undelegateFromValidator(validatorId, remaining, epoch);
-            if (undelegatedAmount != 0) {
-                remaining -= undelegatedAmount;
-                queuedAmount += undelegatedAmount;
-                if (claimableEpoch > maxClaimableEpoch) {
-                    maxClaimableEpoch = claimableEpoch;
-                }
+            if (validatorDelegatedAmount[validatorId] != 0) {
+                candidates[candidateCount] = UnstakeCandidate({
+                    validatorId: validatorId,
+                    score: cachedValidatorScore[validatorId],
+                    commission: validatorSamples[validatorId].commission,
+                    hasKnownScore: hasCachedValidatorScore[validatorId]
+                });
+                candidateCount++;
             }
 
             unchecked {
@@ -1630,6 +1674,22 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             }
             if (cursor == trackedLength) {
                 cursor = 0;
+            }
+        }
+
+        _sortUnstakeCandidates(candidates, candidateCount);
+
+        for (uint256 i = 0; i < candidateCount && remaining > 0; ++i) {
+            (uint256 undelegatedAmount, uint64 claimableEpoch) =
+                _undelegateFromValidator(candidates[i].validatorId, remaining, epoch);
+            if (undelegatedAmount == 0) {
+                continue;
+            }
+
+            remaining -= undelegatedAmount;
+            queuedAmount += undelegatedAmount;
+            if (claimableEpoch > maxClaimableEpoch) {
+                maxClaimableEpoch = claimableEpoch;
             }
         }
 
@@ -1675,6 +1735,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 requestCount = _pendingMonadUnstakeRequests.length;
         uint256 cursor = monadCoverageRequestCursor;
+        uint256 originalCursor = cursor;
 
         while (cursor < requestCount && amount > 0) {
             MonadUnstakeRequestRef memory requestRef = _pendingMonadUnstakeRequests[cursor];
@@ -1701,6 +1762,11 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         monadCoverageRequestCursor = cursor;
+
+        if (cursor == requestCount && originalCursor != 0) {
+            delete _pendingMonadUnstakeRequests;
+            monadCoverageRequestCursor = 0;
+        }
     }
 
     function _undelegateFromValidator(uint64 validatorId, uint256 requestedAmount, uint64 epoch)
@@ -1741,7 +1807,11 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         _trackValidator(validatorId);
-        uint8 withdrawId = _nextWithdrawId(validatorId);
+        (bool hasWithdrawId, uint8 withdrawId) = _tryReserveWithdrawId(validatorId);
+        if (!hasWithdrawId) {
+            return (0, 0);
+        }
+
         try _monadStaking().undelegate(validatorId, undelegatedAmount, withdrawId) returns (bool success) {
             if (!success) {
                 _withdrawIdInUse[validatorId][withdrawId] = false;
@@ -1772,7 +1842,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit MonadUndelegateQueued(validatorId, withdrawId, undelegatedAmount, claimableEpoch);
     }
 
-    function _nextWithdrawId(uint64 validatorId) internal returns (uint8) {
+    function _tryReserveWithdrawId(uint64 validatorId) internal returns (bool found, uint8 withdrawId) {
         uint256 start = uint256(nextWithdrawIdByValidator[validatorId]);
         for (uint256 i = 0; i < 256; ++i) {
             uint8 candidateId = uint8((start + i) % 256);
@@ -1782,10 +1852,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
             _withdrawIdInUse[validatorId][candidateId] = true;
             nextWithdrawIdByValidator[validatorId] = uint8((uint256(candidateId) + 1) % 256);
-            return candidateId;
+            return (true, candidateId);
         }
 
-        revert NoAvailableWithdrawId(validatorId);
+        return (false, 0);
     }
 
     function _trackValidator(uint64 validatorId) internal {
@@ -1851,6 +1921,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         monadHarvestValidatorCursor = cursor;
+        if (trackedLength != 0) {
+            _compactTrackedValidators(MONAD_COMPACTION_BATCH_LIMIT);
+        }
     }
 
     function _processMaturedUndelegations(uint64 currentEpoch, uint256 maxTickets) internal returns (uint256 processed) {
@@ -1918,19 +1991,22 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         monadPendingUndelegateCursor = cursor;
+        if (ticketsLength != 0) {
+            _compactPendingUndelegateTickets(MONAD_COMPACTION_BATCH_LIMIT);
+        }
     }
 
     function _updateMonadTargets() internal {
-        CandidateScore[] memory candidates = new CandidateScore[](MONAD_SCAN_LIMIT);
+        CandidateScore[5] memory topCandidates;
         uint256 filled;
         uint32 nextIndex;
         bool isDone;
         uint64[] memory valIds;
 
-        while (!isDone && filled < MONAD_SCAN_LIMIT) {
+        while (!isDone) {
             (isDone, nextIndex, valIds) = _monadStaking().getExecutionValidatorSet(nextIndex);
 
-            for (uint256 i = 0; i < valIds.length && filled < MONAD_SCAN_LIMIT; ++i) {
+            for (uint256 i = 0; i < valIds.length; ++i) {
                 uint64 validatorId = valIds[i];
                 uint256 accRewardPerToken;
                 uint256 commission;
@@ -1966,6 +2042,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                             commission >= MONAD_SCORE_PRECISION ? 0 : MONAD_SCORE_PRECISION - commission;
                         score = Math.mulDiv(rawScore, rewardRetained, MONAD_SCORE_PRECISION);
                     }
+
+                    cachedValidatorScore[validatorId] = score;
+                    hasCachedValidatorScore[validatorId] = true;
                 }
 
                 validatorSamples[validatorId] = ValidatorSample({
@@ -1974,10 +2053,23 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                     commission: commission
                 });
 
-                candidates[filled] = CandidateScore({validatorId: validatorId, score: score, commission: commission});
-                filled++;
+                CandidateScore memory candidate = CandidateScore({validatorId: validatorId, score: score, commission: commission});
+                if (filled < MONAD_TARGET_COUNT) {
+                    topCandidates[filled] = candidate;
+                    filled++;
+                    _sortTopCandidates(topCandidates, filled);
+                    continue;
+                }
+
+                if (_isCandidateBetter(candidate, topCandidates[filled - 1])) {
+                    topCandidates[filled - 1] = candidate;
+                    _sortTopCandidates(topCandidates, filled);
+                }
             }
         }
+
+        cachedMonadObservedApy = 0;
+        cachedMonadDelegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
 
         for (uint256 i = 0; i < MONAD_TARGET_COUNT; ++i) {
             targetValidatorIds[i] = 0;
@@ -1990,17 +2082,16 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             return;
         }
 
-        _sortCandidates(candidates, filled);
-
         uint256 selectedCount = filled < MONAD_TARGET_COUNT ? filled : MONAD_TARGET_COUNT;
         uint256 totalScore;
         for (uint256 i = 0; i < selectedCount; ++i) {
-            totalScore += candidates[i].score;
-            targetValidatorIds[i] = candidates[i].validatorId;
-            _trackValidator(candidates[i].validatorId);
+            totalScore += topCandidates[i].score;
+            targetValidatorIds[i] = topCandidates[i].validatorId;
+            _trackValidator(topCandidates[i].validatorId);
         }
 
         uint256 assigned;
+        uint256 weightedPortfolioScore;
         if (totalScore == 0) {
             uint256 equalWeight = BPS_DENOMINATOR / selectedCount;
             uint256 remainder = BPS_DENOMINATOR - (equalWeight * selectedCount);
@@ -2010,21 +2101,98 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             }
         } else {
             for (uint256 i = 0; i < selectedCount; ++i) {
-                uint256 weight = Math.mulDiv(candidates[i].score, BPS_DENOMINATOR, totalScore);
+                uint256 weight = Math.mulDiv(topCandidates[i].score, BPS_DENOMINATOR, totalScore);
                 targetValidatorWeightsBps[i] = SafeCast.toUint16(weight);
                 assigned += weight;
+                weightedPortfolioScore += Math.mulDiv(topCandidates[i].score, weight, BPS_DENOMINATOR);
             }
 
             if (assigned < BPS_DENOMINATOR) {
-                targetValidatorWeightsBps[0] += SafeCast.toUint16(BPS_DENOMINATOR - assigned);
+                uint256 remainder = BPS_DENOMINATOR - assigned;
+                targetValidatorWeightsBps[0] += SafeCast.toUint16(remainder);
+                weightedPortfolioScore += Math.mulDiv(topCandidates[0].score, remainder, BPS_DENOMINATOR);
             }
+
+            cachedMonadObservedApy =
+                Math.mulDiv(weightedPortfolioScore, MONAD_BLOCKS_PER_YEAR, MONAD_SCORE_PRECISION);
+            cachedMonadDelegatedShareBps = _delegatedShareBpsFromApy(cachedMonadObservedApy);
         }
 
         targetValidatorCount = SafeCast.toUint8(selectedCount);
         emit MonadTargetsUpdated(targetValidatorIds, targetValidatorWeightsBps, targetValidatorCount);
     }
 
-    function _sortCandidates(CandidateScore[] memory candidates, uint256 count) internal pure {
+    function _compactTrackedValidators(uint256 maxRemovals) internal {
+        uint256 length = trackedValidators.length;
+        if (length == 0 || maxRemovals == 0) {
+            return;
+        }
+
+        uint256 index;
+        uint256 removals;
+        while (index < length && removals < maxRemovals) {
+            uint64 validatorId = trackedValidators[index];
+            if (validatorDelegatedAmount[validatorId] != 0 || validatorPendingUndelegateAmount[validatorId] != 0) {
+                unchecked {
+                    ++index;
+                }
+                continue;
+            }
+
+            uint256 lastIndex = length - 1;
+            uint64 lastValidatorId = trackedValidators[lastIndex];
+            trackedValidators[index] = lastValidatorId;
+            trackedValidators.pop();
+            isTrackedValidator[validatorId] = false;
+            length = lastIndex;
+            removals++;
+
+            if (monadHarvestValidatorCursor > length) {
+                monadHarvestValidatorCursor = length;
+            }
+            if (monadUndelegateValidatorCursor > length) {
+                monadUndelegateValidatorCursor = length;
+            }
+            if (monadFallbackValidatorCursor > length) {
+                monadFallbackValidatorCursor = length;
+            }
+            if (monadRebalanceValidatorCursor > length) {
+                monadRebalanceValidatorCursor = length;
+            }
+        }
+    }
+
+    function _compactPendingUndelegateTickets(uint256 maxRemovals) internal {
+        uint256 length = pendingUndelegateTickets.length;
+        if (length == 0 || maxRemovals == 0) {
+            return;
+        }
+
+        uint256 index;
+        uint256 removals;
+        while (index < length && removals < maxRemovals) {
+            if (!pendingUndelegateTickets[index].withdrawn) {
+                unchecked {
+                    ++index;
+                }
+                continue;
+            }
+
+            uint256 lastIndex = length - 1;
+            if (index != lastIndex) {
+                pendingUndelegateTickets[index] = pendingUndelegateTickets[lastIndex];
+            }
+            pendingUndelegateTickets.pop();
+            length = lastIndex;
+            removals++;
+        }
+
+        if (monadPendingUndelegateCursor > length) {
+            monadPendingUndelegateCursor = length;
+        }
+    }
+
+    function _sortTopCandidates(CandidateScore[5] memory candidates, uint256 count) internal pure {
         if (count < 2) {
             return;
         }
@@ -2050,22 +2218,59 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return left.validatorId < right.validatorId;
     }
 
+    function _sortUnstakeCandidates(UnstakeCandidate[] memory candidates, uint256 count) internal pure {
+        if (count < 2) {
+            return;
+        }
+
+        for (uint256 i = 1; i < count; ++i) {
+            UnstakeCandidate memory current = candidates[i];
+            uint256 j = i;
+            while (j > 0 && _isUnstakeCandidateWorse(current, candidates[j - 1])) {
+                candidates[j] = candidates[j - 1];
+                j--;
+            }
+            candidates[j] = current;
+        }
+    }
+
+    function _isUnstakeCandidateWorse(UnstakeCandidate memory left, UnstakeCandidate memory right)
+        internal
+        pure
+        returns (bool)
+    {
+        if (left.hasKnownScore != right.hasKnownScore) {
+            return left.hasKnownScore;
+        }
+        if (!left.hasKnownScore) {
+            return false;
+        }
+        if (left.score != right.score) {
+            return left.score < right.score;
+        }
+        if (left.commission != right.commission) {
+            return left.commission > right.commission;
+        }
+        return false;
+    }
+
     function _rebalanceToMonadTargets(uint64 currentEpoch, uint256 maxValidators) internal {
         uint256 selectedCount = targetValidatorCount;
         if (selectedCount == 0) {
             return;
         }
 
+        uint256 targetDelegatedPrincipal = _targetDelegatedPrincipal();
         uint64[] memory selectedValidators = new uint64[](selectedCount);
         uint256[] memory targetAmounts = new uint256[](selectedCount);
-        uint256 remaining = totalMonadStaked;
+        uint256 remaining = targetDelegatedPrincipal;
 
         for (uint256 i = 0; i < selectedCount; ++i) {
             selectedValidators[i] = targetValidatorIds[i];
             if (i == selectedCount - 1) {
                 targetAmounts[i] = remaining;
             } else {
-                targetAmounts[i] = Math.mulDiv(totalMonadStaked, targetValidatorWeightsBps[i], BPS_DENOMINATOR);
+                targetAmounts[i] = Math.mulDiv(targetDelegatedPrincipal, targetValidatorWeightsBps[i], BPS_DENOMINATOR);
                 remaining -= targetAmounts[i];
             }
         }
@@ -2108,6 +2313,12 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         uint256 liquidAmount = _availableLiquidForActiveDelegation();
+        uint256 headroom = targetDelegatedPrincipal > totalDelegatedMonad
+            ? targetDelegatedPrincipal - totalDelegatedMonad
+            : 0;
+        if (liquidAmount > headroom) {
+            liquidAmount = headroom;
+        }
         if (liquidAmount == 0) {
             return;
         }
@@ -2169,5 +2380,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return requestedLimit == 0 ? defaultLimit : requestedLimit;
     }
 
-    uint256[17] private _gap;
+    uint256 public cachedMonadObservedApy;
+    uint256 public cachedMonadDelegatedShareBps;
+
+    uint256[13] private _gap;
 }

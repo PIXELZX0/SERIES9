@@ -45,6 +45,33 @@ contract Series9StakingHarness is Series9Staking {
     function exposeDelegateMonadAmountToValidator(uint64 validatorId, uint256 amount) external returns (bool) {
         return _delegateMonadAmountToValidator(validatorId, amount);
     }
+
+    function exposeQueueUnstakeFromDelegations(uint256 amount, uint64 epoch, uint256 maxValidators)
+        external
+        returns (uint256 queuedAmount, uint64 maxClaimableEpoch)
+    {
+        return _queueUnstakeFromDelegations(amount, epoch, maxValidators);
+    }
+
+    function exposeUpdateMonadTargets() external {
+        _updateMonadTargets();
+    }
+
+    function exposeDelegatedShareBpsFromApy(uint256 observedApy) external pure returns (uint256) {
+        return _delegatedShareBpsFromApy(observedApy);
+    }
+
+    function exposeTargetDelegatedPrincipal() external view returns (uint256) {
+        return _targetDelegatedPrincipal();
+    }
+
+    function pendingUndelegateTicketsLength() external view returns (uint256) {
+        return pendingUndelegateTickets.length;
+    }
+
+    function trackedValidatorsLength() external view returns (uint256) {
+        return trackedValidators.length;
+    }
 }
 
 contract Permit2Mock is IPermit2 {
@@ -262,6 +289,9 @@ contract Series9StakingTest is Test {
     uint256 internal constant INITIAL_SUPPLY = 1_000_000_000_000 ether;
     uint256 internal constant REWARD_PER_BLOCK = 1 ether;
     uint256 internal constant CREATION_FEE = 1 ether;
+    uint256 internal constant MONAD_BLOCKS_PER_YEAR = 31_536_000;
+    uint256 internal constant MONAD_DELEGATED_SHARE_FLOOR_BPS = 3_000;
+    uint256 internal constant MONAD_DELEGATED_SHARE_CEILING_BPS = 10_000;
 
     function setUp() public {
         SER9Token ser9Implementation = new SER9Token();
@@ -1483,6 +1513,24 @@ contract Series9StakingTest is Test {
         assertEq(claimed, 1 ether);
     }
 
+    function testFirstMonadTargetSampleUsesDelegatedShareFloor() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+
+        staking.rebalanceMonadDelegations();
+
+        assertEq(staking.cachedMonadObservedApy(), 0);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_FLOOR_BPS);
+        assertEq(staking.exposeTargetDelegatedPrincipal(), 3 ether);
+        assertEq(staking.totalDelegatedMonad(), 3 ether);
+        assertEq(address(staking).balance, 7 ether);
+    }
+
     function testStakeMonadAutoDelegatesUsingExistingTargets() public {
         staking.initializeV2();
         _installMonadPrecompileMock();
@@ -1493,15 +1541,74 @@ contract Series9StakingTest is Test {
         staking.stakeMonad{value: 10 ether}();
         staking.rebalanceMonadDelegations();
 
-        assertEq(staking.totalDelegatedMonad(), 10 ether);
+        assertEq(staking.totalDelegatedMonad(), 3 ether);
 
         vm.deal(bob, 20 ether);
         vm.prank(bob);
         staking.stakeMonad{value: 3 ether}();
 
         uint64 lastTargetValidatorId = staking.targetValidatorIds(4);
-        assertEq(staking.totalDelegatedMonad(), 13 ether);
-        assertEq(staking.validatorDelegatedAmount(lastTargetValidatorId), 2.6 ether);
+        assertEq(staking.totalDelegatedMonad(), 3.9 ether);
+        assertEq(staking.validatorDelegatedAmount(lastTargetValidatorId), 0.78 ether);
+        assertEq(address(staking).balance, 9.1 ether);
+    }
+
+    function testHighApyCapsDelegatedShareAtCeiling() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
+
+        assertGt(staking.cachedMonadObservedApy(), 1 ether);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_CEILING_BPS);
+        assertEq(staking.exposeTargetDelegatedPrincipal(), 10 ether);
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+        assertEq(address(staking).balance, 0);
+    }
+
+    function testMidrangeApyInterpolatesDelegatedShareLinearly() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        _rebalanceMonadDelegationsToObservedApy(0.5 ether);
+
+        assertEq(staking.cachedMonadDelegatedShareBps(), 6_500);
+        assertEq(staking.exposeDelegatedShareBpsFromApy(staking.cachedMonadObservedApy()), 6_500);
+        assertEq(staking.exposeTargetDelegatedPrincipal(), 6.5 ether);
+        assertEq(staking.totalDelegatedMonad(), 6.5 ether);
+        assertEq(address(staking).balance, 3.5 ether);
+    }
+
+    function testRebalanceUndelegatesWhenDelegatedShareFalls() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
+
+        vm.roll(block.number + 10);
+        staking.rebalanceMonadDelegations();
+
+        assertEq(staking.cachedMonadObservedApy(), 0);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_FLOOR_BPS);
+        assertEq(staking.totalDelegatedMonad(), 3 ether);
+        assertEq(staking.totalPendingUndelegateMonad(), 7 ether);
         assertEq(address(staking).balance, 0);
     }
 
@@ -1523,7 +1630,7 @@ contract Series9StakingTest is Test {
         staking.harvestMonadValidatorRewards();
 
         assertEq(staking.protocolMonadYieldAccrued(), 3 ether);
-        assertEq(address(staking).balance, 3 ether);
+        assertEq(address(staking).balance, 10 ether);
     }
 
     function testTransferExcessMonadYieldOnlyTransfersHarvestedYield() public {
@@ -1616,8 +1723,9 @@ contract Series9StakingTest is Test {
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.targetValidatorCount(), 5);
-        assertEq(staking.totalDelegatedMonad(), 10 ether);
+        assertEq(staking.totalDelegatedMonad(), 3 ether);
         assertEq(staking.targetValidatorIds(0), 1);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_FLOOR_BPS);
 
         vm.roll(block.number + 10);
         monadStakingMock.bumpValidatorAccRewardPerToken(6, 1_000 ether);
@@ -1628,6 +1736,9 @@ contract Series9StakingTest is Test {
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.protocolMonadYieldAccrued(), 1 ether);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_CEILING_BPS);
+        assertEq(staking.totalDelegatedMonad(), 7.6 ether);
+        assertEq(staking.totalPendingUndelegateMonad(), 2.4 ether);
 
         bool hasValidatorSix;
         for (uint256 i = 0; i < staking.targetValidatorCount(); ++i) {
@@ -1648,6 +1759,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
         staking.rebalanceMonadDelegations();
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
 
         vm.prank(alice);
         uint256 requestId = staking.requestUnstakeMonad(4 ether);
@@ -1700,6 +1812,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
         staking.rebalanceMonadDelegations();
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
 
         vm.prank(alice);
         uint256 requestId = staking.requestUnstakeMonad(4 ether);
@@ -1750,6 +1863,34 @@ contract Series9StakingTest is Test {
         (,, minClaimEpoch,) = staking.monadUnstakeRequest(alice, requestId);
         assertEq(minClaimEpoch, 6);
         assertEq(staking.totalPendingUndelegateMonad(), 60 ether);
+    }
+
+    function testWithdrawIdExhaustionLeavesRequestPendingInsteadOfReverting() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 1);
+
+        vm.deal(alice, 400 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 300 ether}();
+
+        assertTrue(staking.exposeDelegateMonadAmountToValidator(1, 300 ether));
+
+        for (uint256 i = 0; i < 256; ++i) {
+            vm.prank(alice);
+            staking.requestUnstakeMonad(1 ether);
+        }
+
+        assertEq(staking.totalPendingUndelegateMonad(), 256 ether);
+
+        vm.prank(alice);
+        uint256 requestId = staking.requestUnstakeMonad(1 ether);
+
+        (uint256 amount,, uint64 minClaimEpoch, bool claimed) = staking.monadUnstakeRequest(alice, requestId);
+        assertEq(amount, 1 ether);
+        assertEq(minClaimEpoch, type(uint64).max);
+        assertFalse(claimed);
+        assertEq(staking.totalPendingUndelegateMonad(), 256 ether);
     }
 
     function testClaimNeedingMoreThanOneMaturedWithdrawBatchDoesNotProgressOnRevert() public {
@@ -1806,6 +1947,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
         staking.rebalanceMonadDelegations();
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
 
         vm.prank(alice);
         uint256 requestId = staking.requestUnstakeMonad(4 ether);
@@ -1833,6 +1975,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 60 ether}();
         staking.rebalanceMonadDelegations();
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
 
         for (uint256 i = 0; i < 30; ++i) {
             vm.prank(alice);
@@ -1850,6 +1993,53 @@ contract Series9StakingTest is Test {
         uint256 processedSecondCall = staking.processMaturedMonadUndelegations(0);
         assertGt(processedSecondCall, 0);
         assertEq(staking.totalPendingUndelegateMonad(), 0);
+        assertEq(staking.pendingUndelegateTicketsLength(), 0);
+    }
+
+    function testRebalanceScansPastFirstHundredValidators() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 120);
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+
+        staking.rebalanceMonadDelegations();
+
+        vm.roll(block.number + 10);
+        for (uint64 validatorId = 116; validatorId <= 120; ++validatorId) {
+            monadStakingMock.bumpValidatorAccRewardPerToken(validatorId, 5_000 ether);
+        }
+
+        staking.rebalanceMonadDelegations();
+
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(staking.targetValidatorIds(i), 116 + i);
+        }
+    }
+
+    function testHarvestCompactsInactiveTrackedValidators() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        assertEq(staking.trackedValidatorsLength(), 5);
+
+        vm.prank(alice);
+        staking.requestUnstakeMonad(10 ether);
+
+        monadStakingMock.setEpoch(6, false);
+        staking.processMaturedMonadUndelegations(0);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+
+        staking.harvestMonadValidatorRewards();
+        assertEq(staking.trackedValidatorsLength(), 0);
     }
 
     function testMonadUnstakeClaimNoLongerNeedsKeeperRebalanceAfterQueuedUndelegationMatures() public {
@@ -1861,6 +2051,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
         staking.rebalanceMonadDelegations();
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
 
         vm.deal(bob, 10 ether);
         vm.prank(bob);
@@ -1900,6 +2091,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
         staking.rebalanceMonadDelegations();
+        _rebalanceMonadDelegationsToObservedApy(2 ether);
 
         vm.prank(alice);
         staking.requestUnstakeMonad(4 ether);
@@ -1916,6 +2108,131 @@ contract Series9StakingTest is Test {
 
         assertEq(staking.totalPendingUndelegateMonad(), 4 ether);
         assertEq(staking.totalDelegatedMonad(), 6 ether);
+    }
+
+    function testQueueUnstakeUsesLowestKnownScoresBeforeHigherScoresAndUnknowns() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 4);
+
+        vm.deal(address(staking), 4 ether);
+        for (uint64 validatorId = 1; validatorId <= 4; ++validatorId) {
+            assertTrue(staking.exposeDelegateMonadAmountToValidator(validatorId, 1 ether));
+        }
+
+        staking.exposeUpdateMonadTargets();
+
+        assertFalse(staking.hasCachedValidatorScore(1));
+        assertFalse(staking.hasCachedValidatorScore(2));
+        assertFalse(staking.hasCachedValidatorScore(3));
+        assertFalse(staking.hasCachedValidatorScore(4));
+
+        vm.roll(block.number + 10);
+
+        uint64[] memory scoredValidatorIds = new uint64[](3);
+        scoredValidatorIds[0] = 1;
+        scoredValidatorIds[1] = 2;
+        scoredValidatorIds[2] = 3;
+        monadStakingMock.setExecutionValidatorSet(scoredValidatorIds);
+
+        monadStakingMock.setValidator(1, 1 ether, 2_000 ether, 0);
+        monadStakingMock.setValidator(2, 1 ether, 1_000 ether, 0.2 ether);
+        monadStakingMock.setValidator(3, 1 ether, 3_000 ether, 0.5 ether);
+
+        staking.exposeUpdateMonadTargets();
+
+        assertTrue(staking.hasCachedValidatorScore(1));
+        assertTrue(staking.hasCachedValidatorScore(2));
+        assertTrue(staking.hasCachedValidatorScore(3));
+        assertFalse(staking.hasCachedValidatorScore(4));
+        assertGt(staking.cachedValidatorScore(1), 0);
+        assertEq(staking.cachedValidatorScore(2), 0);
+        assertEq(staking.cachedValidatorScore(1), staking.cachedValidatorScore(3));
+
+        (uint256 queuedAmount, uint64 maxClaimableEpoch) = staking.exposeQueueUnstakeFromDelegations(3 ether, 1, 4);
+
+        assertEq(queuedAmount, 3 ether);
+        assertEq(maxClaimableEpoch, 6);
+        assertEq(staking.pendingUndelegateTicketsLength(), 3);
+
+        (uint64 validatorId0, uint8 withdrawId0, uint256 amount0, uint64 claimableEpoch0, bool withdrawn0) =
+            staking.pendingUndelegateTickets(0);
+        (uint64 validatorId1, uint8 withdrawId1, uint256 amount1, uint64 claimableEpoch1, bool withdrawn1) =
+            staking.pendingUndelegateTickets(1);
+        (uint64 validatorId2, uint8 withdrawId2, uint256 amount2, uint64 claimableEpoch2, bool withdrawn2) =
+            staking.pendingUndelegateTickets(2);
+
+        assertEq(validatorId0, 2);
+        assertEq(validatorId1, 3);
+        assertEq(validatorId2, 1);
+        assertEq(withdrawId0, 0);
+        assertEq(withdrawId1, 0);
+        assertEq(withdrawId2, 0);
+        assertEq(amount0, 1 ether);
+        assertEq(amount1, 1 ether);
+        assertEq(amount2, 1 ether);
+        assertEq(claimableEpoch0, 6);
+        assertEq(claimableEpoch1, 6);
+        assertEq(claimableEpoch2, 6);
+        assertFalse(withdrawn0);
+        assertFalse(withdrawn1);
+        assertFalse(withdrawn2);
+
+        assertEq(staking.validatorDelegatedAmount(1), 0);
+        assertEq(staking.validatorDelegatedAmount(2), 0);
+        assertEq(staking.validatorDelegatedAmount(3), 0);
+        assertEq(staking.validatorDelegatedAmount(4), 1 ether);
+        assertEq(staking.monadUndelegateValidatorCursor(), 0);
+        assertEq(staking.totalPendingUndelegateMonad(), 3 ether);
+    }
+
+    function testQueueUnstakeOnlyReordersInsideCurrentCursorWindow() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 5);
+
+        vm.deal(address(staking), 5 ether);
+        for (uint64 candidateValidatorId = 1; candidateValidatorId <= 5; ++candidateValidatorId) {
+            assertTrue(staking.exposeDelegateMonadAmountToValidator(candidateValidatorId, 1 ether));
+        }
+
+        staking.exposeUpdateMonadTargets();
+        vm.roll(block.number + 10);
+
+        monadStakingMock.setValidator(1, 1 ether, 1_000 ether, 0);
+        monadStakingMock.setValidator(2, 1 ether, 1_200 ether, 0);
+        monadStakingMock.setValidator(3, 1 ether, 1_300 ether, 0);
+        monadStakingMock.setValidator(4, 1 ether, 1_400 ether, 0);
+        monadStakingMock.setValidator(5, 1 ether, 1_500 ether, 0);
+
+        staking.exposeUpdateMonadTargets();
+
+        stdstore.target(address(staking)).sig("monadUndelegateValidatorCursor()").checked_write(uint256(2));
+
+        (uint256 queuedAmount, uint64 maxClaimableEpoch) = staking.exposeQueueUnstakeFromDelegations(1 ether, 1, 2);
+
+        assertEq(queuedAmount, 1 ether);
+        assertEq(maxClaimableEpoch, 6);
+        assertEq(staking.pendingUndelegateTicketsLength(), 1);
+        assertEq(staking.monadUndelegateValidatorCursor(), 4);
+
+        (uint64 validatorId, uint8 withdrawId, uint256 amount, uint64 claimableEpoch, bool withdrawn) =
+            staking.pendingUndelegateTickets(0);
+        assertEq(validatorId, 3);
+        assertEq(withdrawId, 0);
+        assertEq(amount, 1 ether);
+        assertEq(claimableEpoch, 6);
+        assertFalse(withdrawn);
+
+        for (uint256 i = 0; i < 5; ++i) {
+            assertEq(staking.trackedValidators(i), i + 1);
+        }
+
+        assertEq(staking.validatorDelegatedAmount(1), 1 ether);
+        assertEq(staking.validatorDelegatedAmount(2), 1 ether);
+        assertEq(staking.validatorDelegatedAmount(3), 0);
+        assertEq(staking.validatorDelegatedAmount(4), 1 ether);
+        assertEq(staking.validatorDelegatedAmount(5), 1 ether);
     }
 
     function _installMonadPrecompileMock() internal {
@@ -1953,6 +2270,21 @@ contract Series9StakingTest is Test {
         }
 
         monadStakingMock.setExecutionValidatorSet(validatorIds);
+    }
+
+    function _rebalanceMonadDelegationsToObservedApy(uint256 observedApy) internal {
+        uint256 deltaBlocks = 10;
+        vm.roll(block.number + deltaBlocks);
+
+        uint256 deltaAcc = observedApy == 0
+            ? 0
+            : (observedApy * deltaBlocks + MONAD_BLOCKS_PER_YEAR - 1) / MONAD_BLOCKS_PER_YEAR;
+
+        for (uint64 validatorId = 1; validatorId <= 5; ++validatorId) {
+            monadStakingMock.bumpValidatorAccRewardPerToken(validatorId, deltaAcc);
+        }
+
+        staking.rebalanceMonadDelegations();
     }
 
     function _stake(address user, uint256 stakeAmount) internal {
