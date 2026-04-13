@@ -61,6 +61,12 @@ jobs:
           jq '.abi' out/Series9Staking.sol/Series9Staking.json > "$ABI_DIR/Series9Staking.abi.json"
           jq '.abi' out/SER9Token.sol/SER9Token.json > "$ABI_DIR/SER9Token.abi.json"
           jq '.abi' out/Series9ManagedToken.sol/Series9ManagedToken.json > "$ABI_DIR/Series9ManagedToken.abi.json"
+          if [[ -f out/PrivateToken.sol/PrivateToken.json ]]; then
+            jq '.abi' out/PrivateToken.sol/PrivateToken.json > "$ABI_DIR/PrivateToken.abi.json"
+          fi
+          if [[ -f out/PrivateTokenPool.sol/PrivateTokenPool.json ]]; then
+            jq '.abi' out/PrivateTokenPool.sol/PrivateTokenPool.json > "$ABI_DIR/PrivateTokenPool.abi.json"
+          fi
 
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
 

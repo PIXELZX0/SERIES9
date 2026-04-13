@@ -4,3 +4,7 @@ broadcast/
 .env
 safe-tx-*.json
 .playwright-mcp/
+zk/build/
+zk/ptau/
+zk/*.log
+web/public/zk/
