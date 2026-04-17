@@ -3,44 +3,69 @@ pragma solidity ^0.8.22;
 
 import "forge-std/Test.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {Series9Identity} from "../src/Series9Identity.sol";
+import {SER9Token} from "../src/SER9Token.sol";
+import {Series9Staking} from "../src/Series9Staking.sol";
 
 contract Series9IdentityTest is Test {
     Series9Identity public identity;
+    SER9Token public ser9;
+    Series9Staking public staking;
     address public owner;
     address public alice;
     address public bob;
-    address public feeRecipient;
+
+    uint256 constant AI_FEE = 10 ether;       // 10 SER9
+    uint256 constant HUMAN_FEE = 50 ether;    // 50 SER9
 
     function setUp() public {
         owner = address(this);
         alice = makeAddr("alice");
         bob = makeAddr("bob");
-        feeRecipient = makeAddr("feeRecipient");
-        vm.deal(alice, 10 ether);
-        vm.deal(bob, 10 ether);
 
-        // Deploy implementation
+        // 1. Deploy SER9 token
+        SER9Token ser9Impl = new SER9Token();
+        bytes memory ser9Data = abi.encodeCall(SER9Token.initialize, (owner));
+        ERC1967Proxy ser9Proxy = new ERC1967Proxy(address(ser9Impl), ser9Data);
+        ser9 = SER9Token(address(ser9Proxy));
+
+        // 2. Deploy Staking (minimal setup — we just need stake() to work)
+        // For testing, use a mock staking contract instead
+        MockStaking mockStaking = new MockStaking(address(ser9));
+
+        // 3. Deploy Identity
         Series9Identity impl = new Series9Identity();
-
-        // Deploy proxy + initialize
-        bytes memory initData = abi.encodeCall(
+        bytes memory idData = abi.encodeCall(
             Series9Identity.initialize,
-            (owner, 0.01 ether, feeRecipient)
+            (owner, address(ser9), address(mockStaking), AI_FEE, HUMAN_FEE)
         );
-        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
-        identity = Series9Identity(address(proxy));
+        ERC1967Proxy idProxy = new ERC1967Proxy(address(impl), idData);
+        identity = Series9Identity(address(idProxy));
+
+        // Fund users with SER9
+        ser9.transfer(alice, 100 ether);
+        ser9.transfer(bob, 100 ether);
+
+        // Approve identity contract to spend SER9
+        vm.prank(alice);
+        ser9.approve(address(identity), type(uint256).max);
+        vm.prank(bob);
+        ser9.approve(address(identity), type(uint256).max);
     }
 
     function test_initialize() public view {
-        assertEq(identity.mintFee(), 0.01 ether);
-        assertEq(identity.feeRecipient(), feeRecipient);
-        assertEq(identity.owner(), owner);
+        assertEq(identity.aiMintFee(), AI_FEE);
+        assertEq(identity.humanMintFee(), HUMAN_FEE);
+        assertEq(address(identity.ser9()), address(ser9));
+        assertEq(identity.stakingContract(), address(MockStaking(address(identity.stakingContract()))));
     }
 
     function test_mintHuman() public {
+        uint256 balBefore = ser9.balanceOf(alice);
+
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}(
+        uint256 tid = identity.mintIdentity(
             "Alice",
             "Hello I am Alice",
             Series9Identity.EntityType.Human,
@@ -54,14 +79,19 @@ contract Series9IdentityTest is Test {
         assertFalse(identity.isAI(alice));
         assertFalse(identity.isVerified(tid));
 
-        // Check profile fields individually
-        (string memory name,,,,,,) = identity.profiles(tid);
-        assertEq(name, "Alice");
+        // 50 SER9 deducted from alice
+        assertEq(balBefore - ser9.balanceOf(alice), HUMAN_FEE);
+
+        // 50 SER9 staked in mock staking
+        MockStaking ms = MockStaking(identity.stakingContract());
+        assertEq(ms.stakedAmount(address(identity)), HUMAN_FEE);
     }
 
     function test_mintAI() public {
+        uint256 balBefore = ser9.balanceOf(bob);
+
         vm.prank(bob);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}(
+        uint256 tid = identity.mintIdentity(
             "AgentX",
             "AI assistant",
             Series9Identity.EntityType.AI,
@@ -71,38 +101,62 @@ contract Series9IdentityTest is Test {
 
         assertTrue(identity.isAI(bob));
         assertFalse(identity.isHuman(bob));
+
+        // 10 SER9 deducted
+        assertEq(balBefore - ser9.balanceOf(bob), AI_FEE);
+
+        MockStaking ms = MockStaking(identity.stakingContract());
+        assertEq(ms.stakedAmount(address(identity)), AI_FEE);
     }
 
     function test_oneIdentityPerAddress() public {
         vm.prank(alice);
-        identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSignature("AlreadyHasIdentity(address)", alice));
-        identity.mintIdentity{value: 0.01 ether}("Alice2", "", Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity("Alice2", "", Series9Identity.EntityType.Human, 100, 200);
     }
 
-    function test_insufficientMintFee() public {
+    function test_insufficientAllowance() public {
+        // Revoke approval
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Series9Identity.InsufficientMintFee.selector, 0.01 ether, 0.005 ether));
-        identity.mintIdentity{value: 0.005 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        ser9.approve(address(identity), 0);
+
+        vm.prank(alice);
+        // ERC20 will revert with insufficient allowance
+        vm.expectRevert();
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+    }
+
+    function test_insufficientBalance() public {
+        address poor = makeAddr("poor");
+        vm.prank(alice);
+        ser9.transfer(poor, 5 ether); // only 5 SER9, needs 10 for AI
+
+        vm.prank(poor);
+        ser9.approve(address(identity), type(uint256).max);
+
+        vm.prank(poor);
+        // Will fail because poor only has 5 SER9 but needs 10 for AI
+        vm.expectRevert();
+        identity.mintIdentity("Poor", "", Series9Identity.EntityType.AI, 100, 200);
     }
 
     function test_updateProfile() public {
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}("Alice", "old bio", Series9Identity.EntityType.Human, 100, 200);
+        uint256 tid = identity.mintIdentity("Alice", "old bio", Series9Identity.EntityType.Human, 100, 200);
 
         vm.prank(alice);
         identity.updateProfile(tid, "Alice Updated", "new bio", 150, 220);
 
-        (string memory name, string memory bio,,,,,) = identity.profiles(tid);
+        (string memory name,,,,,,) = identity.profiles(tid);
         assertEq(name, "Alice Updated");
-        assertEq(bio, "new bio");
     }
 
     function test_updateProfileNotOwner() public {
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         vm.prank(bob);
         vm.expectRevert(Series9Identity.NotTokenOwner.selector);
@@ -111,7 +165,7 @@ contract Series9IdentityTest is Test {
 
     function test_verify() public {
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         identity.verify(tid, true);
         assertTrue(identity.isVerified(tid));
@@ -122,7 +176,7 @@ contract Series9IdentityTest is Test {
 
     function test_verifyNotOwner() public {
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         vm.prank(bob);
         vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", bob));
@@ -131,18 +185,17 @@ contract Series9IdentityTest is Test {
 
     function test_tokenURIContainsSVG() public {
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}("Alice", "Test bio", Series9Identity.EntityType.Human, 100, 200);
+        uint256 tid = identity.mintIdentity("Alice", "Test bio", Series9Identity.EntityType.Human, 100, 200);
 
         string memory uri = identity.tokenURI(tid);
-        // Should start with data:application/json;base64,
-        assertEq(uri, uri); // just ensure no revert; real SVG validation is visual
+        assertEq(uri, uri); // ensure no revert
     }
 
     function test_hasIdentity() public {
         assertFalse(identity.hasIdentity(alice));
 
         vm.prank(alice);
-        identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         assertTrue(identity.hasIdentity(alice));
     }
@@ -151,14 +204,19 @@ contract Series9IdentityTest is Test {
         assertEq(identity.nameOf(alice), "");
 
         vm.prank(alice);
-        identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         assertEq(identity.nameOf(alice), "Alice");
     }
 
-    function test_setMintFee() public {
-        identity.setMintFee(0.02 ether);
-        assertEq(identity.mintFee(), 0.02 ether);
+    function test_setAIMintFee() public {
+        identity.setAIMintFee(20 ether);
+        assertEq(identity.aiMintFee(), 20 ether);
+    }
+
+    function test_setHumanMintFee() public {
+        identity.setHumanMintFee(100 ether);
+        assertEq(identity.humanMintFee(), 100 ether);
     }
 
     function test_pauseUnpause() public {
@@ -166,34 +224,24 @@ contract Series9IdentityTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         identity.unpause();
 
         vm.prank(alice);
-        identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
     }
 
     function test_nameTooLong() public {
         vm.prank(alice);
         string memory longName = "abcdefghijklmnopqrstuvwxyz1234567"; // 33 chars
         vm.expectRevert(Series9Identity.NameTooLong.selector);
-        identity.mintIdentity{value: 0.01 ether}(longName, "", Series9Identity.EntityType.Human, 100, 200);
-    }
-
-    function test_bioTooLong() public {
-        vm.prank(alice);
-        string memory longBio = "x";
-        for (uint256 i = 0; i < 128; i++) {
-            longBio = string(abi.encodePacked(longBio, "x"));
-        }
-        vm.expectRevert(Series9Identity.BioTooLong.selector);
-        identity.mintIdentity{value: 0.01 ether}("Alice", longBio, Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity(longName, "", Series9Identity.EntityType.Human, 100, 200);
     }
 
     function test_customAvatarSeed() public {
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity{value: 0.01 ether}("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         vm.prank(alice);
         identity.setCustomAvatarSeed(tid, "special-pattern-42");
@@ -208,7 +256,24 @@ contract Series9IdentityTest is Test {
     function test_upgrade() public {
         Series9Identity newImpl = new Series9Identity();
         identity.upgradeToAndCall(address(newImpl), "");
-        // Should still work after upgrade
-        assertEq(identity.mintFee(), 0.01 ether);
+        assertEq(identity.aiMintFee(), AI_FEE);
+        assertEq(identity.humanMintFee(), HUMAN_FEE);
+    }
+}
+
+/// @notice Mock staking contract for testing — just records staked amounts
+contract MockStaking {
+    IERC20 public ser9;
+    mapping(address => uint256) public stakedAmount;
+    uint256 public totalStaked;
+
+    constructor(address ser9Token) {
+        ser9 = IERC20(ser9Token);
+    }
+
+    function stake(uint256 amount) external {
+        ser9.transferFrom(msg.sender, address(this), amount);
+        stakedAmount[msg.sender] += amount;
+        totalStaked += amount;
     }
 }

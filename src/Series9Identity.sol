@@ -9,6 +9,13 @@ import {ERC721URIStorageUpgradeable} from "openzeppelin-contracts-upgradeable/co
 import {IERC165} from "openzeppelin-contracts/contracts/utils/introspection/IERC165.sol";
 import {PausableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/utils/PausableUpgradeable.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+
+/// @notice Minimal interface for Series9Staking.stake()
+interface ISeries9Staking {
+    function stake(uint256 amount) external;
+}
 
 /// @title Series9Identity
 /// @notice On-chain identity NFT with SVG generation and AI/human distinction
@@ -22,6 +29,7 @@ contract Series9Identity is
     ReentrancyGuard,
     UUPSUpgradeable
 {
+    using SafeERC20 for IERC20;
     // ─────────────────── Types ───────────────────
 
     enum EntityType {
@@ -47,26 +55,35 @@ contract Series9Identity is
     mapping(address => uint256) public ownerTokenId;   // 1 identity per address
     mapping(uint256 => string) public customAvatarSeed; // Optional seed for generative art
 
-    uint256 public mintFee;
-    address public feeRecipient;
+    IERC20 public ser9;              // SER9 token
+    address public stakingContract;   // Series9Staking address for auto-staking
+    uint256 public aiMintFee;         // 10 SER9 for AI
+    uint256 public humanMintFee;      // 50 SER9 for Human
 
-    /// @notice Emitted when the mint fee is changed
-    event MintFeeUpdated(uint256 previousFee, uint256 newFee);
-    /// @notice Emitted when fee recipient is changed
-    event FeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
+    /// @notice Emitted when AI mint fee is changed
+    event AIMintFeeUpdated(uint256 previousFee, uint256 newFee);
+    /// @notice Emitted when Human mint fee is changed
+    event HumanMintFeeUpdated(uint256 previousFee, uint256 newFee);
+    /// @notice Emitted when staking contract is changed
+    event StakingContractUpdated(address indexed previousStaking, address indexed newStaking);
     /// @notice Emitted when a profile is verified
     event ProfileVerified(uint256 indexed tokenId, bool indexed verified);
     /// @notice Emitted when a profile is updated
     event ProfileUpdated(uint256 indexed tokenId, string name, string bio, EntityType entityType);
+    /// @notice Emitted when SER9 is staked on behalf of identity minter
+    event IdentityStaked(address indexed user, uint256 amount);
 
     // ─────────────────── Errors ───────────────────
 
     error AlreadyHasIdentity(address account);
-    error InsufficientMintFee(uint256 required, uint256 sent);
+    error InsufficientMintAllowance();
     error NameTooLong();
     error BioTooLong();
     error NotTokenOwner();
     error InvalidHue();
+    error ZeroSer9Address();
+    error InvalidStakingContract();
+    error StakingFailed();
 
     // ─────────────────── Init ───────────────────
 
@@ -77,33 +94,52 @@ contract Series9Identity is
 
     function initialize(
         address initialOwner,
-        uint256 initialMintFee,
-        address initialFeeRecipient
+        address ser9Token,
+        address stakingContract_,
+        uint256 initialAIMintFee,
+        uint256 initialHumanMintFee
     ) external initializer {
+        if (ser9Token == address(0)) revert ZeroSer9Address();
+        if (stakingContract_ == address(0)) revert InvalidStakingContract();
+
         __ERC721_init("Series9 Identity", "S9ID");
         __ERC721URIStorage_init();
         __Ownable_init(initialOwner);
         __Pausable_init();
 
-        mintFee = initialMintFee;
-        feeRecipient = initialFeeRecipient;
+        ser9 = IERC20(ser9Token);
+        stakingContract = stakingContract_;
+        aiMintFee = initialAIMintFee;
+        humanMintFee = initialHumanMintFee;
         _nextTokenId = 1;
     }
 
     // ─────────────────── Mint ───────────────────
 
-    /// @notice Mint a new identity NFT — one per address
+    /// @notice Mint a new identity NFT — one per address, SER9 fee auto-staked
     function mintIdentity(
         string calldata name,
         string calldata bio,
         EntityType entityType,
         uint8 hue,
         uint8 saturation
-    ) external payable whenNotPaused nonReentrant returns (uint256) {
+    ) external whenNotPaused nonReentrant returns (uint256) {
         if (ownerTokenId[msg.sender] != 0) revert AlreadyHasIdentity(msg.sender);
-        if (msg.value < mintFee) revert InsufficientMintFee(mintFee, msg.value);
         if (bytes(name).length > 32) revert NameTooLong();
         if (bytes(bio).length > 128) revert BioTooLong();
+
+        // Determine fee based on entity type
+        uint256 fee = entityType == EntityType.AI ? aiMintFee : humanMintFee;
+
+        // Transfer SER9 from user to this contract
+        IERC20(ser9).safeTransferFrom(msg.sender, address(this), fee);
+
+        // Approve staking contract to pull SER9
+        IERC20(ser9).approve(stakingContract, fee);
+
+        // Stake SER9 on behalf of the user via staking contract
+        // The staking contract will pull SER9 from this contract via transferFrom
+        ISeries9Staking(stakingContract).stake(fee);
 
         uint256 tokenId = _nextTokenId++;
 
@@ -123,11 +159,7 @@ contract Series9Identity is
         // Set on-chain tokenURI with generated SVG
         _setTokenURI(tokenId, _generateTokenURI(tokenId));
 
-        // Forward mint fee
-        if (mintFee > 0 && feeRecipient != address(0)) {
-            (bool ok,) = feeRecipient.call{value: msg.value}("");
-            require(ok, "Fee transfer failed");
-        }
+        emit IdentityStaked(msg.sender, fee);
 
         return tokenId;
     }
@@ -172,16 +204,23 @@ contract Series9Identity is
         emit ProfileVerified(tokenId, status);
     }
 
-    function setMintFee(uint256 newFee) external onlyOwner {
-        uint256 prev = mintFee;
-        mintFee = newFee;
-        emit MintFeeUpdated(prev, newFee);
+    function setAIMintFee(uint256 newFee) external onlyOwner {
+        uint256 prev = aiMintFee;
+        aiMintFee = newFee;
+        emit AIMintFeeUpdated(prev, newFee);
     }
 
-    function setFeeRecipient(address newRecipient) external onlyOwner {
-        address prev = feeRecipient;
-        feeRecipient = newRecipient;
-        emit FeeRecipientUpdated(prev, newRecipient);
+    function setHumanMintFee(uint256 newFee) external onlyOwner {
+        uint256 prev = humanMintFee;
+        humanMintFee = newFee;
+        emit HumanMintFeeUpdated(prev, newFee);
+    }
+
+    function setStakingContract(address newStaking) external onlyOwner {
+        if (newStaking == address(0)) revert InvalidStakingContract();
+        address prev = stakingContract;
+        stakingContract = newStaking;
+        emit StakingContractUpdated(prev, newStaking);
     }
 
     function pause() external onlyOwner {
