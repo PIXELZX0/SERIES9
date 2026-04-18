@@ -12,9 +12,18 @@ import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/Reentrancy
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/// @notice Minimal interface for Series9Staking.stake()
+/// @notice Interface for Series9Staking — stake() + reward claiming
 interface ISeries9Staking {
     function stake(uint256 amount) external;
+    function claimRewards() external;
+    function rewards(address account) external view returns (uint256);
+    function stakedBalance(address account) external view returns (uint256);
+    function rewardPerTokenStored() external view returns (uint256);
+    function userRewardPerTokenPaid(address account) external view returns (uint256);
+    function rewardRatePerBlock() external view returns (uint256);
+    function totalRewardWeight() external view returns (uint256);
+    function lastUpdateBlock() external view returns (uint256);
+    function rewardWeightBalance(address account) external view returns (uint256);
 }
 
 /// @title Series9Identity
@@ -55,10 +64,20 @@ contract Series9Identity is
     mapping(address => uint256) public ownerTokenId;   // 1 identity per address
     mapping(uint256 => string) public customAvatarSeed; // Optional seed for generative art
 
+    uint256 private constant PRECISION = 1e18;
+
     IERC20 public ser9;              // SER9 token
     address public stakingContract;   // Series9Staking address for auto-staking
     uint256 public aiMintFee;         // 10 SER9 for AI
     uint256 public humanMintFee;      // 50 SER9 for Human
+
+    // ─────────────────── NFT Reward Distribution ───────────────────
+    // Reward pool funded by claiming staking rewards on behalf of NFT holders.
+    // Each NFT holder gets an equal share (1 NFT = 1 share).
+
+    uint256 public nftRewardPerToken;    // Accumulated reward per NFT (PRECISION-scaled)
+    mapping(address => uint256) public nftUserRewardPerTokenPaid;
+    mapping(address => uint256) public nftRewards;
 
     /// @notice Emitted when AI mint fee is changed
     event AIMintFeeUpdated(uint256 previousFee, uint256 newFee);
@@ -72,6 +91,10 @@ contract Series9Identity is
     event ProfileUpdated(uint256 indexed tokenId, string name, string bio, EntityType entityType);
     /// @notice Emitted when SER9 is staked on behalf of identity minter
     event IdentityStaked(address indexed user, uint256 amount);
+    /// @notice Emitted when staking rewards are collected from the staking contract
+    event StakingRewardsCollected(uint256 amount);
+    /// @notice Emitted when an NFT holder claims their reward share
+    event NFTRewardClaimed(address indexed user, uint256 amount);
 
     // ─────────────────── Errors ───────────────────
 
@@ -84,6 +107,8 @@ contract Series9Identity is
     error ZeroSer9Address();
     error InvalidStakingContract();
     error StakingFailed();
+    error NotNFTHolder();
+    error NoNFTRewards();
 
     // ─────────────────── Init ───────────────────
 
@@ -112,6 +137,61 @@ contract Series9Identity is
         aiMintFee = initialAIMintFee;
         humanMintFee = initialHumanMintFee;
         _nextTokenId = 1;
+    }
+
+    // ─────────────────── NFT Reward Distribution ───────────────────
+
+    /// @notice Claim accumulated SER9 staking rewards from Series9Staking
+    ///         and distribute them pro-rata to NFT holders.
+    ///         Anyone can call this — it's a public good function.
+    function collectStakingRewards() external whenNotPaused nonReentrant {
+        uint256 balanceBefore = IERC20(ser9).balanceOf(address(this));
+        ISeries9Staking(stakingContract).claimRewards();
+        uint256 received = IERC20(ser9).balanceOf(address(this)) - balanceBefore;
+
+        if (received > 0) {
+            uint256 totalNFTs = _nextTokenId - 1;
+            if (totalNFTs > 0) {
+                nftRewardPerToken += (received * PRECISION) / totalNFTs;
+            }
+            emit StakingRewardsCollected(received);
+        }
+    }
+
+    /// @notice Claim your share of staking rewards as an NFT holder
+    function claimNFTRewards() external whenNotPaused nonReentrant {
+        uint256 tid = ownerTokenId[msg.sender];
+        if (tid == 0) revert NotNFTHolder();
+
+        uint256 rewardPerToken = nftRewardPerToken;
+        uint256 accumulated = rewardPerToken - nftUserRewardPerTokenPaid[msg.sender];
+        // Each NFT holder has 1 share. accumulated is PRECISION-scaled, so divide by PRECISION
+        // to get raw SER9 amount. Dust (<1e-18 SER9) is truncated.
+        uint256 newReward = accumulated / PRECISION;
+        uint256 reward = nftRewards[msg.sender] + newReward;
+
+        if (reward == 0) revert NoNFTRewards();
+
+        nftRewards[msg.sender] = 0;
+        nftUserRewardPerTokenPaid[msg.sender] = rewardPerToken;
+
+        IERC20(ser9).safeTransfer(msg.sender, reward);
+
+        emit NFTRewardClaimed(msg.sender, reward);
+    }
+
+    /// @notice View pending NFT reward for an account
+    function pendingNFTRewards(address account) external view returns (uint256) {
+        uint256 tid = ownerTokenId[account];
+        if (tid == 0) return 0;
+
+        uint256 accumulated = nftRewardPerToken - nftUserRewardPerTokenPaid[account];
+        return nftRewards[account] + (accumulated / PRECISION);
+    }
+
+    /// @notice View unclaimed staking rewards sitting in the staking contract
+    function pendingStakingRewards() external view returns (uint256) {
+        return ISeries9Staking(stakingContract).rewards(address(this));
     }
 
     // ─────────────────── Mint ───────────────────
@@ -531,12 +611,7 @@ contract Series9Identity is
         return super.supportsInterface(interfaceId);
     }
 
-    /// @notice Returns the total number of minted identity NFTs
-    function totalMinted() external view returns (uint256) {
-        return _nextTokenId - 1;
-    }
-
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 }

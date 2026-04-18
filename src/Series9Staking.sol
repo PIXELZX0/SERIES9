@@ -18,11 +18,6 @@ import {Series9ManagedToken} from "./Series9ManagedToken.sol";
 import {IPermit2} from "./interfaces/IPermit2.sol";
 import {IMonadStaking} from "./interfaces/IMonadStaking.sol";
 
-interface ISeries9Identity {
-    function balanceOf(address account) external view returns (uint256);
-    function totalMinted() external view returns (uint256);
-}
-
 contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeable, ReentrancyGuard, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
@@ -222,10 +217,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error MonadPayoutFailed();
     error NotInitialized();
     error MonadEpochReadFailed();
-    error IdentityContractNotSet();
-    error NotNFTHolder();
-    error NoNFTRewards();
-    error InvalidNFTRewardShareBps();
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -288,11 +279,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event MonadTargetsUpdated(uint64[5] validatorIds, uint16[5] weightsBps, uint8 targetCount);
     event MonadRebalanced(uint256 totalMonadStaked, uint256 totalDelegatedMonad, uint256 totalPendingUndelegateMonad);
 
-    event NFTRewardsClaimed(address indexed user, uint256 rewardAmount);
-    event NFTRewardShareUpdated(uint256 previousBps, uint256 newBps);
-    event IdentityContractUpdated(address indexed previousIdentity, address indexed newIdentity);
-    event NFTCountSynced(uint256 previousCount, uint256 newCount);
-
     modifier updateReward(address account) {
         _updateReward(account);
         _;
@@ -300,20 +286,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function _updateReward(address account) internal {
         rewardPerTokenStored = rewardPerToken();
-        monadRewardPerTokenStored = monadRewardPerToken();
-
-        // Update NFT reward accumulator before updating block numbers
-        if (nftRewardShareBps > 0 && cachedTotalNFTs > 0) {
-            uint256 blockDelta = block.number - lastUpdateBlock;
-            if (blockDelta > 0) {
-                uint256 nftRewardRate = _nftRewardRatePerBlock();
-                if (nftRewardRate > 0) {
-                    nftRewardPerNFT += Math.mulDiv(blockDelta * nftRewardRate, PRECISION, cachedTotalNFTs);
-                }
-            }
-        }
-
         lastUpdateBlock = block.number;
+        monadRewardPerTokenStored = monadRewardPerToken();
         monadLastUpdateBlock = block.number;
 
         if (account != address(0)) {
@@ -912,96 +886,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         revert ManualLockDisabled();
     }
 
-    // ─────────────────── NFT Reward Distribution ───────────────────
-
-    /// @notice Claim accumulated SER9 rewards for being an NFT holder
-    function claimNFTRewards() external whenNotPaused nonReentrant {
-        if (identityContract == address(0)) revert IdentityContractNotSet();
-        if (ISeries9Identity(identityContract).balanceOf(msg.sender) == 0) revert NotNFTHolder();
-
-        // Ensure NFT accumulator is up-to-date
-        if (nftRewardShareBps > 0 && cachedTotalNFTs > 0) {
-            uint256 blockDelta = block.number - lastUpdateBlock;
-            if (blockDelta > 0) {
-                uint256 nftRewardRate = _nftRewardRatePerBlock();
-                if (nftRewardRate > 0) {
-                    nftRewardPerNFT += Math.mulDiv(blockDelta * nftRewardRate, PRECISION, cachedTotalNFTs);
-                }
-            }
-        }
-
-        // Snapshots before updating
-        uint256 currentNftRewardPerNFT = nftRewardPerNFT;
-        uint256 paid = nftUserRewardPerNFTPaid[msg.sender];
-        uint256 rewardDelta = currentNftRewardPerNFT - paid;
-        uint256 reward = nftRewards[msg.sender] + Math.mulDiv(1, rewardDelta, PRECISION);
-
-        if (reward == 0) revert NoNFTRewards();
-
-        nftRewards[msg.sender] = 0;
-        nftUserRewardPerNFTPaid[msg.sender] = currentNftRewardPerNFT;
-
-        ser9.mint(msg.sender, reward);
-
-        emit NFTRewardsClaimed(msg.sender, reward);
-    }
-
-    /// @notice View pending NFT rewards for an account
-    function pendingNFTRewards(address account) external view returns (uint256) {
-        if (identityContract == address(0) || nftRewardShareBps == 0 || cachedTotalNFTs == 0) {
-            return nftRewards[account];
-        }
-
-        // Check if account holds an NFT
-        if (ISeries9Identity(identityContract).balanceOf(account) == 0) {
-            return nftRewards[account];
-        }
-
-        uint256 blockDelta = block.number - lastUpdateBlock;
-        uint256 projectedNftRewardPerNFT = nftRewardPerNFT;
-        if (blockDelta > 0) {
-            uint256 nftRewardRate = _nftRewardRatePerBlock();
-            if (nftRewardRate > 0) {
-                projectedNftRewardPerNFT += Math.mulDiv(blockDelta * nftRewardRate, PRECISION, cachedTotalNFTs);
-            }
-        }
-
-        uint256 rewardDelta = projectedNftRewardPerNFT - nftUserRewardPerNFTPaid[account];
-        return nftRewards[account] + Math.mulDiv(1, rewardDelta, PRECISION);
-    }
-
-    /// @notice Set the share of SER9 block rewards allocated to NFT holders (in BPS)
-    function setNftRewardShareBps(uint256 newBps) external onlyOwner updateReward(address(0)) {
-        if (newBps > 5000) revert InvalidNFTRewardShareBps();
-        uint256 previousBps = nftRewardShareBps;
-        nftRewardShareBps = newBps;
-        emit NFTRewardShareUpdated(previousBps, newBps);
-    }
-
-    /// @notice Set the Series9Identity NFT contract address
-    function setIdentityContract(address newIdentity) external onlyOwner {
-        if (newIdentity == address(0) || newIdentity.code.length == 0) revert InvalidTokenAddress();
-        address previousIdentity = identityContract;
-        identityContract = newIdentity;
-        emit IdentityContractUpdated(previousIdentity, newIdentity);
-
-        // Auto-sync NFT count when setting the contract
-        if (cachedTotalNFTs == 0) {
-            uint256 totalNFTs = ISeries9Identity(newIdentity).totalMinted();
-            cachedTotalNFTs = totalNFTs;
-            emit NFTCountSynced(0, totalNFTs);
-        }
-    }
-
-    /// @notice Sync the total NFT count from the identity contract (keeper-callable)
-    function syncNFTCount() external {
-        if (identityContract == address(0)) revert IdentityContractNotSet();
-        uint256 previousCount = cachedTotalNFTs;
-        uint256 newCount = ISeries9Identity(identityContract).totalMinted();
-        cachedTotalNFTs = newCount;
-        emit NFTCountSynced(previousCount, newCount);
-    }
-
     function mintManagedToken(address token, uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
@@ -1295,19 +1179,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         uint256 blockDelta = block.number - lastUpdateBlock;
-        uint256 effectiveRate = _effectiveStakerRewardRate();
-        uint256 rewardDelta = Math.mulDiv(blockDelta * effectiveRate, PRECISION, totalRewardWeight);
+        uint256 rewardDelta = Math.mulDiv(blockDelta * rewardRatePerBlock, PRECISION, totalRewardWeight);
         return rewardPerTokenStored + rewardDelta;
-    }
-
-    function _effectiveStakerRewardRate() internal view returns (uint256) {
-        if (nftRewardShareBps == 0) return rewardRatePerBlock;
-        return Math.mulDiv(rewardRatePerBlock, BPS_DENOMINATOR - nftRewardShareBps, BPS_DENOMINATOR);
-    }
-
-    function _nftRewardRatePerBlock() internal view returns (uint256) {
-        if (nftRewardShareBps == 0 || cachedTotalNFTs == 0) return 0;
-        return Math.mulDiv(rewardRatePerBlock, nftRewardShareBps, BPS_DENOMINATOR);
     }
 
     function monadRewardPerToken() public view returns (uint256) {
@@ -2510,15 +2383,5 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 public cachedMonadObservedApy;
     uint256 public cachedMonadDelegatedShareBps;
 
-    // ─────────────────── NFT Reward Distribution ───────────────────
-
-    address public identityContract;
-    uint256 public nftRewardShareBps;           // BPS of SER9 rewards allocated to NFT holders (0-5000, i.e. 0-50%)
-    uint256 public nftRewardPerNFT;             // Accumulated SER9 reward per NFT (PRECISION-based)
-    uint256 public cachedTotalNFTs;             // Cached total NFT count from identity contract
-
-    mapping(address => uint256) public nftUserRewardPerNFTPaid;
-    mapping(address => uint256) public nftRewards;
-
-    uint256[7] private _gap;
+    uint256[13] private _gap;
 }
