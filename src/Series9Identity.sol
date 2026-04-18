@@ -531,6 +531,11 @@ contract Series9Identity is
         return super.supportsInterface(interfaceId);
     }
 
+    /// @notice Returns the total number of minted identity NFTs
+    function totalMinted() external view returns (uint256) {
+        return _nextTokenId - 1;
+    }
+
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
     uint256[50] private __gap;
