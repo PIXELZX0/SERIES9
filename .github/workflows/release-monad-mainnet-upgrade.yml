@@ -55,7 +55,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          ABI_DIR="release-abis-${GITHUB_REF_NAME}"
+          REF_SLUG="$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
+          REF_SLUG="${REF_SLUG##-}"
+          REF_SLUG="${REF_SLUG%%-}"
+          if [[ -z "$REF_SLUG" ]]; then
+            REF_SLUG="run-${GITHUB_RUN_ID}"
+          fi
+
+          ABI_DIR="release-abis-${REF_SLUG}"
           mkdir -p "$ABI_DIR"
 
           jq '.abi' out/Series9Staking.sol/Series9Staking.json > "$ABI_DIR/Series9Staking.abi.json"
@@ -63,6 +70,7 @@ jobs:
           jq '.abi' out/Series9ManagedToken.sol/Series9ManagedToken.json > "$ABI_DIR/Series9ManagedToken.abi.json"
 
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
+          echo "ref_slug=$REF_SLUG" >> "$GITHUB_OUTPUT"
 
       - name: Deploy implementations and generate Safe Transaction Builder JSON
         id: deploy
@@ -93,6 +101,13 @@ jobs:
           SER9_DATA="${SER9_UPGRADE_DATA:-}"
           if [[ -z "$SER9_DATA" ]]; then SER9_DATA="0x"; fi
           if [[ -z "$STAKING_DATA" ]]; then STAKING_DATA="0x"; fi
+
+          REF_SLUG="$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')"
+          REF_SLUG="${REF_SLUG##-}"
+          REF_SLUG="${REF_SLUG%%-}"
+          if [[ -z "$REF_SLUG" ]]; then
+            REF_SLUG="run-${GITHUB_RUN_ID}"
+          fi
 
           echo "Deploying Staking implementation..."
           STAKING_DEPLOY_JSON="$(forge create src/Series9Staking.sol:Series9Staking \
@@ -186,7 +201,7 @@ jobs:
             "setManagedTokenImplementation(address)" \
             "$MANAGED_IMPL")"
 
-          SAFE_JSON_OUT="safe-tx-upgrade-all-${GITHUB_REF_NAME}.json"
+          SAFE_JSON_OUT="safe-tx-upgrade-all-${REF_SLUG}.json"
           jq -n \
             --arg chainId "143" \
             --arg to "$STAKING_PROXY" \
@@ -219,7 +234,9 @@ jobs:
               ]
             }' > "$SAFE_JSON_OUT"
 
-          RUN_FILE="release-deploy-${GITHUB_REF_NAME}.json"
+          jq -e '.transactions | length == 3' "$SAFE_JSON_OUT" >/dev/null
+
+          RUN_FILE="release-deploy-${REF_SLUG}.json"
           jq -n \
             --arg chainId "143" \
             --arg stakingProxy "$STAKING_PROXY" \
@@ -273,7 +290,7 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: monad-release-${{ github.ref_name }}
+          name: monad-release-${{ steps.abi.outputs.ref_slug }}
           if-no-files-found: error
           path: |
             ${{ steps.deploy.outputs.safe_json }}
