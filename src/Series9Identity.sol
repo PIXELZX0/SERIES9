@@ -160,20 +160,19 @@ contract Series9Identity is
 
     /// @notice Claim your share of staking rewards as an NFT holder
     function claimNFTRewards() external whenNotPaused nonReentrant {
-        uint256 tid = ownerTokenId[msg.sender];
-        if (tid == 0) revert NotNFTHolder();
-
         uint256 rewardPerToken = nftRewardPerToken;
-        uint256 accumulated = rewardPerToken - nftUserRewardPerTokenPaid[msg.sender];
-        // Each NFT holder has 1 share. accumulated is PRECISION-scaled, so divide by PRECISION
-        // to get raw SER9 amount. Dust (<1e-18 SER9) is truncated.
-        uint256 newReward = accumulated / PRECISION;
-        uint256 reward = nftRewards[msg.sender] + newReward;
+        uint256 reward = nftRewards[msg.sender];
+        uint256 tid = ownerTokenId[msg.sender];
+        if (tid != 0) {
+            reward += (rewardPerToken - nftUserRewardPerTokenPaid[msg.sender]) / PRECISION;
+            nftUserRewardPerTokenPaid[msg.sender] = rewardPerToken;
+        } else if (reward == 0) {
+            revert NotNFTHolder();
+        }
 
         if (reward == 0) revert NoNFTRewards();
 
         nftRewards[msg.sender] = 0;
-        nftUserRewardPerTokenPaid[msg.sender] = rewardPerToken;
 
         IERC20(ser9).safeTransfer(msg.sender, reward);
 
@@ -183,7 +182,7 @@ contract Series9Identity is
     /// @notice View pending NFT reward for an account
     function pendingNFTRewards(address account) external view returns (uint256) {
         uint256 tid = ownerTokenId[account];
-        if (tid == 0) return 0;
+        if (tid == 0) return nftRewards[account];
 
         uint256 accumulated = nftRewardPerToken - nftUserRewardPerTokenPaid[account];
         return nftRewards[account] + (accumulated / PRECISION);
@@ -233,7 +232,6 @@ contract Series9Identity is
             registeredAt: uint64(block.timestamp)
         });
 
-        ownerTokenId[msg.sender] = tokenId;
         _safeMint(msg.sender, tokenId);
 
         // Set on-chain tokenURI with generated SVG
@@ -359,7 +357,7 @@ contract Series9Identity is
 
         // Build JSON metadata
         string memory json = string(abi.encodePacked(
-            '{"name":"', p.name,
+            '{"name":"', _escapeJson(p.name),
             '","description":"Series9 Identity NFT","image":"data:image/svg+xml;base64,',
             _base64Encode(bytes(svg)),
             '","attributes":[{"trait_type":"Entity Type","value":"',
@@ -586,11 +584,73 @@ contract Series9Identity is
         return string(trimmed);
     }
 
+    function _escapeJson(string memory s) internal pure returns (string memory) {
+        bytes16 hexDigits = "0123456789abcdef";
+        bytes memory src = bytes(s);
+        bytes memory dst = new bytes(src.length * 6);
+        uint256 j = 0;
+
+        for (uint256 i = 0; i < src.length; i++) {
+            uint8 c = uint8(src[i]);
+            if (c == 0x22 || c == 0x5c) {
+                dst[j++] = bytes1(uint8(0x5c));
+                dst[j++] = src[i];
+            } else if (c < 0x20) {
+                dst[j++] = bytes1(uint8(0x5c));
+                dst[j++] = "u";
+                dst[j++] = "0";
+                dst[j++] = "0";
+                dst[j++] = hexDigits[c >> 4];
+                dst[j++] = hexDigits[c & 0x0f];
+            } else {
+                dst[j++] = src[i];
+            }
+        }
+
+        bytes memory trimmed = new bytes(j);
+        for (uint256 i = 0; i < j; i++) trimmed[i] = dst[i];
+        return string(trimmed);
+    }
+
     function _nextSeed(uint256 s) internal pure returns (uint256) {
         return uint256(keccak256(abi.encodePacked(s)));
     }
 
     // ─────────────────── Overrides ───────────────────
+
+    function _update(address to, uint256 tokenId, address auth)
+        internal
+        override(ERC721Upgradeable)
+        returns (address from)
+    {
+        from = super._update(to, tokenId, auth);
+
+        if (from != address(0) && ownerTokenId[from] == tokenId) {
+            _accrueNFTReward(from);
+            delete ownerTokenId[from];
+        }
+
+        if (to != address(0)) {
+            uint256 existingTokenId = ownerTokenId[to];
+            if (existingTokenId != 0 && existingTokenId != tokenId) {
+                revert AlreadyHasIdentity(to);
+            }
+
+            ownerTokenId[to] = tokenId;
+            nftUserRewardPerTokenPaid[to] = nftRewardPerToken;
+        }
+    }
+
+    function _accrueNFTReward(address account) internal {
+        uint256 rewardPerToken = nftRewardPerToken;
+        uint256 paid = nftUserRewardPerTokenPaid[account];
+        if (rewardPerToken <= paid) {
+            return;
+        }
+
+        nftRewards[account] += (rewardPerToken - paid) / PRECISION;
+        nftUserRewardPerTokenPaid[account] = rewardPerToken;
+    }
 
     function tokenURI(uint256 tokenId)
         public

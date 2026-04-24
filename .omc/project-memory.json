@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775879757655,
+  "lastScanned": 1776766798608,
   "projectRoot": "/Users/yuchan/Desktop/프로젝트/tokenproject",
   "techStack": {
     "languages": [],
@@ -40,7 +40,7 @@
       "path": "abi",
       "purpose": null,
       "fileCount": 3,
-      "lastAccessed": 1775879757620,
+      "lastAccessed": 1776766798553,
       "keyFiles": [
         "SER9Token.json",
         "Series9ManagedToken.json",
@@ -51,14 +51,14 @@
       "path": "broadcast",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1775879757625,
+      "lastAccessed": 1776766798553,
       "keyFiles": []
     },
     "cache": {
       "path": "cache",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1775879757630,
+      "lastAccessed": 1776766798566,
       "keyFiles": [
         "solidity-files-cache.json",
         "test-failures"
@@ -68,21 +68,21 @@
       "path": "lib",
       "purpose": "Library code",
       "fileCount": 0,
-      "lastAccessed": 1775879757632,
+      "lastAccessed": 1776766798566,
       "keyFiles": []
     },
     "out": {
       "path": "out",
       "purpose": "Build output",
       "fileCount": 0,
-      "lastAccessed": 1775879757633,
+      "lastAccessed": 1776766798584,
       "keyFiles": []
     },
     "safe": {
       "path": "safe",
       "purpose": null,
       "fileCount": 9,
-      "lastAccessed": 1775879757634,
+      "lastAccessed": 1776766798589,
       "keyFiles": [
         "pause.json",
         "set-creation-fee.json",
@@ -94,9 +94,10 @@
     "script": {
       "path": "script",
       "purpose": null,
-      "fileCount": 4,
-      "lastAccessed": 1775879757634,
+      "fileCount": 5,
+      "lastAccessed": 1776766798603,
       "keyFiles": [
+        "DeployPrivateTx.s.sol",
         "DeploySeries9.s.sol",
         "FixSetup.s.sol",
         "SafeBatch.s.sol",
@@ -106,9 +107,11 @@
     "src": {
       "path": "src",
       "purpose": "Source code",
-      "fileCount": 4,
-      "lastAccessed": 1775879757635,
+      "fileCount": 6,
+      "lastAccessed": 1776766798604,
       "keyFiles": [
+        "PrivateToken.sol",
+        "PrivateTokenPool.sol",
         "SER9Token.sol",
         "Series9ManagedToken.sol",
         "Series9Staking.sol"
@@ -118,7 +121,7 @@
       "path": "test",
       "purpose": "Test files",
       "fileCount": 1,
-      "lastAccessed": 1775879757635,
+      "lastAccessed": 1776766798604,
       "keyFiles": [
         "Series9Staking.t.sol"
       ]
@@ -127,7 +130,7 @@
       "path": "web",
       "purpose": null,
       "fileCount": 12,
-      "lastAccessed": 1775879757636,
+      "lastAccessed": 1776766798605,
       "keyFiles": [
         "README.md",
         "eslint.config.js",
@@ -136,18 +139,28 @@
         "package.json"
       ]
     },
+    "zk": {
+      "path": "zk",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1776766798605,
+      "keyFiles": [
+        "README.md",
+        "package.json"
+      ]
+    },
     "test/mocks": {
       "path": "test/mocks",
       "purpose": "Mock data",
       "fileCount": 0,
-      "lastAccessed": 1775879757640,
+      "lastAccessed": 1776766798607,
       "keyFiles": []
     },
     "web/dist": {
       "path": "web/dist",
       "purpose": "Distribution/build output",
       "fileCount": 3,
-      "lastAccessed": 1775879757646,
+      "lastAccessed": 1776766798607,
       "keyFiles": [
         "favicon.svg",
         "icons.svg",
@@ -158,17 +171,35 @@
       "path": "web/node_modules",
       "purpose": "Dependencies",
       "fileCount": 1,
-      "lastAccessed": 1775879757654,
+      "lastAccessed": 1776766798608,
       "keyFiles": []
     },
     "web/public": {
       "path": "web/public",
       "purpose": "Public files",
       "fileCount": 2,
-      "lastAccessed": 1775879757655,
+      "lastAccessed": 1776766798608,
       "keyFiles": [
         "favicon.svg",
         "icons.svg"
+      ]
+    },
+    "zk/build": {
+      "path": "zk/build",
+      "purpose": "Build output",
+      "fileCount": 0,
+      "lastAccessed": 1776766798608,
+      "keyFiles": []
+    },
+    "zk/scripts": {
+      "path": "zk/scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 4,
+      "lastAccessed": 1776766798608,
+      "keyFiles": [
+        "check-toolchain.mjs",
+        "compile.mjs",
+        "export-verifiers.mjs"
       ]
     }
   },

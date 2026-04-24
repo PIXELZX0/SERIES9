@@ -8,6 +8,12 @@ import {Series9Identity} from "../src/Series9Identity.sol";
 import {SER9Token} from "../src/SER9Token.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
 
+contract Series9IdentityHarness is Series9Identity {
+    function exposedEscapeJson(string memory value) external pure returns (string memory) {
+        return _escapeJson(value);
+    }
+}
+
 contract Series9IdentityTest is Test {
     Series9Identity public identity;
     SER9Token public ser9;
@@ -248,6 +254,75 @@ contract Series9IdentityTest is Test {
         assertEq(identity.customAvatarSeed(tid), "special-pattern-42");
     }
 
+    function test_transferUpdatesIdentityOwnerAndRewardAccounting() public {
+        vm.prank(alice);
+        uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+
+        _fundIdentityRewards(10 ether);
+        identity.collectStakingRewards();
+
+        vm.prank(alice);
+        identity.transferFrom(alice, bob, tid);
+
+        assertEq(identity.ownerTokenId(alice), 0);
+        assertEq(identity.ownerTokenId(bob), tid);
+        assertFalse(identity.hasIdentity(alice));
+        assertTrue(identity.hasIdentity(bob));
+        assertTrue(identity.isHuman(bob));
+        assertEq(identity.nameOf(alice), "");
+        assertEq(identity.nameOf(bob), "Alice");
+        assertEq(identity.pendingNFTRewards(alice), 10 ether);
+        assertEq(identity.pendingNFTRewards(bob), 0);
+
+        uint256 aliceBefore = ser9.balanceOf(alice);
+        vm.prank(alice);
+        identity.claimNFTRewards();
+        assertEq(ser9.balanceOf(alice), aliceBefore + 10 ether);
+
+        _fundIdentityRewards(20 ether);
+        identity.collectStakingRewards();
+
+        assertEq(identity.pendingNFTRewards(alice), 0);
+        assertEq(identity.pendingNFTRewards(bob), 20 ether);
+    }
+
+    function test_transferToExistingIdentityHolderReverts() public {
+        vm.prank(alice);
+        uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+
+        vm.prank(bob);
+        identity.mintIdentity("Bob", "", Series9Identity.EntityType.Human, 100, 200);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Series9Identity.AlreadyHasIdentity.selector, bob));
+        identity.transferFrom(alice, bob, tid);
+    }
+
+    function test_newMinterCannotClaimPastNftRewards() public {
+        vm.prank(alice);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+
+        _fundIdentityRewards(10 ether);
+        identity.collectStakingRewards();
+
+        vm.prank(bob);
+        identity.mintIdentity("Bob", "", Series9Identity.EntityType.Human, 100, 200);
+
+        assertEq(identity.pendingNFTRewards(alice), 10 ether);
+        assertEq(identity.pendingNFTRewards(bob), 0);
+
+        vm.prank(bob);
+        vm.expectRevert(Series9Identity.NoNFTRewards.selector);
+        identity.claimNFTRewards();
+    }
+
+    function test_jsonEscapesTokenName() public {
+        Series9IdentityHarness harness = new Series9IdentityHarness();
+        string memory value = string(abi.encodePacked("A\"\\B", bytes1(uint8(0x0a)), "C"));
+
+        assertEq(harness.exposedEscapeJson(value), "A\\\"\\\\B\\u000aC");
+    }
+
     function test_isAI_unregisteredAddress() public view {
         assertFalse(identity.isAI(alice));
         assertFalse(identity.isHuman(alice));
@@ -259,12 +334,19 @@ contract Series9IdentityTest is Test {
         assertEq(identity.aiMintFee(), AI_FEE);
         assertEq(identity.humanMintFee(), HUMAN_FEE);
     }
+
+    function _fundIdentityRewards(uint256 amount) internal {
+        MockStaking ms = MockStaking(identity.stakingContract());
+        ser9.approve(address(ms), amount);
+        ms.fundRewards(address(identity), amount);
+    }
 }
 
 /// @notice Mock staking contract for testing — just records staked amounts
 contract MockStaking {
     IERC20 public ser9;
     mapping(address => uint256) public stakedAmount;
+    mapping(address => uint256) public rewards;
     uint256 public totalStaked;
 
     constructor(address ser9Token) {
@@ -275,5 +357,16 @@ contract MockStaking {
         ser9.transferFrom(msg.sender, address(this), amount);
         stakedAmount[msg.sender] += amount;
         totalStaked += amount;
+    }
+
+    function fundRewards(address account, uint256 amount) external {
+        ser9.transferFrom(msg.sender, address(this), amount);
+        rewards[account] += amount;
+    }
+
+    function claimRewards() external {
+        uint256 reward = rewards[msg.sender];
+        rewards[msg.sender] = 0;
+        ser9.transfer(msg.sender, reward);
     }
 }
