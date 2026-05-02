@@ -21,10 +21,14 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
   - 생성 시 `mintRate`(토큰 1개당 필요한 SER9)
   - 선택적 transfer fee(`feeEnabled`, `feeBps`)
   - staking 컨트랙트가 owner로서 mint/burn/fee 설정 제어
+- `Series9Identity`:
+  - SER9 mint fee를 스테이킹하는 UUPS 기반 identity NFT
+  - `IDENTITY_PROXY`가 설정된 릴리즈 워크플로우에서 implementation 배포와 Safe 업그레이드 트랜잭션 생성 지원
 - 업그레이드 경로:
   - `upgradeSer9(...)`로 `SER9`를 명시적으로 업그레이드
   - `setManagedTokenImplementation(...)`로 최신 managed token implementation을 설정
   - 각 managed token은 `requestUpgrade(...)`로 staking 계약에 자신의 업그레이드를 요청하거나, owner가 `upgradeManagedToken(...)`으로 개별 업그레이드 가능
+  - `Series9Identity`는 identity proxy owner(Safe)가 `upgradeToAndCall(...)`로 직접 업그레이드
 
 ## 주요 규칙
 
@@ -45,6 +49,7 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 - `src/SER9Token.sol`
 - `src/Series9ManagedToken.sol`
 - `src/Series9Staking.sol`
+- `src/Series9Identity.sol`
 
 동적 mint rate 관련 주요 함수:
 
@@ -132,8 +137,10 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 `safe.global` Transaction Builder import용 JSON을 자동 생성합니다.
 
 - 워크플로: `.github/workflows/release-monad-mainnet-upgrade.yml`
-- 배포 방식: `forge create`로 새 implementation 3개(Staking/SER9/ManagedToken) 배포 후 Safe JSON 생성
-- 생성 파일: `safe-tx-upgrade-all-<release-tag-slug>.json` (트랜잭션 3개: `upgradeToAndCall` + `upgradeSer9` + `setManagedTokenImplementation`)
+- 배포 방식: `forge create`로 새 implementation(Staking/SER9/ManagedToken, 선택 시 Identity) 배포 후 Safe JSON 생성
+- 생성 파일: `safe-tx-upgrade-all-<release-tag-slug>.json`
+  - 기본 트랜잭션 3개: `upgradeToAndCall` + `upgradeSer9` + `setManagedTokenImplementation`
+  - `IDENTITY_PROXY` 설정 시 Identity `upgradeToAndCall` 트랜잭션 1개 추가
 
 필수 GitHub Secrets:
 
@@ -143,8 +150,10 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 
 선택 GitHub Secrets:
 
+- `IDENTITY_PROXY` (설정 시 Identity implementation 배포 및 업그레이드 Safe tx 생성)
 - `STAKING_UPGRADE_DATA`
 - `SER9_UPGRADE_DATA`
+- `IDENTITY_UPGRADE_DATA`
 
 선택 GitHub Variables:
 

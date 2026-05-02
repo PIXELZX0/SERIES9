@@ -249,9 +249,14 @@ contract Series9IdentityTest is Test {
         vm.prank(alice);
         uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
+        string memory beforeUri = identity.tokenURI(tid);
+
         vm.prank(alice);
         identity.setCustomAvatarSeed(tid, "special-pattern-42");
         assertEq(identity.customAvatarSeed(tid), "special-pattern-42");
+
+        string memory afterUri = identity.tokenURI(tid);
+        assertTrue(keccak256(bytes(beforeUri)) != keccak256(bytes(afterUri)));
     }
 
     function test_transferUpdatesIdentityOwnerAndRewardAccounting() public {

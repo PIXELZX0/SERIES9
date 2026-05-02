@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1776766798608,
+  "lastScanned": 1777723470630,
   "projectRoot": "/Users/yuchan/Desktop/프로젝트/tokenproject",
   "techStack": {
     "languages": [],
@@ -40,7 +40,7 @@
       "path": "abi",
       "purpose": null,
       "fileCount": 3,
-      "lastAccessed": 1776766798553,
+      "lastAccessed": 1777723470585,
       "keyFiles": [
         "SER9Token.json",
         "Series9ManagedToken.json",
@@ -51,14 +51,14 @@
       "path": "broadcast",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1776766798553,
+      "lastAccessed": 1777723470587,
       "keyFiles": []
     },
     "cache": {
       "path": "cache",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1776766798566,
+      "lastAccessed": 1777723470588,
       "keyFiles": [
         "solidity-files-cache.json",
         "test-failures"
@@ -68,21 +68,21 @@
       "path": "lib",
       "purpose": "Library code",
       "fileCount": 0,
-      "lastAccessed": 1776766798566,
+      "lastAccessed": 1777723470593,
       "keyFiles": []
     },
     "out": {
       "path": "out",
       "purpose": "Build output",
       "fileCount": 0,
-      "lastAccessed": 1776766798584,
+      "lastAccessed": 1777723470595,
       "keyFiles": []
     },
     "safe": {
       "path": "safe",
       "purpose": null,
       "fileCount": 9,
-      "lastAccessed": 1776766798589,
+      "lastAccessed": 1777723470597,
       "keyFiles": [
         "pause.json",
         "set-creation-fee.json",
@@ -94,10 +94,9 @@
     "script": {
       "path": "script",
       "purpose": null,
-      "fileCount": 5,
-      "lastAccessed": 1776766798603,
+      "fileCount": 4,
+      "lastAccessed": 1777723470598,
       "keyFiles": [
-        "DeployPrivateTx.s.sol",
         "DeploySeries9.s.sol",
         "FixSetup.s.sol",
         "SafeBatch.s.sol",
@@ -107,12 +106,11 @@
     "src": {
       "path": "src",
       "purpose": "Source code",
-      "fileCount": 6,
-      "lastAccessed": 1776766798604,
+      "fileCount": 5,
+      "lastAccessed": 1777723470600,
       "keyFiles": [
-        "PrivateToken.sol",
-        "PrivateTokenPool.sol",
         "SER9Token.sol",
+        "Series9Identity.sol",
         "Series9ManagedToken.sol",
         "Series9Staking.sol"
       ]
@@ -120,9 +118,10 @@
     "test": {
       "path": "test",
       "purpose": "Test files",
-      "fileCount": 1,
-      "lastAccessed": 1776766798604,
+      "fileCount": 2,
+      "lastAccessed": 1777723470601,
       "keyFiles": [
+        "Series9Identity.t.sol",
         "Series9Staking.t.sol"
       ]
     },
@@ -130,7 +129,7 @@
       "path": "web",
       "purpose": null,
       "fileCount": 12,
-      "lastAccessed": 1776766798605,
+      "lastAccessed": 1777723470601,
       "keyFiles": [
         "README.md",
         "eslint.config.js",
@@ -142,25 +141,22 @@
     "zk": {
       "path": "zk",
       "purpose": null,
-      "fileCount": 2,
-      "lastAccessed": 1776766798605,
-      "keyFiles": [
-        "README.md",
-        "package.json"
-      ]
+      "fileCount": 0,
+      "lastAccessed": 1777723470602,
+      "keyFiles": []
     },
     "test/mocks": {
       "path": "test/mocks",
       "purpose": "Mock data",
       "fileCount": 0,
-      "lastAccessed": 1776766798607,
+      "lastAccessed": 1777723470603,
       "keyFiles": []
     },
     "web/dist": {
       "path": "web/dist",
       "purpose": "Distribution/build output",
       "fileCount": 3,
-      "lastAccessed": 1776766798607,
+      "lastAccessed": 1777723470603,
       "keyFiles": [
         "favicon.svg",
         "icons.svg",
@@ -171,14 +167,14 @@
       "path": "web/node_modules",
       "purpose": "Dependencies",
       "fileCount": 1,
-      "lastAccessed": 1776766798608,
+      "lastAccessed": 1777723470618,
       "keyFiles": []
     },
     "web/public": {
       "path": "web/public",
       "purpose": "Public files",
       "fileCount": 2,
-      "lastAccessed": 1776766798608,
+      "lastAccessed": 1777723470629,
       "keyFiles": [
         "favicon.svg",
         "icons.svg"
@@ -188,21 +184,29 @@
       "path": "zk/build",
       "purpose": "Build output",
       "fileCount": 0,
-      "lastAccessed": 1776766798608,
+      "lastAccessed": 1777723470630,
       "keyFiles": []
-    },
-    "zk/scripts": {
-      "path": "zk/scripts",
-      "purpose": "Build/utility scripts",
-      "fileCount": 4,
-      "lastAccessed": 1776766798608,
-      "keyFiles": [
-        "check-toolchain.mjs",
-        "compile.mjs",
-        "export-verifiers.mjs"
-      ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "src/Series9Identity.sol",
+      "accessCount": 3,
+      "lastAccessed": 1777723882383,
+      "type": "file"
+    },
+    {
+      "path": "test/Series9Identity.t.sol",
+      "accessCount": 1,
+      "lastAccessed": 1777723485128,
+      "type": "file"
+    },
+    {
+      "path": "foundry.toml",
+      "accessCount": 1,
+      "lastAccessed": 1777723759233,
+      "type": "file"
+    }
+  ],
   "userDirectives": []
 }

@@ -379,106 +379,246 @@ contract Series9Identity is
 
     /// @notice Generate the SVG image for a given profile
     function _generateSVG(uint256 tokenId, IdentityProfile memory p) internal view returns (string memory) {
-        // Colors derived from profile hue/saturation
-        string memory primaryColor = _colorFromHue(p.hue, 0);
-        string memory secondaryColor = _colorFromHue(p.hue, 1);
-        string memory accentColor = _colorFromHue(uint8((uint256(p.hue) + 2) % 16), 0);
-        string memory bgColor = _colorFromHue(p.hue % 16, 2);
+        string memory primary = _colorFromHue(p.hue, 0);
+        string memory dark = _colorFromHue(p.hue, 1);
+        string memory light = _colorFromHue(p.hue, 2);
+        string memory accent = _colorFromHue(uint8((uint256(p.hue) + 9) % 16), 0);
+        string memory bloomOpacity = _opacityPercent(40 + (uint256(p.saturation) * 35) / 255);
 
-        // Type badge
-        string memory typeBadge = p.entityType == EntityType.AI
-            ? '<rect x="150" y="12" width="40" height="20" rx="4" fill="#6366f1"/><text x="170" y="26" font-size="10" fill="white" text-anchor="middle" font-family="monospace">AI</text>'
-            : '<rect x="150" y="12" width="52" height="20" rx="4" fill="#22c55e"/><text x="176" y="26" font-size="10" fill="white" text-anchor="middle" font-family="monospace">HUMAN</text>';
-
-        // Verified badge
-        string memory verifiedBadge = p.verified
-            ? '<circle cx="196" cy="22" r="8" fill="#3b82f6"/><text x="196" y="26" font-size="10" fill="white" text-anchor="middle" font-family="sans-serif">V</text>'
-            : '';
-
-        // Avatar: generative geometric pattern from tokenId + seed
-        string memory avatarPattern = _generateAvatarPattern(tokenId, p);
-
-        // Construct final SVG
         return string(abi.encodePacked(
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 200" width="340" height="200">',
-            // Background
-            '<rect width="340" height="200" rx="12" fill="', bgColor, '"/>',
-            // Card gradient top
-            '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">',
-            '<stop offset="0%" stop-color="', primaryColor, '"/>',
-            '<stop offset="100%" stop-color="', secondaryColor, '"/></linearGradient></defs>',
-            '<rect width="340" height="60" rx="12" fill="url(#g)"/>',
-            '<rect y="48" width="340" height="12" fill="url(#g)"/>',
-            // Badges
-            typeBadge,
-            verifiedBadge,
-            // Avatar area
-            avatarPattern,
-            // Name
-            '<text x="130" y="95" font-size="18" font-weight="bold" fill="', primaryColor, '" font-family="sans-serif">',
-            _escapeXml(p.name),
-            '</text>',
-            // Bio
-            '<text x="130" y="115" font-size="11" fill="#555" font-family="sans-serif">',
-            _escapeXml(p.bio),
-            '</text>',
-            // ID line
-            '<text x="20" y="170" font-size="9" fill="#888" font-family="monospace">ID #',
-            _uint2str(tokenId),
-            '</text>',
-            // Timestamp
-            '<text x="20" y="185" font-size="8" fill="#aaa" font-family="monospace">Registered: ',
-            _uint2str(p.registeredAt),
-            '</text>',
-            // Series9 branding
-            '<text x="270" y="190" font-size="10" fill="', accentColor, '" font-family="monospace" font-weight="bold">S9</text>',
+            _svgHead(tokenId, primary, dark, light, accent, bloomOpacity),
+            _entityBadge(p.entityType),
+            _verifiedBadge(p.verified),
+            _generateAvatarPattern(tokenId, p),
+            _svgBody(tokenId, p, light)
+        ));
+    }
+
+    /// @notice SVG opening tag, defs, background, and header text
+    function _svgHead(
+        uint256 tokenId,
+        string memory primary,
+        string memory dark,
+        string memory light,
+        string memory accent,
+        string memory bloomOpacity
+    ) internal pure returns (string memory) {
+        return string(abi.encodePacked(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 200" width="340" height="200" shape-rendering="geometricPrecision">',
+            '<title>Series9 Identity #', _uint2str(tokenId), '</title>',
+            '<defs>',
+                '<radialGradient id="bloom" cx="22%" cy="28%" r="78%">',
+                    '<stop offset="0%" stop-color="', primary, '" stop-opacity=".55"/>',
+                    '<stop offset="55%" stop-color="', dark, '" stop-opacity=".18"/>',
+                    '<stop offset="100%" stop-color="#020617" stop-opacity="0"/>',
+                '</radialGradient>',
+                '<linearGradient id="hueBar" x1="0" x2="1" y1="0" y2="0">',
+                    '<stop offset="0%" stop-color="', dark, '"/>',
+                    '<stop offset="50%" stop-color="', primary, '"/>',
+                    '<stop offset="100%" stop-color="', light, '"/>',
+                '</linearGradient>',
+                '<radialGradient id="avBg" cx="50%" cy="50%" r="80%">',
+                    '<stop offset="0%" stop-color="', light, '" stop-opacity=".55"/>',
+                    '<stop offset="100%" stop-color="', dark, '" stop-opacity="1"/>',
+                '</radialGradient>',
+                '<clipPath id="nameClip"><rect x="126" y="58" width="194" height="26"/></clipPath>',
+                '<clipPath id="bio1Clip"><rect x="126" y="86" width="194" height="14"/></clipPath>',
+                '<clipPath id="bio2Clip"><rect x="126" y="100" width="194" height="14"/></clipPath>',
+                '<clipPath id="avClip"><rect x="24" y="62" width="88" height="88" rx="18"/></clipPath>',
+            '</defs>',
+            '<rect width="340" height="200" rx="18" fill="#070b1a"/>',
+            '<rect width="340" height="200" rx="18" fill="url(#bloom)" opacity="', bloomOpacity, '">',
+                '<animate attributeName="opacity" values="', bloomOpacity, ';.82;', bloomOpacity, '" dur="7s" repeatCount="indefinite"/>',
+            '</rect>',
+            '<path d="M0 168C72 142 158 188 240 156C290 137 320 142 340 130V200H0Z" fill="', accent, '" opacity=".13"/>',
+            '<path d="M0 184C82 162 168 192 248 174C300 162 326 168 340 158V200H0Z" fill="', accent, '" opacity=".07"/>',
+            '<rect x="6" y="6" width="328" height="188" rx="14" fill="none" stroke="#ffffff" stroke-opacity=".09"/>',
+            '<g font-family="ui-monospace,SFMono-Regular,monospace">',
+                '<text x="20" y="26" font-size="11" font-weight="700" fill="#f8fafc" letter-spacing="2.5">SERIES9</text>',
+                '<text x="20" y="38" font-size="6" fill="#94a3b8" letter-spacing="3">IDENTITY PROTOCOL</text>',
+            '</g>'
+        ));
+    }
+
+    /// @notice Name, bio (two lines), hue signature, and footer
+    function _svgBody(uint256 tokenId, IdentityProfile memory p, string memory light)
+        internal
+        pure
+        returns (string memory)
+    {
+        (string memory bio1, string memory bio2) = _splitBio(p.bio);
+
+        return string(abi.encodePacked(
+            '<g clip-path="url(#nameClip)">',
+                '<text x="126" y="78" font-family="Inter,system-ui,sans-serif" font-size="18" font-weight="700" fill="#f8fafc" letter-spacing="-.3">',
+                    _escapeXml(p.name),
+                '</text>',
+            '</g>',
+            '<g font-family="Inter,system-ui,sans-serif" font-size="9" fill="#cbd5e1">',
+                '<g clip-path="url(#bio1Clip)"><text x="126" y="97">', _escapeXml(bio1), '</text></g>',
+                '<g clip-path="url(#bio2Clip)" opacity=".82"><text x="126" y="111">', _escapeXml(bio2), '</text></g>',
+            '</g>',
+            '<rect x="126" y="124" width="64" height="3" rx="1.5" fill="url(#hueBar)"/>',
+            '<text x="126" y="140" font-family="ui-monospace,SFMono-Regular,monospace" font-size="7" fill="#94a3b8" letter-spacing="1.5">SIG ', _colorFromHue(p.hue, 0), '</text>',
+            '<line x1="20" y1="160" x2="320" y2="160" stroke="#ffffff" stroke-opacity=".09"/>',
+            '<g font-family="ui-monospace,SFMono-Regular,monospace">',
+                '<text x="20" y="178" font-size="7" fill="#64748b" letter-spacing="1.2">EST ', _uint2str(_yearOf(p.registeredAt)), '</text>',
+                '<text x="172" y="178" font-size="7" fill="#475569" letter-spacing="1.2">SAT ', _uint2str(p.saturation), '</text>',
+                '<text x="320" y="178" text-anchor="end" font-size="13" font-weight="700" fill="', light, '" letter-spacing="-.3">#', _uint2str(tokenId), '</text>',
+            '</g>',
             '</svg>'
         ));
     }
 
-    /// @notice Generative avatar pattern based on tokenId and profile
-    function _generateAvatarPattern(uint256 tokenId, IdentityProfile memory p) internal pure returns (string memory) {
-        // Use tokenId and profile params as pseudo-random seed
-        uint256 seed = uint256(keccak256(abi.encodePacked(tokenId, p.hue, p.saturation, p.registeredAt)));
-
-        string memory avatarColor = _colorFromHue(p.hue, 0);
-        string memory avatarColorLight = _colorFromHue(p.hue, 2);
-
-        // Generate 3 concentric shapes offset by seed
-        string memory shapes = "";
-        for (uint8 i = 0; i < 3; i++) {
-            seed = _nextSeed(seed);
-            uint8 sz = 15 + uint8(seed % 10);        // 15-24 radius
-            uint8 cx = 30 + uint8((seed >> 8) % 20);  // 30-49
-            uint8 cy = 30 + uint8((seed >> 16) % 20); // 30-49
-
-            if (i % 2 == 0) {
-                shapes = string(abi.encodePacked(
-                    shapes,
-                    '<circle cx="', _uint2str(cx), '" cy="', _uint2str(cy), '" r="', _uint2str(sz),
-                    '" fill="', i == 0 ? avatarColor : avatarColorLight,
-                    '" opacity="', i == 0 ? "0.9" : "0.5", '"/>'
-                ));
-            } else {
-                shapes = string(abi.encodePacked(
-                    shapes,
-                    '<rect x="', _uint2str(cx - sz/2), '" y="', _uint2str(cy - sz/2),
-                    '" width="', _uint2str(sz), '" height="', _uint2str(sz),
-                    '" rx="4" fill="', avatarColorLight, '" opacity="0.4" transform="rotate(45 ',
-                    _uint2str(cx), ' ', _uint2str(cy), ')"/>'
-                ));
-            }
+    function _entityBadge(EntityType entityType) internal pure returns (string memory) {
+        if (entityType == EntityType.AI) {
+            return string(abi.encodePacked(
+                '<g font-family="ui-monospace,SFMono-Regular,monospace" font-size="9" font-weight="700">',
+                    '<rect x="234" y="16" width="44" height="20" rx="6" fill="#020617" fill-opacity=".7" stroke="#818cf8" stroke-opacity=".55"/>',
+                    '<circle cx="244" cy="26" r="3" fill="#818cf8">',
+                        '<animate attributeName="opacity" values=".5;1;.5" dur="2.4s" repeatCount="indefinite"/>',
+                    '</circle>',
+                    '<text x="263" y="29" fill="#eef2ff" text-anchor="middle" letter-spacing="1">AI</text>',
+                '</g>'
+            ));
         }
 
-        // Clip to circle
         return string(abi.encodePacked(
-            '<defs><clipPath id="av"><circle cx="40" cy="38" r="28"/></clipPath></defs>',
-            '<g clip-path="url(#av)">',
-            '<circle cx="40" cy="38" r="28" fill="', avatarColor, '"/>',
-            shapes,
-            '</g>',
-            '<circle cx="40" cy="38" r="28" fill="none" stroke="white" stroke-width="2"/>'
+            '<g font-family="ui-monospace,SFMono-Regular,monospace" font-size="9" font-weight="700">',
+                '<rect x="218" y="16" width="60" height="20" rx="6" fill="#020617" fill-opacity=".7" stroke="#34d399" stroke-opacity=".55"/>',
+                '<circle cx="228" cy="26" r="3" fill="#34d399">',
+                    '<animate attributeName="opacity" values=".5;1;.5" dur="2.4s" repeatCount="indefinite"/>',
+                '</circle>',
+                '<text x="251" y="29" fill="#ecfdf5" text-anchor="middle" letter-spacing="1">HUMAN</text>',
+            '</g>'
         ));
+    }
+
+    function _verifiedBadge(bool verified) internal pure returns (string memory) {
+        if (verified) {
+            return string(abi.encodePacked(
+                '<g transform="translate(286 14)">',
+                    '<path d="M12 0L23 4V12C23 18 18 22 12 24C6 22 1 18 1 12V4Z" fill="#0ea5e9" fill-opacity=".18" stroke="#38bdf8" stroke-width="1.2">',
+                        '<animate attributeName="fill-opacity" values=".18;.45;.18" dur="3s" repeatCount="indefinite"/>',
+                    '</path>',
+                    '<path d="M7 12l4 4 6-7" fill="none" stroke="#e0f2fe" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+                '</g>'
+            ));
+        }
+
+        return string(abi.encodePacked(
+            '<g transform="translate(286 14)">',
+                '<path d="M12 0L23 4V12C23 18 18 22 12 24C6 22 1 18 1 12V4Z" fill="#020617" fill-opacity=".55" stroke="#475569" stroke-width="1" stroke-dasharray="2 2"/>',
+                '<text x="12" y="16" font-family="ui-monospace,SFMono-Regular,monospace" font-size="9" fill="#64748b" text-anchor="middle">?</text>',
+            '</g>'
+        ));
+    }
+
+    /// @notice Generative avatar: deterministic constellation pattern + entity glyph
+    function _generateAvatarPattern(uint256 tokenId, IdentityProfile memory p)
+        internal
+        view
+        returns (string memory)
+    {
+        uint256 seed = uint256(keccak256(abi.encodePacked(
+            tokenId,
+            p.hue,
+            p.saturation,
+            p.registeredAt,
+            customAvatarSeed[tokenId]
+        )));
+
+        return string(abi.encodePacked(
+            '<g>',
+                '<rect x="22" y="60" width="92" height="92" rx="20" fill="', _colorFromHue(p.hue, 0), '" opacity=".22"/>',
+                '<rect x="24" y="62" width="88" height="88" rx="18" fill="url(#avBg)"/>',
+                '<g clip-path="url(#avClip)">',
+                    _constellation(seed, _colorFromHue(p.hue, 2)),
+                    _entityGlyph(p.entityType),
+                '</g>',
+                '<rect x="24" y="62" width="88" height="88" rx="18" fill="none" stroke="#ffffff" stroke-opacity=".22" stroke-width="1"/>',
+                _avatarCornerMarks(),
+            '</g>'
+        ));
+    }
+
+    /// @dev Decorative tick marks at the four corners of the avatar frame
+    function _avatarCornerMarks() internal pure returns (string memory) {
+        return string(abi.encodePacked(
+            '<g stroke="#ffffff" stroke-opacity=".55" stroke-width="1" stroke-linecap="round" fill="none">',
+                '<path d="M28 66h6M28 66v6"/>',
+                '<path d="M108 66h-6M108 66v6"/>',
+                '<path d="M28 148h6M28 148v-6"/>',
+                '<path d="M108 148h-6M108 148v-6"/>',
+            '</g>'
+        ));
+    }
+
+    /// @dev Constellation: 8 pseudo-random dots and connecting strokes inside the avatar
+    function _constellation(uint256 seed, string memory dotColor) internal pure returns (string memory) {
+        string memory stars = "";
+        uint256[8] memory xs;
+        uint256[8] memory ys;
+
+        for (uint8 i = 0; i < 8; i++) {
+            seed = _nextSeed(seed);
+            uint256 cx = 32 + ((seed >> 8) % 72);  // 32-103
+            uint256 cy = 70 + ((seed >> 16) % 72); // 70-141
+            uint256 r = 1 + ((seed >> 24) % 3);    // 1-3
+            xs[i] = cx;
+            ys[i] = cy;
+
+            stars = string(abi.encodePacked(
+                stars,
+                '<circle cx="', _uint2str(cx),
+                '" cy="', _uint2str(cy),
+                '" r="', _uint2str(r),
+                '" fill="', dotColor,
+                '" opacity=".85"/>'
+            ));
+        }
+
+        // Connect first 4 dots in a path for a constellation feel
+        string memory link = string(abi.encodePacked(
+            '<path d="M', _uint2str(xs[0]), ' ', _uint2str(ys[0]),
+            'L', _uint2str(xs[1]), ' ', _uint2str(ys[1]),
+            'L', _uint2str(xs[2]), ' ', _uint2str(ys[2]),
+            'L', _uint2str(xs[3]), ' ', _uint2str(ys[3]),
+            '" stroke="', dotColor, '" stroke-opacity=".4" stroke-width=".5" fill="none"/>'
+        ));
+
+        return string(abi.encodePacked(link, stars));
+    }
+
+    function _entityGlyph(EntityType entityType) internal pure returns (string memory) {
+        if (entityType == EntityType.AI) {
+            // Hexagonal node with inner ring (AI sigil)
+            return string(abi.encodePacked(
+                '<g transform="translate(68 106)" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-linejoin="round" opacity=".92">',
+                    '<path d="M0-22L19-11V11L0 22L-19 11V-11Z" stroke-width="1.5"/>',
+                    '<circle cx="0" cy="0" r="9" stroke-width="1.2"/>',
+                    '<circle cx="0" cy="0" r="3" fill="#f8fafc">',
+                        '<animate attributeName="r" values="2;4;2" dur="2.6s" repeatCount="indefinite"/>',
+                    '</circle>',
+                    '<path d="M0-22V-30M19-11L26-7M19 11L26 15M0 22V30M-19 11L-26 15M-19-11L-26-7" stroke-width=".8" stroke-opacity=".7"/>',
+                '</g>'
+            ));
+        }
+
+        // Human silhouette
+        return string(abi.encodePacked(
+            '<g transform="translate(68 108)" fill="#f8fafc" opacity=".92">',
+                '<circle cx="0" cy="-10" r="9"/>',
+                '<path d="M-16 22C-13 8 -7 2 0 2C7 2 13 8 16 22Z"/>',
+                '<circle cx="0" cy="-10" r="13" fill="none" stroke="#f8fafc" stroke-width=".8" stroke-opacity=".5"/>',
+            '</g>'
+        ));
+    }
+
+    function _opacityPercent(uint256 percent) internal pure returns (string memory) {
+        if (percent >= 100) return "1";
+        if (percent < 10) return string(abi.encodePacked("0.0", _uint2str(percent)));
+        return string(abi.encodePacked("0.", _uint2str(percent)));
     }
 
     // ─────────────────── Utility: Color Palette ───────────────────
@@ -614,6 +754,48 @@ contract Series9Identity is
 
     function _nextSeed(uint256 s) internal pure returns (uint256) {
         return uint256(keccak256(abi.encodePacked(s)));
+    }
+
+    /// @dev Approximate year from a unix timestamp (uses average year length)
+    function _yearOf(uint256 ts) internal pure returns (uint256) {
+        return 1970 + ts / 31556952;
+    }
+
+    /// @dev Word-aware split of bio into two display lines (~28 chars each)
+    function _splitBio(string memory bio) internal pure returns (string memory line1, string memory line2) {
+        bytes memory b = bytes(bio);
+        if (b.length <= 28) {
+            return (bio, "");
+        }
+
+        uint256 cap = b.length < 56 ? b.length : 56;
+        uint256 split = 28;
+
+        // Prefer breaking at the last space at-or-before index 28
+        for (uint256 i = 28; i > 14; i--) {
+            if (b[i - 1] == 0x20) { split = i - 1; break; }
+        }
+
+        bytes memory l1 = new bytes(split);
+        for (uint256 i = 0; i < split; i++) {
+            l1[i] = b[i];
+        }
+
+        uint256 start2 = split;
+        if (start2 < b.length && b[start2] == 0x20) {
+            start2 += 1;
+        }
+        if (start2 >= cap) {
+            return (string(l1), "");
+        }
+
+        uint256 len2 = cap - start2;
+        bytes memory l2 = new bytes(len2);
+        for (uint256 i = 0; i < len2; i++) {
+            l2[i] = b[start2 + i];
+        }
+
+        return (string(l1), string(l2));
     }
 
     // ─────────────────── Overrides ───────────────────
