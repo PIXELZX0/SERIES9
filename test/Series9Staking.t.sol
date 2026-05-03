@@ -41,6 +41,8 @@ contract WrongUUIDImplementation is IERC1822Proxiable {
     }
 }
 
+contract StakingContractStub {}
+
 contract Series9StakingHarness is Series9Staking {
     function exposeDelegateMonadAmountToValidator(uint64 validatorId, uint256 amount) external returns (bool) {
         return _delegateMonadAmountToValidator(validatorId, amount);
@@ -357,7 +359,7 @@ contract Series9StakingTest is Test {
 
     function testStakingContractAddressCanBeUpdated() public {
         address oldStaking = address(staking);
-        address newStaking = makeAddr("newStaking");
+        address newStaking = address(new StakingContractStub());
 
         vm.prank(address(staking));
         ser9.setStakingContract(newStaking);
@@ -369,6 +371,12 @@ contract Series9StakingTest is Test {
         vm.prank(newStaking);
         ser9.mint(alice, 1 ether);
         assertEq(ser9.balanceOf(alice), 10_001 ether);
+    }
+
+    function testStakingContractAddressRejectsEOA() public {
+        vm.prank(address(staking));
+        vm.expectRevert(SER9Token.InvalidStakingAddress.selector);
+        ser9.setStakingContract(makeAddr("newStaking"));
     }
 
     function testStakeAccruesAndClaimsSER9Rewards() public {
@@ -1319,13 +1327,18 @@ contract Series9StakingTest is Test {
     }
 
     function testSetSer9StakingContract() public {
-        address newStaking = makeAddr("newStaking");
+        address newStaking = address(new StakingContractStub());
 
         staking.setSer9StakingContract(newStaking);
 
         vm.prank(newStaking);
         ser9.mint(alice, 1 ether);
         assertEq(ser9.balanceOf(alice), 10_001 ether);
+    }
+
+    function testSetSer9StakingContractRejectsEOA() public {
+        vm.expectRevert(SER9Token.InvalidStakingAddress.selector);
+        staking.setSer9StakingContract(makeAddr("newStaking"));
     }
 
     function testNonOwnerCannotSetSer9StakingContract() public {

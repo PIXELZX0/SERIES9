@@ -3,6 +3,7 @@ import { getAddress, isAddress, type Address } from 'viem';
 const FALLBACK_CONTRACTS = {
   ser9Proxy: '0x461b9beFb3c81c988501C89F5caaBa03b02565d0',
   stakingProxy: '0xFa76a92716D9fE7DF902266651Ca64014c4dC35A',
+  identityProxy: '0xEBa0Fd485ADe50AE5182EbB4ff98fCC5613572e9',
   permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
   ser9Implementation: '0x25144ac0787a2AE5E963D309e43f3251f80Fad87',
   managedTokenImplementation: '0x7Fb4D4d14FF5c3e03A8227cC7182CF4284ceeaE8',
@@ -22,6 +23,7 @@ function readAddressFromEnv(envKey: string, fallback: string): Address {
 export const contracts = {
   ser9Proxy: readAddressFromEnv('VITE_SER9_PROXY', FALLBACK_CONTRACTS.ser9Proxy),
   stakingProxy: readAddressFromEnv('VITE_STAKING_PROXY', FALLBACK_CONTRACTS.stakingProxy),
+  identityProxy: readAddressFromEnv('VITE_IDENTITY_PROXY', FALLBACK_CONTRACTS.identityProxy),
   permit2: readAddressFromEnv('VITE_PERMIT2', FALLBACK_CONTRACTS.permit2),
   ser9Implementation: readAddressFromEnv(
     'VITE_SER9_IMPLEMENTATION',
@@ -47,6 +49,11 @@ export const contractEntries = [
     key: 'stakingProxy',
     title: 'Staking Proxy',
     address: contracts.stakingProxy,
+  },
+  {
+    key: 'identityProxy',
+    title: 'Identity Proxy',
+    address: contracts.identityProxy,
   },
   {
     key: 'permit2',

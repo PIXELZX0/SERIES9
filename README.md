@@ -23,6 +23,7 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
   - staking 컨트랙트가 owner로서 mint/burn/fee 설정 제어
 - `Series9Identity`:
   - SER9 mint fee를 스테이킹하는 UUPS 기반 identity NFT
+  - Identity 스테이킹 보상은 reputation score 비율로 분배 (기본값: Human 9, AI 1)
   - `IDENTITY_PROXY`가 설정된 릴리즈 워크플로우에서 implementation 배포와 Safe 업그레이드 트랜잭션 생성 지원
 - 업그레이드 경로:
   - `upgradeSer9(...)`로 `SER9`를 명시적으로 업그레이드
@@ -43,6 +44,7 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 9. `SER9.mint`는 staking 컨트랙트 주소만 호출 가능하며, owner 직접 민트는 불가
 10. `maxSupply > 0`인 토큰은 공급량이 상한에 가까워질수록 민트 담보 비용이 증가하며, 상한 초과 mint는 revert
 11. Monad unstake backing queue / validator reward harvest / matured undelegation withdraw / delegation rebalance는 더 이상 전체 배열 full scan에 의존하지 않고 bounded multi-call progress를 사용
+12. Identity NFT 보상은 각 identity의 reputation score 비율로 계산되며, owner가 점수를 조정할 수 있음
 
 ## 컨트랙트
 

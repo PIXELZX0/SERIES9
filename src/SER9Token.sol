@@ -28,7 +28,7 @@ contract SER9Token is Initializable, ERC20Upgradeable, OwnableUpgradeable, UUPSU
     }
 
     function setStakingContract(address stakingContractAddress) external onlyOwner {
-        if (stakingContractAddress == address(0)) {
+        if (stakingContractAddress == address(0) || stakingContractAddress.code.length == 0) {
             revert InvalidStakingAddress();
         }
 

@@ -1,7 +1,7 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,10 +24,27 @@ const mimeTypes = {
   '.ico': 'image/x-icon',
 };
 
+const securityHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+};
+
 function isSafePath(pathname) {
-  const normalizedPath = normalize(pathname).replace(/^\/+/, '');
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+
+  if (decodedPath.includes('\0')) {
+    return false;
+  }
+
+  const normalizedPath = normalize(decodedPath).replace(/^\/+/, '');
   const resolvedPath = resolve(distDir, normalizedPath);
-  return resolvedPath.startsWith(distDir);
+  return resolvedPath === distDir || resolvedPath.startsWith(`${distDir}${sep}`);
 }
 
 function sendFile(res, filepath) {
@@ -37,6 +54,7 @@ function sendFile(res, filepath) {
   res.writeHead(200, {
     'Content-Type': contentType,
     'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+    ...securityHeaders,
   });
 
   createReadStream(filepath).pipe(res);
@@ -45,7 +63,7 @@ function sendFile(res, filepath) {
 const server = createServer(async (req, res) => {
   try {
     if (!existsSync(distDir)) {
-      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', ...securityHeaders });
       res.end('dist directory not found. Run "npm run build" first.');
       return;
     }
@@ -54,7 +72,7 @@ const server = createServer(async (req, res) => {
     const pathname = url.pathname;
 
     if (!isSafePath(pathname)) {
-      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8', ...securityHeaders });
       res.end('Invalid path');
       return;
     }
@@ -73,7 +91,7 @@ const server = createServer(async (req, res) => {
     const spaFallbackPath = join(distDir, 'index.html');
     sendFile(res, spaFallbackPath);
   } catch {
-    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', ...securityHeaders });
     res.end('Internal server error');
   }
 });

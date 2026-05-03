@@ -16,7 +16,7 @@ import { encodeFunctionData, getAddress, isAddress, maxUint256, zeroAddress, typ
 
 import { explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
-import { managedTokenAbi, ser9Abi, stakingAbi } from './contracts/abi';
+import { identityAbi, managedTokenAbi, ser9Abi, stakingAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
 import { type MessageKey } from './i18n';
 import { useI18n } from './i18n/useI18n';
@@ -24,6 +24,7 @@ import { formatRewardAmount, formatTokenAmount, shortenAddress } from './utils/f
 import { parsePositiveTokenAmount } from './utils/validation';
 
 type ActionModalType = 'ser9Stake' | 'ser9Unstake' | 'monadStake' | 'monadUnstake';
+type IdentityEntityType = 'human' | 'ai';
 
 type TokenConfigValue = {
   exists: boolean;
@@ -60,6 +61,29 @@ const monadStakingPrecompileAbi = [
 
 const MONAD_STAKING_PRECOMPILE = getAddress('0x0000000000000000000000000000000000001000');
 const MONAD_EPOCH_APPROX_MS = 5.5 * 60 * 60 * 1000;
+const UTF8_ENCODER = new TextEncoder();
+const IDENTITY_NAME_MAX_BYTES = 32;
+const IDENTITY_BIO_MAX_BYTES = 128;
+const DEFAULT_AI_MINT_FEE = 10n * 10n ** 18n;
+const DEFAULT_HUMAN_MINT_FEE = 50n * 10n ** 18n;
+
+function utf8ByteLength(value: string): number {
+  return UTF8_ENCODER.encode(value).length;
+}
+
+function validateUint8(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 255) {
+    throw new Error('INVALID_IDENTITY_COLOR');
+  }
+
+  return value;
+}
+
+function identityAccentColor(hue: number, saturation: number): string {
+  const hueDegrees = Math.round((hue / 255) * 360);
+  const saturationPercent = Math.round(36 + (saturation / 255) * 54);
+  return `hsl(${hueDegrees} ${saturationPercent}% 56%)`;
+}
 
 function formatApproxRemainingEpochTime(locale: string, remainingEpochs: number): string {
   const remainingMilliseconds = remainingEpochs * MONAD_EPOCH_APPROX_MS;
@@ -396,6 +420,11 @@ export default function App() {
   const [monadUnstakeAmount, setMonadUnstakeAmount] = useState('');
 
   const [unstakeAmount, setUnstakeAmount] = useState('');
+  const [identityName, setIdentityName] = useState('');
+  const [identityBio, setIdentityBio] = useState('');
+  const [identityEntityType, setIdentityEntityType] = useState<IdentityEntityType>('human');
+  const [identityHue, setIdentityHue] = useState(145);
+  const [identitySaturation, setIdentitySaturation] = useState(180);
 
   const normalizedConnectedAddress = address ? getAddress(address) : undefined;
   const addressForReads = normalizedConnectedAddress ?? zeroAddress;
@@ -453,6 +482,16 @@ export default function App() {
     },
   });
 
+  const identityAllowanceRead = useReadContract({
+    address: contracts.ser9Proxy,
+    abi: ser9Abi,
+    functionName: 'allowance',
+    args: [addressForReads, contracts.identityProxy],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
   const userStakedRead = useReadContract({
     address: contracts.stakingProxy,
     abi: stakingAbi,
@@ -498,6 +537,84 @@ export default function App() {
     args: [addressForReads],
     query: {
       enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const identityPausedRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'paused',
+  });
+
+  const identityAiMintFeeRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'aiMintFee',
+  });
+
+  const identityHumanMintFeeRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'humanMintFee',
+  });
+
+  const identityOwnerTokenIdRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'ownerTokenId',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const identityNameRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'nameOf',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const identityIsAIRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'isAI',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const identityReputationRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'reputationScoreOf',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+    },
+  });
+
+  const identityPendingRewardsRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'pendingNFTRewards',
+    args: [addressForReads],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress),
+      refetchInterval: 10_000,
+    },
+  });
+
+  const identityPendingStakingRewardsRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'pendingStakingRewards',
+    query: {
+      refetchInterval: 10_000,
     },
   });
 
@@ -810,6 +927,25 @@ export default function App() {
   const ser9ClaimableRewards = totalClaimableRewards > monadClaimableRewards
     ? totalClaimableRewards - monadClaimableRewards
     : 0n;
+  const identityTokenId = identityOwnerTokenIdRead.data ?? 0n;
+  const hasIdentity = identityTokenId > 0n;
+  const selectedIdentityFeeRead = identityEntityType === 'ai'
+    ? identityAiMintFeeRead.data
+    : identityHumanMintFeeRead.data;
+  const selectedIdentityFee = selectedIdentityFeeRead
+    ?? (identityEntityType === 'ai' ? DEFAULT_AI_MINT_FEE : DEFAULT_HUMAN_MINT_FEE);
+  const identityNeedsApproval =
+    !hasIdentity &&
+    selectedIdentityFee > 0n &&
+    (selectedIdentityFeeRead === undefined || (identityAllowanceRead.data ?? 0n) < selectedIdentityFee);
+  const identityNameBytes = utf8ByteLength(identityName.trim());
+  const identityBioBytes = utf8ByteLength(identityBio.trim());
+  const identityPreviewColor = identityAccentColor(identityHue, identitySaturation);
+  const identityDisplayType = identityIsAIRead.data === undefined
+    ? '-'
+    : identityIsAIRead.data
+      ? t('identityAI')
+      : t('identityHuman');
 
   const parsedQuickStakeAmount = useMemo(() => {
     const amount = quickStakeAmount.trim();
@@ -830,7 +966,8 @@ export default function App() {
     .replace(/\/+$/, '') || '/';
   const isTokensListPage = normalizedPathname === '/tokens' || normalizedPathname === '/tokens/create';
   const isTokenCreatePage = false;
-  const isHomePage = !isTokensListPage && !isTokenCreatePage;
+  const isIdentityPage = normalizedPathname === '/identity';
+  const isHomePage = !isTokensListPage && !isTokenCreatePage && !isIdentityPage;
   const hasTxActivity =
     tx.isWalletPrompt ||
     tx.isConfirming ||
@@ -847,7 +984,16 @@ export default function App() {
 
     void userEarnedRead.refetch();
     void userMonadEarnedRead.refetch();
-  }, [latestBlockNumber.data, normalizedConnectedAddress, userEarnedRead, userMonadEarnedRead]);
+    void identityPendingRewardsRead.refetch();
+    void identityPendingStakingRewardsRead.refetch();
+  }, [
+    identityPendingRewardsRead,
+    identityPendingStakingRewardsRead,
+    latestBlockNumber.data,
+    normalizedConnectedAddress,
+    userEarnedRead,
+    userMonadEarnedRead,
+  ]);
 
   useEffect(() => {
     if (hasTxActivity) {
@@ -1034,6 +1180,18 @@ export default function App() {
         return t('invalidRampStartBps');
       case 'INVALID_HEX':
         return t('invalidHex');
+      case 'INVALID_IDENTITY_NAME':
+        return t('invalidIdentityName');
+      case 'INVALID_IDENTITY_BIO':
+        return t('invalidIdentityBio');
+      case 'INVALID_IDENTITY_COLOR':
+        return t('invalidIdentityColor');
+      case 'IDENTITY_ALREADY_EXISTS':
+        return t('alreadyHasIdentity');
+      case 'NO_IDENTITY_REWARDS':
+        return t('noIdentityRewards');
+      case 'REQUIRED_FIELD':
+        return t('requiredField');
       default:
         return t('unknownError');
     }
@@ -1215,6 +1373,65 @@ export default function App() {
     }
   }
 
+  async function runMintIdentityFlow() {
+    resetErrors();
+
+    if (!normalizedConnectedAddress) {
+      setFormError(t('connectHint'));
+      return undefined;
+    }
+
+    if (hasIdentity) {
+      setFormError(t('alreadyHasIdentity'));
+      return undefined;
+    }
+
+    try {
+      const name = identityName.trim();
+      const bio = identityBio.trim();
+
+      if (!name) {
+        throw new Error('REQUIRED_FIELD');
+      }
+
+      if (utf8ByteLength(name) > IDENTITY_NAME_MAX_BYTES) {
+        throw new Error('INVALID_IDENTITY_NAME');
+      }
+
+      if (utf8ByteLength(bio) > IDENTITY_BIO_MAX_BYTES) {
+        throw new Error('INVALID_IDENTITY_BIO');
+      }
+
+      const entityTypeValue = identityEntityType === 'ai' ? 1 : 0;
+      const hue = validateUint8(identityHue);
+      const saturation = validateUint8(identitySaturation);
+      const allowance = identityAllowanceRead.data ?? 0n;
+
+      if (selectedIdentityFeeRead === undefined || allowance < selectedIdentityFee) {
+        const approveHash = await tx.execute(t('ser9Approve'), {
+          address: contracts.ser9Proxy,
+          abi: ser9Abi,
+          functionName: 'approve',
+          args: [contracts.identityProxy, maxUint256],
+        });
+
+        if (!approveHash) {
+          return undefined;
+        }
+      }
+
+      return await tx.execute(t('mintIdentity'), {
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'mintIdentity',
+        args: [name, bio, entityTypeValue, hue, saturation],
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
   async function submitActionModal() {
     if (!activeActionModal) {
       return;
@@ -1359,6 +1576,9 @@ export default function App() {
               <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
                 {t('navTokens')}
               </a>
+              <a href="/identity" className={isIdentityPage ? 'active' : ''}>
+                {t('navIdentity')}
+              </a>
             </nav>
             <div className="section-title hero-kicker">{t('stakingOverview')}</div>
           </div>
@@ -1464,6 +1684,174 @@ export default function App() {
             {isSwitchingNetwork ? t('switchPending') : t('switchNetwork')}
           </button>
         </section>
+      )}
+
+      {isIdentityPage && (
+        <>
+          <section className="card">
+            <div className="section-head section-head-highlight">
+              <div>
+                <div className="section-title section-title-inline">SERIES9 Identity</div>
+                <h2>{t('identityPageTitle')}</h2>
+              </div>
+              <span className="pill">
+                {t('paused')}: {identityPausedRead.data === undefined ? '-' : identityPausedRead.data ? t('yes') : t('no')}
+              </span>
+            </div>
+            <p className="muted">{t('identityPageHint')}</p>
+          </section>
+
+          <section className="identity-layout">
+            <form className="single-form identity-form" onSubmit={(event) => onSubmit(event, runMintIdentityFlow)}>
+              <h3>{t('mintIdentity')}</h3>
+
+              <label className="field-stack">
+                <span>{t('identityName')}</span>
+                <input
+                  value={identityName}
+                  onChange={(event) => setIdentityName(event.target.value)}
+                  placeholder="SERIES9"
+                  disabled={hasIdentity}
+                />
+                <small className={identityNameBytes > IDENTITY_NAME_MAX_BYTES ? 'error' : 'muted'}>
+                  {identityNameBytes}/{IDENTITY_NAME_MAX_BYTES} bytes
+                </small>
+              </label>
+
+              <label className="field-stack">
+                <span>{t('identityBio')}</span>
+                <textarea
+                  value={identityBio}
+                  onChange={(event) => setIdentityBio(event.target.value)}
+                  placeholder={t('identityBioPlaceholder')}
+                  disabled={hasIdentity}
+                />
+                <small className={identityBioBytes > IDENTITY_BIO_MAX_BYTES ? 'error' : 'muted'}>
+                  {identityBioBytes}/{IDENTITY_BIO_MAX_BYTES} bytes
+                </small>
+              </label>
+
+              <div className="field-stack">
+                <span>{t('identityType')}</span>
+                <div className="identity-type-row" role="group" aria-label={t('identityType')}>
+                  <button
+                    type="button"
+                    className={identityEntityType === 'human' ? 'active' : ''}
+                    onClick={() => setIdentityEntityType('human')}
+                    disabled={hasIdentity}
+                  >
+                    {t('identityHuman')}
+                  </button>
+                  <button
+                    type="button"
+                    className={identityEntityType === 'ai' ? 'active' : ''}
+                    onClick={() => setIdentityEntityType('ai')}
+                    disabled={hasIdentity}
+                  >
+                    {t('identityAI')}
+                  </button>
+                </div>
+              </div>
+
+              <div className="slider-wrap">
+                <div className="slider-head">
+                  <label htmlFor="identity-hue">{t('identityHue')}</label>
+                  <strong>{identityHue}</strong>
+                </div>
+                <input
+                  id="identity-hue"
+                  type="range"
+                  min="0"
+                  max="255"
+                  value={identityHue}
+                  disabled={hasIdentity}
+                  onChange={(event) => setIdentityHue(Number(event.target.value))}
+                />
+              </div>
+
+              <div className="slider-wrap">
+                <div className="slider-head">
+                  <label htmlFor="identity-saturation">{t('identitySaturation')}</label>
+                  <strong>{identitySaturation}</strong>
+                </div>
+                <input
+                  id="identity-saturation"
+                  type="range"
+                  min="0"
+                  max="255"
+                  value={identitySaturation}
+                  disabled={hasIdentity}
+                  onChange={(event) => setIdentitySaturation(Number(event.target.value))}
+                />
+              </div>
+
+              <div className="metric-grid">
+                <MetricCard label={t('identityMintFee')} value={`${formatTokenAmount(selectedIdentityFee)} SER9`} />
+                <MetricCard label={t('identityAllowance')} value={`${formatTokenAmount(identityAllowanceRead.data)} SER9`} />
+              </div>
+
+              <button type="submit" className="primary" disabled={!isConnected || onWrongChain || hasIdentity || Boolean(identityPausedRead.data)}>
+                {identityNeedsApproval ? t('approveAndMintIdentity') : t('mintIdentity')}
+              </button>
+              {!isConnected && <p className="muted">{t('connectHint')}</p>}
+              {hasIdentity && <p className="success">{t('alreadyHasIdentity')}</p>}
+            </form>
+
+            <article className="status-card identity-preview-card">
+              <div className="status-card-head">
+                <div>
+                  <div className="section-title section-title-inline">Identity</div>
+                  <h2>{t('identityStatus')}</h2>
+                </div>
+                <span className="pill">{hasIdentity ? `#${identityTokenId.toString()}` : t('identityNotMinted')}</span>
+              </div>
+
+              <div className="identity-avatar-preview">
+                <div className="identity-avatar-ring" style={{ borderColor: identityPreviewColor }}>
+                  <div className="identity-avatar-core" style={{ background: identityPreviewColor }} />
+                </div>
+                <div>
+                  <strong>{hasIdentity ? identityNameRead.data || 'SERIES9' : identityName.trim() || 'SERIES9'}</strong>
+                  <span>{hasIdentity ? identityDisplayType : identityEntityType === 'ai' ? t('identityAI') : t('identityHuman')}</span>
+                </div>
+              </div>
+
+              <div className="metric-grid">
+                <MetricCard label={t('identityTokenId')} value={hasIdentity ? identityTokenId.toString() : '-'} />
+                <MetricCard label={t('identityReputation')} value={hasIdentity ? (identityReputationRead.data?.toString() ?? '-') : '-'} />
+                <MetricCard label={t('identityRewards')} value={formatRewardAmount(identityPendingRewardsRead.data)} />
+                <MetricCard label={t('identityStakingRewards')} value={formatRewardAmount(identityPendingStakingRewardsRead.data)} />
+              </div>
+
+              <div className="status-actions status-actions-two">
+                <button
+                  type="button"
+                  disabled={!isConnected || onWrongChain || !hasIdentity || Boolean(identityPausedRead.data) || (identityPendingRewardsRead.data ?? 0n) === 0n}
+                  onClick={() => void runWrite('claimIdentityRewards', () => ({
+                    address: contracts.identityProxy,
+                    abi: identityAbi,
+                    functionName: 'claimNFTRewards',
+                    args: [],
+                  }))}
+                >
+                  {t('claimIdentityRewards')}
+                </button>
+                <button
+                  type="button"
+                  disabled={!isConnected || onWrongChain || Boolean(identityPausedRead.data) || (identityPendingStakingRewardsRead.data ?? 0n) === 0n}
+                  onClick={() => void runWrite('collectIdentityRewards', () => ({
+                    address: contracts.identityProxy,
+                    abi: identityAbi,
+                    functionName: 'collectStakingRewards',
+                    args: [],
+                  }))}
+                >
+                  {t('collectIdentityRewards')}
+                </button>
+              </div>
+            </article>
+          </section>
+        </>
       )}
 
       {isTokensListPage && (
@@ -1654,7 +2042,7 @@ export default function App() {
         </>
       )}
 
-      {!isHomePage && (
+      {isTokensListPage && (
         <section className="card">
           <div className="section-head section-head-highlight">
             <div>

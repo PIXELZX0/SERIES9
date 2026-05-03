@@ -264,7 +264,8 @@ a {
 }
 
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -569,6 +570,101 @@ button:disabled {
   align-items: center;
 }
 
+.identity-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.identity-form {
+  padding: 1.2rem;
+  gap: 0.75rem;
+}
+
+.field-stack {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.field-stack > span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.field-stack small {
+  font-size: 0.76rem;
+}
+
+.identity-type-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.identity-type-row button {
+  min-height: 2.75rem;
+  box-shadow: none;
+}
+
+.identity-type-row button.active {
+  color: #090909;
+  background: #f5f5f5;
+  border-color: #f5f5f5;
+}
+
+.identity-preview-card {
+  min-height: 100%;
+}
+
+.identity-avatar-preview {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  gap: 0.9rem;
+  padding: 1.1rem;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.015)),
+    #090909;
+  text-align: center;
+}
+
+.identity-avatar-ring {
+  width: min(150px, 52vw);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.02)),
+    var(--surface);
+}
+
+.identity-avatar-core {
+  width: 58%;
+  aspect-ratio: 1;
+  box-shadow:
+    0 0 0 12px rgba(255, 255, 255, 0.06),
+    0 18px 42px rgba(0, 0, 0, 0.36);
+}
+
+.identity-avatar-preview strong,
+.identity-avatar-preview span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.identity-avatar-preview strong {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 1.1rem;
+}
+
+.identity-avatar-preview span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 @media (max-width: 640px) {
   .status-actions {
     grid-template-columns: 1fr;
@@ -689,7 +785,8 @@ button:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   border-radius: var(--radius);
   border: 1px solid var(--line-strong);
@@ -700,10 +797,16 @@ select {
 
 input:focus,
 select:focus,
+textarea:focus,
 button:focus-visible,
 a:focus-visible {
   outline: 2px solid #ffffff;
   outline-offset: 1px;
+}
+
+textarea {
+  min-height: 118px;
+  resize: vertical;
 }
 
 input[type='range'] {
@@ -849,7 +952,8 @@ input[type='range']::-moz-range-thumb {
   border-radius: 999px;
 }
 
-input::placeholder {
+input::placeholder,
+textarea::placeholder {
   color: #7f7f7f;
 }
 
@@ -903,6 +1007,10 @@ input::placeholder {
   .page-nav a {
     justify-content: center;
     flex: 1 1 0;
+  }
+
+  .identity-layout {
+    grid-template-columns: 1fr;
   }
 
   .tx-header {
