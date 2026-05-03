@@ -246,12 +246,42 @@ jobs:
             --arg ser9Data "$UPGRADE_SER9_CALLDATA" \
             --arg managedImplData "$SET_MANAGED_IMPL_CALLDATA" \
             --arg identityData "$IDENTITY_UPGRADE_CALLDATA" \
-            '{
-              version: "1.0",
-              chainId: $chainId,
-              meta: {
-                name: "Series9 Upgrade All",
-                description: (
+            '[
+              {
+                "to": $to,
+                "value": "0",
+                "data": $stakingData
+              },
+              {
+                "to": $to,
+                "value": "0",
+                "data": $ser9Data
+              },
+              {
+                "to": $to,
+                "value": "0",
+                "data": $managedImplData
+              }
+            ] as $baseTransactions
+            | (
+              if $identityData == "" then
+                $baseTransactions
+              else
+                $baseTransactions + [
+                  {
+                    "to": $identityTo,
+                    "value": "0",
+                    "data": $identityData
+                  }
+                ]
+              end
+            ) as $transactions
+            | {
+              "version": "1.0",
+              "chainId": $chainId,
+              "meta": {
+                "name": "Series9 Upgrade All",
+                "description": (
                   if $identityData == "" then
                     "Upgrade Staking and SER9, then set the latest managed token implementation"
                   else
@@ -259,35 +289,7 @@ jobs:
                   end
                 )
               },
-              transactions: [
-                {
-                  to: $to,
-                  value: "0",
-                  data: $stakingData
-                },
-                {
-                  to: $to,
-                  value: "0",
-                  data: $ser9Data
-                },
-                {
-                  to: $to,
-                  value: "0",
-                  data: $managedImplData
-                }
-              ] + (
-                if $identityData == "" then
-                  []
-                else
-                  [
-                    {
-                      to: $identityTo,
-                      value: "0",
-                      data: $identityData
-                    }
-                  ]
-                end
-              )
+              "transactions": $transactions
             }' > "$SAFE_JSON_OUT"
 
           EXPECTED_TX_COUNT=3
@@ -315,43 +317,45 @@ jobs:
             --arg verificationFailures "$VERIFICATION_FAILURES" \
             --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{
-              chainId: $chainId,
-              stakingProxy: $stakingProxy,
-              identityProxy: $identityProxy,
-              implementations: ({
-                  staking: {
-                    address: $stakingImpl,
-                    txHash: $stakingTxHash
-                  },
-                  ser9: {
-                    address: $ser9Impl,
-                    txHash: $ser9TxHash
-                  },
-                  managedToken: {
-                    address: $managedImpl,
-                    txHash: $managedTxHash
-                  }
-                } + (
-                  if $identityImpl == "" then
-                    {}
-                  else
-                    {
-                      identity: {
-                        address: $identityImpl,
-                        txHash: $identityTxHash
-                      }
-                    }
-                  end
-                )),
-              safeTxJson: $safeJson,
-              skipVerify: $skipVerify,
-              verificationStatus: $verificationStatus,
-              verificationFailures: $verificationFailures,
-              verifier: {
-                provider: "MonadVision",
-                url: "https://sourcify-api-monad.blockvision.org/api"
+              "staking": {
+                "address": $stakingImpl,
+                "txHash": $stakingTxHash
               },
-              generatedAt: $generatedAt
+              "ser9": {
+                "address": $ser9Impl,
+                "txHash": $ser9TxHash
+              },
+              "managedToken": {
+                "address": $managedImpl,
+                "txHash": $managedTxHash
+              }
+            } as $baseImplementations
+            | (
+              if $identityImpl == "" then
+                $baseImplementations
+              else
+                $baseImplementations + {
+                  "identity": {
+                    "address": $identityImpl,
+                    "txHash": $identityTxHash
+                  }
+                }
+              end
+            ) as $implementations
+            | {
+              "chainId": $chainId,
+              "stakingProxy": $stakingProxy,
+              "identityProxy": $identityProxy,
+              "implementations": $implementations,
+              "safeTxJson": $safeJson,
+              "skipVerify": $skipVerify,
+              "verificationStatus": $verificationStatus,
+              "verificationFailures": $verificationFailures,
+              "verifier": {
+                "provider": "MonadVision",
+                "url": "https://sourcify-api-monad.blockvision.org/api"
+              },
+              "generatedAt": $generatedAt
             }' > "$RUN_FILE"
 
           echo "run_file=$RUN_FILE" >> "$GITHUB_OUTPUT"
