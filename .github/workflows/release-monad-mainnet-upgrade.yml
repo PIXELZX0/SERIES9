@@ -15,7 +15,7 @@ concurrency:
 jobs:
   deploy-and-generate-safe-tx:
     name: Deploy Upgrade + Safe Tx JSON
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       MONAD_RPC_URL: ${{ secrets.MONAD_RPC_URL }}
