@@ -13,6 +13,23 @@ contract Series9IdentityRendererHarness is Series9IdentityRenderer {
     function exposedEscapeJson(string memory value) external pure returns (string memory) {
         return _escapeJson(value);
     }
+
+    function exposedGenerateSvg(string memory handle) external pure returns (string memory) {
+        RenderProfile memory p = RenderProfile({
+            name: "Alice",
+            bio: "on-chain user",
+            entityType: 0,
+            hue: 100,
+            saturation: 180,
+            verified: false,
+            registeredAt: 1_700_000_000,
+            reputationScore: 9,
+            handle: handle,
+            avatarSeed: ""
+        });
+
+        return _generateSVG(1, p);
+    }
 }
 
 contract Series9IdentityTest is Test {
@@ -22,6 +39,7 @@ contract Series9IdentityTest is Test {
     address public owner;
     address public alice;
     address public bob;
+    address public charlie;
 
     uint256 constant AI_FEE = 10 ether; // 10 SER9
     uint256 constant HUMAN_FEE = 50 ether; // 50 SER9
@@ -30,6 +48,7 @@ contract Series9IdentityTest is Test {
         owner = address(this);
         alice = makeAddr("alice");
         bob = makeAddr("bob");
+        charlie = makeAddr("charlie");
 
         // 1. Deploy SER9 token
         SER9Token ser9Impl = new SER9Token();
@@ -43,9 +62,8 @@ contract Series9IdentityTest is Test {
 
         // 3. Deploy Identity
         Series9Identity impl = new Series9Identity();
-        bytes memory idData = abi.encodeCall(
-            Series9Identity.initialize, (owner, address(ser9), address(mockStaking), AI_FEE, HUMAN_FEE)
-        );
+        bytes memory idData =
+            abi.encodeCall(Series9Identity.initialize, (owner, address(ser9), address(mockStaking), AI_FEE, HUMAN_FEE));
         ERC1967Proxy idProxy = new ERC1967Proxy(address(impl), idData);
         identity = Series9Identity(address(idProxy));
 
@@ -233,6 +251,26 @@ contract Series9IdentityTest is Test {
 
         string memory uri = identity.tokenURI(tid);
         assertEq(uri, uri); // ensure no revert
+    }
+
+    function test_tokenURIChangesAfterHandleRegistration() public {
+        vm.prank(alice);
+        uint256 tid = identity.mintIdentity("Alice", "Test bio", Series9Identity.EntityType.Human, 100, 200);
+
+        string memory beforeUri = identity.tokenURI(tid);
+
+        vm.prank(alice);
+        identity.setHandle(tid, "alice-1");
+
+        string memory afterUri = identity.tokenURI(tid);
+        assertTrue(keccak256(bytes(beforeUri)) != keccak256(bytes(afterUri)));
+    }
+
+    function test_svgRendersPaymentHandle() public {
+        Series9IdentityRendererHarness harness = new Series9IdentityRendererHarness();
+
+        assertTrue(_contains(harness.exposedGenerateSvg("alice-1"), "@alice-1"));
+        assertTrue(_contains(harness.exposedGenerateSvg(""), "HANDLE PENDING"));
     }
 
     function test_hasIdentity() public {
@@ -477,10 +515,251 @@ contract Series9IdentityTest is Test {
         assertEq(identity.humanMintFee(), HUMAN_FEE);
     }
 
+    function test_mintIdentityWithHandleRegistersHandle() public {
+        vm.prank(alice);
+        uint256 tid =
+            identity.mintIdentityWithHandle("Alice", "", Series9Identity.EntityType.Human, 100, 200, "alice-1");
+
+        assertEq(identity.handleOf(tid), "alice-1");
+        assertEq(identity.tokenIdOfHandle("alice-1"), tid);
+        assertEq(identity.ownerOfHandle("alice-1"), alice);
+    }
+
+    function test_handleValidationAndUniqueness() public {
+        vm.prank(alice);
+        identity.mintIdentityWithHandle("Alice", "", Series9Identity.EntityType.Human, 100, 200, "alice");
+
+        vm.prank(bob);
+        uint256 bobTokenId =
+            identity.mintIdentityWithHandle("Bob", "", Series9Identity.EntityType.Human, 120, 180, "bob");
+
+        vm.prank(bob);
+        vm.expectRevert(Series9Identity.HandleAlreadyTaken.selector);
+        identity.setHandle(bobTokenId, "alice");
+
+        vm.prank(bob);
+        vm.expectRevert(Series9Identity.InvalidHandle.selector);
+        identity.setHandle(bobTokenId, "BadHandle");
+    }
+
+    function test_legacyHandleReservationsBlockUntilSeededAndUseLowestTokenId() public {
+        vm.prank(alice);
+        uint256 aliceTokenId = identity.mintIdentity("Alice_Name", "", Series9Identity.EntityType.Human, 100, 200);
+
+        vm.prank(bob);
+        uint256 bobTokenId = identity.mintIdentity("Alice Name", "", Series9Identity.EntityType.Human, 120, 180);
+
+        identity.initializePayment();
+
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.LegacyHandleReservationsNotFinalized.selector);
+        identity.setHandle(aliceTokenId, "alice-name");
+
+        identity.seedLegacyHandleReservations(1);
+        identity.seedLegacyHandleReservations(10);
+
+        (uint256 reservedTokenId, uint64 expiresAt, bool active) = identity.legacyHandleReservationOf("alice-name");
+        assertEq(reservedTokenId, aliceTokenId);
+        assertEq(expiresAt, identity.legacyHandlePriorityDeadline());
+        assertTrue(active);
+
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(Series9Identity.HandleReserved.selector, aliceTokenId, expiresAt));
+        identity.setHandle(bobTokenId, "alice-name");
+
+        vm.prank(alice);
+        identity.setHandle(aliceTokenId, "alice-name");
+
+        assertEq(identity.tokenIdOfHandle("alice-name"), aliceTokenId);
+    }
+
+    function test_legacyHandleReservationExpires() public {
+        vm.prank(alice);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+
+        vm.prank(bob);
+        uint256 bobTokenId = identity.mintIdentity("Bob", "", Series9Identity.EntityType.Human, 120, 180);
+
+        identity.initializePayment();
+        identity.seedLegacyHandleReservations(10);
+
+        vm.warp(identity.legacyHandlePriorityDeadline() + 1);
+
+        vm.prank(bob);
+        identity.setHandle(bobTokenId, "alice");
+
+        assertEq(identity.tokenIdOfHandle("alice"), bobTokenId);
+    }
+
+    function test_payToHandleTransfersERC20FromCallerOnly() public {
+        (uint256 aliceTokenId, uint256 bobTokenId) = _mintAliceAndBobWithHandles();
+
+        uint256 bobBefore = ser9.balanceOf(bob);
+        vm.prank(alice);
+        uint256 paymentId = identity.payToHandle(address(ser9), "bob", 7 ether, "coffee");
+
+        assertEq(paymentId, 1);
+        assertEq(identity.tokenIdOfHandle("alice"), aliceTokenId);
+        assertEq(identity.tokenIdOfHandle("bob"), bobTokenId);
+        assertEq(ser9.balanceOf(bob), bobBefore + 7 ether);
+    }
+
+    function test_transferredIdentityCannotSpendPreviousOwnerAllowance() public {
+        (uint256 aliceTokenId,) = _mintAliceAndBobWithHandles();
+
+        vm.prank(alice);
+        identity.transferFrom(alice, charlie, aliceTokenId);
+
+        uint256 aliceBefore = ser9.balanceOf(alice);
+        vm.prank(charlie);
+        vm.expectRevert();
+        identity.payToHandle(address(ser9), "bob", 1 ether, "");
+
+        assertEq(ser9.balanceOf(alice), aliceBefore);
+    }
+
+    function test_payToHandleTransfersNativeMON() public {
+        _mintAliceAndBobWithHandles();
+
+        vm.deal(alice, 3 ether);
+        uint256 bobBefore = bob.balance;
+
+        vm.prank(alice);
+        identity.payToHandle{value: 1 ether}(address(0), "bob", 1 ether, "mon");
+
+        assertEq(bob.balance, bobBefore + 1 ether);
+    }
+
+    function test_payToHandleRejectsWrongNativeValue() public {
+        _mintAliceAndBobWithHandles();
+
+        vm.deal(alice, 3 ether);
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.InvalidNativeValue.selector);
+        identity.payToHandle{value: 2 ether}(address(0), "bob", 1 ether, "mon");
+
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.InvalidNativeValue.selector);
+        identity.payToHandle{value: 1 ether}(address(ser9), "bob", 1 ether, "ser9");
+    }
+
+    function test_createAndPayERC20PaymentRequest() public {
+        (uint256 aliceTokenId, uint256 bobTokenId) = _mintAliceAndBobWithHandles();
+
+        vm.prank(bob);
+        uint256 requestId =
+            identity.createPaymentRequest("alice", address(ser9), 3 ether, uint64(block.timestamp + 1 days), "invoice");
+
+        assertEq(identity.payerPaymentRequestCount(aliceTokenId), 1);
+        assertEq(identity.payeePaymentRequestCount(bobTokenId), 1);
+        assertEq(identity.payerPaymentRequestIdAt(aliceTokenId, 0), requestId);
+        assertEq(identity.payeePaymentRequestIdAt(bobTokenId, 0), requestId);
+
+        uint256 bobBefore = ser9.balanceOf(bob);
+        vm.prank(alice);
+        uint256 paymentId = identity.payPaymentRequest(requestId);
+
+        assertEq(paymentId, 1);
+        assertEq(ser9.balanceOf(bob), bobBefore + 3 ether);
+        assertEq(
+            uint8(identity.effectivePaymentRequestStatus(requestId)), uint8(Series9Identity.PaymentRequestStatus.Paid)
+        );
+    }
+
+    function test_createAndPayNativeMONPaymentRequest() public {
+        _mintAliceAndBobWithHandles();
+
+        vm.prank(bob);
+        uint256 requestId = identity.createPaymentRequest(
+            "alice", address(0), 2 ether, uint64(block.timestamp + 1 days), "mon invoice"
+        );
+
+        vm.deal(alice, 3 ether);
+        uint256 bobBefore = bob.balance;
+
+        vm.prank(alice);
+        identity.payPaymentRequest{value: 2 ether}(requestId);
+
+        assertEq(bob.balance, bobBefore + 2 ether);
+        assertEq(
+            uint8(identity.effectivePaymentRequestStatus(requestId)), uint8(Series9Identity.PaymentRequestStatus.Paid)
+        );
+    }
+
+    function test_paymentRequestCanBeCancelledByPayerOrPayee() public {
+        _mintAliceAndBobWithHandles();
+
+        vm.prank(bob);
+        uint256 requestId =
+            identity.createPaymentRequest("alice", address(ser9), 1 ether, uint64(block.timestamp + 1 days), "cancel");
+
+        vm.prank(alice);
+        identity.cancelPaymentRequest(requestId);
+
+        assertEq(
+            uint8(identity.effectivePaymentRequestStatus(requestId)),
+            uint8(Series9Identity.PaymentRequestStatus.Cancelled)
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.PaymentRequestNotPending.selector);
+        identity.payPaymentRequest(requestId);
+    }
+
+    function test_paymentRequestExpires() public {
+        _mintAliceAndBobWithHandles();
+
+        vm.prank(bob);
+        uint256 requestId =
+            identity.createPaymentRequest("alice", address(ser9), 1 ether, uint64(block.timestamp + 1 days), "expired");
+
+        vm.warp(block.timestamp + 2 days);
+
+        assertEq(
+            uint8(identity.effectivePaymentRequestStatus(requestId)),
+            uint8(Series9Identity.PaymentRequestStatus.Expired)
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.PaymentRequestNotPending.selector);
+        identity.payPaymentRequest(requestId);
+    }
+
     function _fundIdentityRewards(uint256 amount) internal {
         MockStaking ms = MockStaking(identity.stakingContract());
         ser9.approve(address(ms), amount);
         ms.fundRewards(address(identity), amount);
+    }
+
+    function _mintAliceAndBobWithHandles() internal returns (uint256 aliceTokenId, uint256 bobTokenId) {
+        vm.prank(alice);
+        aliceTokenId = identity.mintIdentityWithHandle("Alice", "", Series9Identity.EntityType.Human, 100, 200, "alice");
+
+        vm.prank(bob);
+        bobTokenId = identity.mintIdentityWithHandle("Bob", "", Series9Identity.EntityType.Human, 120, 180, "bob");
+    }
+
+    function _contains(string memory haystack, string memory needle) internal pure returns (bool) {
+        bytes memory haystackBytes = bytes(haystack);
+        bytes memory needleBytes = bytes(needle);
+        if (needleBytes.length == 0 || needleBytes.length > haystackBytes.length) {
+            return false;
+        }
+
+        for (uint256 i = 0; i <= haystackBytes.length - needleBytes.length; i++) {
+            bool found = true;
+            for (uint256 j = 0; j < needleBytes.length; j++) {
+                if (haystackBytes[i + j] != needleBytes[j]) {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

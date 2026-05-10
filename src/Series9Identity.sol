@@ -45,6 +45,14 @@ contract Series9Identity is
         AI
     }
 
+    enum PaymentRequestStatus {
+        None,
+        Pending,
+        Paid,
+        Cancelled,
+        Expired
+    }
+
     struct IdentityProfile {
         string name; // Display name
         string bio; // Short bio (max 128 chars)
@@ -53,6 +61,21 @@ contract Series9Identity is
         uint8 saturation; // Saturation variant
         bool verified; // Protocol-level verification
         uint64 registeredAt; // Block timestamp
+    }
+
+    struct LegacyHandleReservation {
+        uint256 tokenId;
+        uint64 expiresAt;
+    }
+
+    struct PaymentRequest {
+        uint256 payerTokenId;
+        uint256 payeeTokenId;
+        address token;
+        uint256 amount;
+        uint64 dueAt;
+        PaymentRequestStatus status;
+        string memo;
     }
 
     // ─────────────────── State ───────────────────
@@ -64,7 +87,12 @@ contract Series9Identity is
     mapping(uint256 => string) public customAvatarSeed; // Optional seed for generative art
 
     uint256 private constant PRECISION = 1e18;
+    address public constant NATIVE_MON = address(0);
     uint256 public constant MAX_AVATAR_SEED_BYTES = 64;
+    uint256 public constant MIN_HANDLE_BYTES = 3;
+    uint256 public constant MAX_HANDLE_BYTES = 32;
+    uint256 public constant MAX_PAYMENT_MEMO_BYTES = 128;
+    uint256 public constant LEGACY_HANDLE_PRIORITY_DURATION = 30 days;
     uint256 public constant DEFAULT_HUMAN_REPUTATION_SCORE = 9;
     uint256 public constant DEFAULT_AI_REPUTATION_SCORE = 1;
     uint256 public constant MAX_REPUTATION_SCORE = 1_000_000;
@@ -84,6 +112,23 @@ contract Series9Identity is
     mapping(uint256 => uint256) public reputationScores;
     uint256 public totalReputationScore;
 
+    // ─────────────────── Payment Handles ───────────────────
+
+    mapping(uint256 => string) public handles;
+    mapping(bytes32 => uint256) private _tokenIdByHandleHash;
+    mapping(bytes32 => LegacyHandleReservation) private _legacyHandleReservations;
+    uint256 public legacyHandleReservationCursor;
+    uint64 public legacyHandlePriorityDeadline;
+    bool public legacyHandleReservationsFinalized;
+
+    // ─────────────────── Payments ───────────────────
+
+    uint256 private _nextPaymentId;
+    uint256 private _nextPaymentRequestId;
+    mapping(uint256 => PaymentRequest) private _paymentRequests;
+    mapping(uint256 => uint256[]) private _payerPaymentRequestIds;
+    mapping(uint256 => uint256[]) private _payeePaymentRequestIds;
+
     /// @notice Emitted when AI mint fee is changed
     event AIMintFeeUpdated(uint256 previousFee, uint256 newFee);
     /// @notice Emitted when Human mint fee is changed
@@ -102,6 +147,37 @@ contract Series9Identity is
     event NFTRewardClaimed(address indexed user, uint256 amount);
     /// @notice Emitted when a token's reputation score is changed
     event ReputationScoreUpdated(uint256 indexed tokenId, uint256 previousScore, uint256 newScore);
+    /// @notice Emitted when a payment handle is changed
+    event IdentityHandleUpdated(uint256 indexed tokenId, string previousHandle, string newHandle);
+    /// @notice Emitted when a legacy display name reserves a payment handle
+    event LegacyHandleReserved(bytes32 indexed handleHash, string handle, uint256 indexed tokenId, uint64 expiresAt);
+    /// @notice Emitted when all legacy handle reservations have been scanned
+    event LegacyHandleReservationsFinalized(uint256 scannedUntilTokenId);
+    /// @notice Emitted when an identity payment is sent
+    event IdentityPaymentSent(
+        uint256 indexed paymentId,
+        uint256 indexed payerTokenId,
+        uint256 indexed payeeTokenId,
+        address token,
+        address from,
+        address to,
+        uint256 amount,
+        string memo
+    );
+    /// @notice Emitted when a payment request is created
+    event PaymentRequestCreated(
+        uint256 indexed requestId,
+        uint256 indexed payerTokenId,
+        uint256 indexed payeeTokenId,
+        address token,
+        uint256 amount,
+        uint64 dueAt,
+        string memo
+    );
+    /// @notice Emitted when a payment request is paid
+    event PaymentRequestPaid(uint256 indexed requestId, uint256 indexed paymentId);
+    /// @notice Emitted when a payment request is cancelled
+    event PaymentRequestCancelled(uint256 indexed requestId, address indexed caller);
 
     // ─────────────────── Errors ───────────────────
 
@@ -119,6 +195,21 @@ contract Series9Identity is
     error InvalidReputationScore();
     error NonexistentToken();
     error AvatarSeedTooLong();
+    error PaymentNotInitialized();
+    error LegacyHandleReservationsNotFinalized();
+    error InvalidHandle();
+    error HandleAlreadyTaken();
+    error HandleReserved(uint256 reservedTokenId, uint64 expiresAt);
+    error UnknownHandle();
+    error InvalidPaymentAmount();
+    error PaymentMemoTooLong();
+    error SelfPayment();
+    error InvalidNativeValue();
+    error NativePaymentFailed();
+    error InvalidPaymentRequest();
+    error PaymentRequestNotPending();
+    error UnauthorizedPaymentActor();
+    error InvalidPaymentDueAt();
 
     // ─────────────────── Init ───────────────────
 
@@ -146,6 +237,25 @@ contract Series9Identity is
         aiMintFee = initialAIMintFee;
         humanMintFee = initialHumanMintFee;
         _nextTokenId = 1;
+        _nextPaymentId = 1;
+        _nextPaymentRequestId = 1;
+        legacyHandleReservationCursor = 1;
+        legacyHandleReservationsFinalized = true;
+    }
+
+    /// @notice Initialize payment storage after upgrading an existing identity proxy.
+    function initializePayment() external reinitializer(2) onlyOwner {
+        if (_nextPaymentId == 0) {
+            _nextPaymentId = 1;
+        }
+        if (_nextPaymentRequestId == 0) {
+            _nextPaymentRequestId = 1;
+        }
+        legacyHandleReservationCursor = 1;
+        // Unix timestamps plus a 30 day reservation window fit comfortably in uint64.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        legacyHandlePriorityDeadline = uint64(block.timestamp + LEGACY_HANDLE_PRIORITY_DURATION);
+        legacyHandleReservationsFinalized = false;
     }
 
     // ─────────────────── NFT Reward Distribution ───────────────────
@@ -212,6 +322,32 @@ contract Series9Identity is
         nonReentrant
         returns (uint256)
     {
+        return _mintIdentity(name, bio, entityType, hue, saturation);
+    }
+
+    /// @notice Mint a new identity NFT and register a payment handle in one transaction.
+    function mintIdentityWithHandle(
+        string calldata name,
+        string calldata bio,
+        EntityType entityType,
+        uint8 hue,
+        uint8 saturation,
+        string calldata handle
+    ) external whenNotPaused nonReentrant returns (uint256 tokenId) {
+        _requireHandleRegistrationReady();
+        _validateAndHashHandle(handle);
+
+        tokenId = _mintIdentity(name, bio, entityType, hue, saturation);
+        _setHandle(tokenId, handle);
+    }
+
+    function _mintIdentity(
+        string calldata name,
+        string calldata bio,
+        EntityType entityType,
+        uint8 hue,
+        uint8 saturation
+    ) internal returns (uint256) {
         if (ownerTokenId[msg.sender] != 0) revert AlreadyHasIdentity(msg.sender);
         if (bytes(name).length > 32) revert NameTooLong();
         if (bytes(bio).length > 128) revert BioTooLong();
@@ -281,6 +417,166 @@ contract Series9Identity is
         if (ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
         if (bytes(seed).length > MAX_AVATAR_SEED_BYTES) revert AvatarSeedTooLong();
         customAvatarSeed[tokenId] = seed;
+    }
+
+    // ─────────────────── Payment Handles ───────────────────
+
+    /// @notice Register or update the payment handle for an identity.
+    function setHandle(uint256 tokenId, string calldata handle) external whenNotPaused {
+        if (ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
+        _requireHandleRegistrationReady();
+        _setHandle(tokenId, handle);
+    }
+
+    /// @notice Deterministically seed legacy display-name handle reservations in bounded batches.
+    function seedLegacyHandleReservations(uint256 maxTokens) external whenNotPaused {
+        _requirePaymentInitialized();
+        if (legacyHandleReservationsFinalized) {
+            return;
+        }
+
+        uint256 cursor = legacyHandleReservationCursor;
+        if (cursor == 0) {
+            cursor = 1;
+        }
+
+        uint256 processed;
+        while (cursor < _nextTokenId && processed < maxTokens) {
+            if (_ownerOf(cursor) != address(0)) {
+                string memory handle = _legacyHandleSlug(profiles[cursor].name);
+                if (bytes(handle).length != 0) {
+                    bytes32 handleHash = _handleHash(handle);
+                    if (_legacyHandleReservations[handleHash].tokenId == 0 && _tokenIdByHandleHash[handleHash] == 0) {
+                        _legacyHandleReservations[handleHash] =
+                            LegacyHandleReservation({tokenId: cursor, expiresAt: legacyHandlePriorityDeadline});
+                        emit LegacyHandleReserved(handleHash, handle, cursor, legacyHandlePriorityDeadline);
+                    }
+                }
+            }
+
+            unchecked {
+                cursor++;
+                processed++;
+            }
+        }
+
+        legacyHandleReservationCursor = cursor;
+        if (cursor >= _nextTokenId) {
+            legacyHandleReservationsFinalized = true;
+            emit LegacyHandleReservationsFinalized(cursor);
+        }
+    }
+
+    // ─────────────────── Payments ───────────────────
+
+    /// @notice Pay the current owner of a SERIES9 handle with ERC20 tokens or native MON.
+    function payToHandle(address token, string calldata recipientHandle, uint256 amount, string calldata memo)
+        external
+        payable
+        whenNotPaused
+        nonReentrant
+        returns (uint256 paymentId)
+    {
+        _requirePaymentInitialized();
+        _validatePaymentInputs(amount, memo);
+
+        uint256 payerTokenId = ownerTokenId[msg.sender];
+        if (payerTokenId == 0) revert NotNFTHolder();
+
+        uint256 payeeTokenId = _requireTokenIdForHandle(recipientHandle);
+        if (payerTokenId == payeeTokenId) revert SelfPayment();
+
+        address recipient = ownerOf(payeeTokenId);
+        paymentId = _nextPaymentId++;
+
+        _transferPaymentAsset(token, msg.sender, payable(recipient), amount);
+
+        emit IdentityPaymentSent(paymentId, payerTokenId, payeeTokenId, token, msg.sender, recipient, amount, memo);
+    }
+
+    /// @notice Create a payment request from the caller's identity to another identity handle.
+    function createPaymentRequest(
+        string calldata payerHandle,
+        address token,
+        uint256 amount,
+        uint64 dueAt,
+        string calldata memo
+    ) external whenNotPaused nonReentrant returns (uint256 requestId) {
+        _requirePaymentInitialized();
+        _validatePaymentInputs(amount, memo);
+        if (dueAt != 0 && dueAt <= block.timestamp) revert InvalidPaymentDueAt();
+
+        uint256 payeeTokenId = ownerTokenId[msg.sender];
+        if (payeeTokenId == 0) revert NotNFTHolder();
+
+        uint256 payerTokenId = _requireTokenIdForHandle(payerHandle);
+        if (payerTokenId == payeeTokenId) revert SelfPayment();
+
+        requestId = _nextPaymentRequestId++;
+        _paymentRequests[requestId] = PaymentRequest({
+            payerTokenId: payerTokenId,
+            payeeTokenId: payeeTokenId,
+            token: token,
+            amount: amount,
+            dueAt: dueAt,
+            status: PaymentRequestStatus.Pending,
+            memo: memo
+        });
+
+        _payerPaymentRequestIds[payerTokenId].push(requestId);
+        _payeePaymentRequestIds[payeeTokenId].push(requestId);
+
+        emit PaymentRequestCreated(requestId, payerTokenId, payeeTokenId, token, amount, dueAt, memo);
+    }
+
+    /// @notice Pay an outstanding payment request. ERC20 requests require prior approval; MON requests require msg.value.
+    function payPaymentRequest(uint256 requestId)
+        external
+        payable
+        whenNotPaused
+        nonReentrant
+        returns (uint256 paymentId)
+    {
+        _requirePaymentInitialized();
+        PaymentRequest storage request = _paymentRequests[requestId];
+        if (request.status == PaymentRequestStatus.None) revert InvalidPaymentRequest();
+        if (_effectivePaymentRequestStatus(request) != PaymentRequestStatus.Pending) revert PaymentRequestNotPending();
+
+        if (ownerTokenId[msg.sender] != request.payerTokenId) revert UnauthorizedPaymentActor();
+
+        address recipient = ownerOf(request.payeeTokenId);
+        paymentId = _nextPaymentId++;
+        request.status = PaymentRequestStatus.Paid;
+
+        _transferPaymentAsset(request.token, msg.sender, payable(recipient), request.amount);
+
+        emit IdentityPaymentSent(
+            paymentId,
+            request.payerTokenId,
+            request.payeeTokenId,
+            request.token,
+            msg.sender,
+            recipient,
+            request.amount,
+            request.memo
+        );
+        emit PaymentRequestPaid(requestId, paymentId);
+    }
+
+    /// @notice Cancel an outstanding payment request. Either current payer or current payee identity owner may cancel.
+    function cancelPaymentRequest(uint256 requestId) external whenNotPaused nonReentrant {
+        _requirePaymentInitialized();
+        PaymentRequest storage request = _paymentRequests[requestId];
+        if (request.status == PaymentRequestStatus.None) revert InvalidPaymentRequest();
+        if (_effectivePaymentRequestStatus(request) != PaymentRequestStatus.Pending) revert PaymentRequestNotPending();
+
+        uint256 callerTokenId = ownerTokenId[msg.sender];
+        if (callerTokenId != request.payerTokenId && callerTokenId != request.payeeTokenId) {
+            revert UnauthorizedPaymentActor();
+        }
+
+        request.status = PaymentRequestStatus.Cancelled;
+        emit PaymentRequestCancelled(requestId, msg.sender);
     }
 
     // ─────────────────── Admin ───────────────────
@@ -388,6 +684,88 @@ contract Series9Identity is
         return profiles[tid].name;
     }
 
+    /// @notice Get the registered payment handle for an identity token.
+    function handleOf(uint256 tokenId) external view returns (string memory) {
+        if (_ownerOf(tokenId) == address(0)) revert NonexistentToken();
+        return handles[tokenId];
+    }
+
+    /// @notice Resolve a payment handle to an identity token id.
+    function tokenIdOfHandle(string calldata handle) external view returns (uint256) {
+        return _tokenIdByHandleHash[_handleHash(handle)];
+    }
+
+    /// @notice Resolve a payment handle to the current identity owner.
+    function ownerOfHandle(string calldata handle) external view returns (address) {
+        uint256 tokenId = _tokenIdByHandleHash[_handleHash(handle)];
+        if (tokenId == 0) {
+            return address(0);
+        }
+        return ownerOf(tokenId);
+    }
+
+    /// @notice View a legacy handle reservation.
+    function legacyHandleReservationOf(string calldata handle)
+        external
+        view
+        returns (uint256 tokenId, uint64 expiresAt, bool active)
+    {
+        LegacyHandleReservation storage reservation = _legacyHandleReservations[_handleHash(handle)];
+        tokenId = reservation.tokenId;
+        expiresAt = reservation.expiresAt;
+        active = tokenId != 0 && block.timestamp <= expiresAt;
+    }
+
+    /// @notice View payment request details.
+    function paymentRequest(uint256 requestId)
+        external
+        view
+        returns (
+            uint256 payerTokenId,
+            uint256 payeeTokenId,
+            address token,
+            uint256 amount,
+            uint64 dueAt,
+            PaymentRequestStatus status,
+            string memory memo
+        )
+    {
+        PaymentRequest storage request = _paymentRequests[requestId];
+        if (request.status == PaymentRequestStatus.None) revert InvalidPaymentRequest();
+        return (
+            request.payerTokenId,
+            request.payeeTokenId,
+            request.token,
+            request.amount,
+            request.dueAt,
+            request.status,
+            request.memo
+        );
+    }
+
+    /// @notice View payment request status with expiry applied.
+    function effectivePaymentRequestStatus(uint256 requestId) external view returns (PaymentRequestStatus) {
+        PaymentRequest storage request = _paymentRequests[requestId];
+        if (request.status == PaymentRequestStatus.None) revert InvalidPaymentRequest();
+        return _effectivePaymentRequestStatus(request);
+    }
+
+    function payerPaymentRequestCount(uint256 tokenId) external view returns (uint256) {
+        return _payerPaymentRequestIds[tokenId].length;
+    }
+
+    function payerPaymentRequestIdAt(uint256 tokenId, uint256 index) external view returns (uint256) {
+        return _payerPaymentRequestIds[tokenId][index];
+    }
+
+    function payeePaymentRequestCount(uint256 tokenId) external view returns (uint256) {
+        return _payeePaymentRequestIds[tokenId].length;
+    }
+
+    function payeePaymentRequestIdAt(uint256 tokenId, uint256 index) external view returns (uint256) {
+        return _payeePaymentRequestIds[tokenId][index];
+    }
+
     // ─────────────────── Overrides ───────────────────
 
     function _update(address to, uint256 tokenId, address auth)
@@ -438,6 +816,145 @@ contract Series9Identity is
         nftUserRewardPerTokenPaid[account] = rewardPerToken;
     }
 
+    function _setHandle(uint256 tokenId, string memory handle) internal {
+        bytes32 handleHash = _validateAndHashHandle(handle);
+
+        uint256 existingTokenId = _tokenIdByHandleHash[handleHash];
+        if (existingTokenId != 0 && existingTokenId != tokenId) {
+            revert HandleAlreadyTaken();
+        }
+
+        LegacyHandleReservation storage reservation = _legacyHandleReservations[handleHash];
+        if (reservation.tokenId != 0 && reservation.tokenId != tokenId && block.timestamp <= reservation.expiresAt) {
+            revert HandleReserved(reservation.tokenId, reservation.expiresAt);
+        }
+
+        string memory previousHandle = handles[tokenId];
+        if (bytes(previousHandle).length != 0) {
+            bytes32 previousHandleHash = _handleHash(previousHandle);
+            if (previousHandleHash == handleHash) {
+                return;
+            }
+            delete _tokenIdByHandleHash[previousHandleHash];
+        }
+
+        handles[tokenId] = handle;
+        _tokenIdByHandleHash[handleHash] = tokenId;
+
+        emit IdentityHandleUpdated(tokenId, previousHandle, handle);
+    }
+
+    function _requirePaymentInitialized() internal view {
+        if (_nextPaymentId == 0 || _nextPaymentRequestId == 0) {
+            revert PaymentNotInitialized();
+        }
+    }
+
+    function _requireHandleRegistrationReady() internal view {
+        _requirePaymentInitialized();
+        if (!legacyHandleReservationsFinalized && block.timestamp <= legacyHandlePriorityDeadline) {
+            revert LegacyHandleReservationsNotFinalized();
+        }
+    }
+
+    function _validateAndHashHandle(string memory handle) internal pure returns (bytes32) {
+        bytes memory rawHandle = bytes(handle);
+        uint256 length = rawHandle.length;
+        if (length < MIN_HANDLE_BYTES || length > MAX_HANDLE_BYTES) revert InvalidHandle();
+
+        if (rawHandle[0] == bytes1(uint8(0x2d)) || rawHandle[length - 1] == bytes1(uint8(0x2d))) {
+            revert InvalidHandle();
+        }
+
+        for (uint256 i = 0; i < length; i++) {
+            uint8 c = uint8(rawHandle[i]);
+            bool valid = (c >= 0x61 && c <= 0x7a) || (c >= 0x30 && c <= 0x39) || c == 0x2d;
+            if (!valid) revert InvalidHandle();
+        }
+
+        return keccak256(rawHandle);
+    }
+
+    function _legacyHandleSlug(string memory name) internal pure returns (string memory) {
+        bytes memory source = bytes(name);
+        uint256 start;
+        uint256 end = source.length;
+
+        while (start < end && source[start] == bytes1(uint8(0x20))) {
+            start++;
+        }
+        while (end > start && source[end - 1] == bytes1(uint8(0x20))) {
+            end--;
+        }
+        if (end <= start) {
+            return "";
+        }
+
+        bytes memory output = new bytes(end - start);
+        uint256 outputIndex;
+        for (uint256 i = start; i < end; i++) {
+            uint8 c = uint8(source[i]);
+            if (c >= 0x41 && c <= 0x5a) {
+                c += 32;
+            } else if (c == 0x20 || c == 0x5f) {
+                c = 0x2d;
+            } else {
+                bool valid = (c >= 0x61 && c <= 0x7a) || (c >= 0x30 && c <= 0x39) || c == 0x2d;
+                if (!valid) {
+                    return "";
+                }
+            }
+            output[outputIndex++] = bytes1(c);
+        }
+
+        if (
+            outputIndex < MIN_HANDLE_BYTES || outputIndex > MAX_HANDLE_BYTES || output[0] == bytes1(uint8(0x2d))
+                || output[outputIndex - 1] == bytes1(uint8(0x2d))
+        ) {
+            return "";
+        }
+
+        return string(output);
+    }
+
+    function _handleHash(string memory handle) internal pure returns (bytes32) {
+        return keccak256(bytes(handle));
+    }
+
+    function _requireTokenIdForHandle(string calldata handle) internal view returns (uint256 tokenId) {
+        tokenId = _tokenIdByHandleHash[_handleHash(handle)];
+        if (tokenId == 0 || _ownerOf(tokenId) == address(0)) revert UnknownHandle();
+    }
+
+    function _validatePaymentInputs(uint256 amount, string calldata memo) internal pure {
+        if (amount == 0) revert InvalidPaymentAmount();
+        if (bytes(memo).length > MAX_PAYMENT_MEMO_BYTES) revert PaymentMemoTooLong();
+    }
+
+    function _transferPaymentAsset(address token, address payer, address payable recipient, uint256 amount) internal {
+        if (token == NATIVE_MON) {
+            if (msg.value != amount) revert InvalidNativeValue();
+
+            (bool ok,) = recipient.call{value: amount}("");
+            if (!ok) revert NativePaymentFailed();
+            return;
+        }
+
+        if (msg.value != 0) revert InvalidNativeValue();
+        IERC20(token).safeTransferFrom(payer, recipient, amount);
+    }
+
+    function _effectivePaymentRequestStatus(PaymentRequest storage request)
+        internal
+        view
+        returns (PaymentRequestStatus)
+    {
+        if (request.status == PaymentRequestStatus.Pending && request.dueAt != 0 && block.timestamp > request.dueAt) {
+            return PaymentRequestStatus.Expired;
+        }
+        return request.status;
+    }
+
     function _reputationScore(uint256 tokenId) internal view returns (uint256) {
         uint256 score = reputationScores[tokenId];
         if (score != 0) {
@@ -466,12 +983,7 @@ contract Series9Identity is
         }
     }
 
-    function tokenURI(uint256 tokenId)
-        public
-        view
-        override(ERC721Upgradeable)
-        returns (string memory)
-    {
+    function tokenURI(uint256 tokenId) public view override(ERC721Upgradeable) returns (string memory) {
         if (_ownerOf(tokenId) == address(0)) revert NonexistentToken();
         IdentityProfile storage p = profiles[tokenId];
         return _renderTokenURI(
@@ -484,21 +996,16 @@ contract Series9Identity is
             p.verified,
             p.registeredAt,
             _reputationScore(tokenId),
+            handles[tokenId],
             customAvatarSeed[tokenId]
         );
     }
 
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        virtual
-        override(ERC721Upgradeable)
-        returns (bool)
-    {
+    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC721Upgradeable) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[47] private __gap;
+    uint256[37] private __gap;
 }

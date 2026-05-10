@@ -16,6 +16,7 @@ contract Series9IdentityRenderer {
         bool verified;
         uint64 registeredAt;
         uint256 reputationScore;
+        string handle;
         string avatarSeed;
     }
 
@@ -29,6 +30,7 @@ contract Series9IdentityRenderer {
         bool verified,
         uint64 registeredAt,
         uint256 reputationScore,
+        string memory handle,
         string memory avatarSeed
     ) internal pure returns (string memory) {
         RenderProfile memory p = RenderProfile({
@@ -40,6 +42,7 @@ contract Series9IdentityRenderer {
             verified: verified,
             registeredAt: registeredAt,
             reputationScore: reputationScore,
+            handle: handle,
             avatarSeed: avatarSeed
         });
 
@@ -61,6 +64,8 @@ contract Series9IdentityRenderer {
                 _uint2str(p.saturation),
                 '"},{"trait_type":"Reputation Score","value":"',
                 _uint2str(p.reputationScore),
+                '"},{"trait_type":"Handle","value":"',
+                _escapeJson(p.handle),
                 '"}]}'
             )
         );
@@ -129,9 +134,10 @@ contract Series9IdentityRenderer {
                 dark,
                 '" stop-opacity="1"/>',
                 "</radialGradient>",
-                '<clipPath id="nameClip"><rect x="126" y="58" width="194" height="26"/></clipPath>',
-                '<clipPath id="bio1Clip"><rect x="126" y="86" width="194" height="14"/></clipPath>',
-                '<clipPath id="bio2Clip"><rect x="126" y="100" width="194" height="14"/></clipPath>',
+                '<clipPath id="nameClip"><rect x="126" y="54" width="194" height="24"/></clipPath>',
+                '<clipPath id="handleClip"><rect x="126" y="80" width="194" height="13"/></clipPath>',
+                '<clipPath id="bio1Clip"><rect x="126" y="96" width="194" height="14"/></clipPath>',
+                '<clipPath id="bio2Clip"><rect x="126" y="110" width="194" height="14"/></clipPath>',
                 '<clipPath id="avClip"><rect x="24" y="62" width="88" height="88" rx="18"/></clipPath>',
                 "</defs>",
                 '<rect width="340" height="200" rx="18" fill="#070b1a"/>',
@@ -169,20 +175,28 @@ contract Series9IdentityRenderer {
         return string(
             abi.encodePacked(
                 '<g clip-path="url(#nameClip)">',
-                '<text x="126" y="78" font-family="Inter,system-ui,sans-serif" font-size="18" font-weight="700" fill="#f8fafc" letter-spacing="-.3">',
+                '<text x="126" y="73" font-family="Inter,system-ui,sans-serif" font-size="17" font-weight="700" fill="#f8fafc" letter-spacing="-.2">',
                 _escapeXml(p.name),
                 "</text>",
                 "</g>",
+                '<g clip-path="url(#handleClip)">',
+                '<text x="126" y="90" font-family="ui-monospace,SFMono-Regular,monospace" font-size="8" font-weight="700" fill="',
+                light,
+                '" letter-spacing="1.2">',
+                bytes(p.handle).length == 0 ? "HANDLE PENDING" : "@",
+                _escapeXml(p.handle),
+                "</text>",
+                "</g>",
                 '<g font-family="Inter,system-ui,sans-serif" font-size="9" fill="#cbd5e1">',
-                '<g clip-path="url(#bio1Clip)"><text x="126" y="97">',
+                '<g clip-path="url(#bio1Clip)"><text x="126" y="107">',
                 _escapeXml(bio1),
                 "</text></g>",
-                '<g clip-path="url(#bio2Clip)" opacity=".82"><text x="126" y="111">',
+                '<g clip-path="url(#bio2Clip)" opacity=".82"><text x="126" y="121">',
                 _escapeXml(bio2),
                 "</text></g>",
                 "</g>",
-                '<rect x="126" y="124" width="64" height="3" rx="1.5" fill="url(#hueBar)"/>',
-                '<text x="126" y="140" font-family="ui-monospace,SFMono-Regular,monospace" font-size="7" fill="#94a3b8" letter-spacing="1.5">SIG ',
+                '<rect x="126" y="132" width="64" height="3" rx="1.5" fill="url(#hueBar)"/>',
+                '<text x="126" y="148" font-family="ui-monospace,SFMono-Regular,monospace" font-size="7" fill="#94a3b8" letter-spacing="1.5">SIG ',
                 _colorFromHue(p.hue, 0),
                 "</text>",
                 '<line x1="20" y1="160" x2="320" y2="160" stroke="#ffffff" stroke-opacity=".09"/>',
@@ -257,8 +271,7 @@ contract Series9IdentityRenderer {
     }
 
     function _generateAvatarPattern(uint256 tokenId, RenderProfile memory p) internal pure returns (string memory) {
-        uint256 seed =
-            uint256(keccak256(abi.encodePacked(tokenId, p.hue, p.saturation, p.registeredAt, p.avatarSeed)));
+        uint256 seed = uint256(keccak256(abi.encodePacked(tokenId, p.hue, p.saturation, p.registeredAt, p.avatarSeed)));
 
         return string(
             abi.encodePacked(

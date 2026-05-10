@@ -25,6 +25,18 @@ import { parsePositiveTokenAmount } from './utils/validation';
 
 type ActionModalType = 'ser9Stake' | 'ser9Unstake' | 'monadStake' | 'monadUnstake';
 type IdentityEntityType = 'human' | 'ai';
+type PaymentAssetType = 'mon' | 'erc20';
+
+type PaymentRequestValue = {
+  id: bigint;
+  payerTokenId: bigint;
+  payeeTokenId: bigint;
+  token: Address;
+  amount: bigint;
+  dueAt: bigint;
+  status: number;
+  memo: string;
+};
 
 type TokenConfigValue = {
   exists: boolean;
@@ -64,8 +76,16 @@ const MONAD_EPOCH_APPROX_MS = 5.5 * 60 * 60 * 1000;
 const UTF8_ENCODER = new TextEncoder();
 const IDENTITY_NAME_MAX_BYTES = 32;
 const IDENTITY_BIO_MAX_BYTES = 128;
+const PAYMENT_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
+const PAYMENT_MEMO_MAX_BYTES = 128;
 const DEFAULT_AI_MINT_FEE = 10n * 10n ** 18n;
 const DEFAULT_HUMAN_MINT_FEE = 50n * 10n ** 18n;
+const PAYMENT_STATUS = {
+  pending: 1,
+  paid: 2,
+  cancelled: 3,
+  expired: 4,
+} as const;
 
 function utf8ByteLength(value: string): number {
   return UTF8_ENCODER.encode(value).length;
@@ -244,6 +264,146 @@ function parseUnstakeRequest(raw: unknown): UnstakeRequestValue | null {
   }
 
   return null;
+}
+
+function parsePaymentRequest(id: bigint, raw: unknown): PaymentRequestValue | null {
+  if (!raw) {
+    return null;
+  }
+
+  const normalizeStatus = (value: unknown): number | null => {
+    if (typeof value === 'number') {
+      return value;
+    }
+    if (typeof value === 'bigint') {
+      return Number(value);
+    }
+    return null;
+  };
+
+  const normalizeDueAt = (value: unknown): bigint | null => {
+    if (typeof value === 'bigint') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return BigInt(value);
+    }
+    return null;
+  };
+
+  const build = (
+    payerTokenId: unknown,
+    payeeTokenId: unknown,
+    token: unknown,
+    amount: unknown,
+    dueAt: unknown,
+    status: unknown,
+    memo: unknown,
+  ) => {
+    const normalizedDueAt = normalizeDueAt(dueAt);
+    const normalizedStatus = normalizeStatus(status);
+    if (
+      typeof payerTokenId === 'bigint' &&
+      typeof payeeTokenId === 'bigint' &&
+      typeof token === 'string' &&
+      typeof amount === 'bigint' &&
+      normalizedDueAt !== null &&
+      normalizedStatus !== null &&
+      typeof memo === 'string'
+    ) {
+      return {
+        id,
+        payerTokenId,
+        payeeTokenId,
+        token: getAddress(token),
+        amount,
+        dueAt: normalizedDueAt,
+        status: normalizedStatus,
+        memo,
+      };
+    }
+
+    return null;
+  };
+
+  if (Array.isArray(raw)) {
+    return build(raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6]);
+  }
+
+  if (typeof raw === 'object') {
+    const value = raw as {
+      payerTokenId?: unknown;
+      payeeTokenId?: unknown;
+      token?: unknown;
+      amount?: unknown;
+      dueAt?: unknown;
+      status?: unknown;
+      memo?: unknown;
+    };
+
+    return build(
+      value.payerTokenId,
+      value.payeeTokenId,
+      value.token,
+      value.amount,
+      value.dueAt,
+      value.status,
+      value.memo,
+    );
+  }
+
+  return null;
+}
+
+function validatePaymentHandle(value: string): string {
+  const handle = value.trim();
+  if (!PAYMENT_HANDLE_PATTERN.test(handle)) {
+    throw new Error('INVALID_PAYMENT_HANDLE');
+  }
+  return handle;
+}
+
+function validatePaymentMemo(value: string): string {
+  const memo = value.trim();
+  if (utf8ByteLength(memo) > PAYMENT_MEMO_MAX_BYTES) {
+    throw new Error('INVALID_PAYMENT_MEMO');
+  }
+  return memo;
+}
+
+function parsePaymentDueAt(value: string): bigint {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 0n;
+  }
+
+  const timestampMs = Date.parse(trimmed);
+  if (!Number.isFinite(timestampMs) || timestampMs <= Date.now()) {
+    throw new Error('INVALID_PAYMENT_DUE_AT');
+  }
+
+  return BigInt(Math.floor(timestampMs / 1000));
+}
+
+function resolvePaymentToken(assetType: PaymentAssetType, tokenAddress: string): Address {
+  if (assetType === 'mon') {
+    return zeroAddress;
+  }
+
+  const trimmed = tokenAddress.trim();
+  if (!isAddress(trimmed)) {
+    throw new Error('INVALID_ADDRESS');
+  }
+
+  return getAddress(trimmed);
+}
+
+function isPaymentRequestExpired(request: PaymentRequestValue): boolean {
+  return request.status === PAYMENT_STATUS.pending && request.dueAt > 0n && BigInt(Math.floor(Date.now() / 1000)) > request.dueAt;
+}
+
+function paymentRequestEffectiveStatus(request: PaymentRequestValue): number {
+  return isPaymentRequestExpired(request) ? PAYMENT_STATUS.expired : request.status;
 }
 
 function MetricCard({ label, value }: { label: string; value: ReactNode }) {
@@ -425,9 +585,27 @@ export default function App() {
   const [identityEntityType, setIdentityEntityType] = useState<IdentityEntityType>('human');
   const [identityHue, setIdentityHue] = useState(145);
   const [identitySaturation, setIdentitySaturation] = useState(180);
+  const [paymentHandle, setPaymentHandle] = useState('');
+  const [paymentAssetType, setPaymentAssetType] = useState<PaymentAssetType>('mon');
+  const [paymentTokenAddress, setPaymentTokenAddress] = useState<string>(contracts.ser9Proxy);
+  const [paymentRecipientHandle, setPaymentRecipientHandle] = useState('');
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMemo, setPaymentMemo] = useState('');
+  const [requestAssetType, setRequestAssetType] = useState<PaymentAssetType>('mon');
+  const [requestTokenAddress, setRequestTokenAddress] = useState<string>(contracts.ser9Proxy);
+  const [requestPayerHandle, setRequestPayerHandle] = useState('');
+  const [requestAmount, setRequestAmount] = useState('');
+  const [requestDueAt, setRequestDueAt] = useState('');
+  const [requestMemo, setRequestMemo] = useState('');
 
   const normalizedConnectedAddress = address ? getAddress(address) : undefined;
   const addressForReads = normalizedConnectedAddress ?? zeroAddress;
+  const normalizedPaymentTokenAddress = paymentAssetType === 'erc20' && isAddress(paymentTokenAddress.trim())
+    ? getAddress(paymentTokenAddress.trim())
+    : undefined;
+  const normalizedRequestTokenAddress = requestAssetType === 'erc20' && isAddress(requestTokenAddress.trim())
+    ? getAddress(requestTokenAddress.trim())
+    : undefined;
 
   const pausedRead = useReadContract({
     address: contracts.stakingProxy,
@@ -567,6 +745,17 @@ export default function App() {
       enabled: Boolean(normalizedConnectedAddress),
     },
   });
+  const identityTokenIdForReads = identityOwnerTokenIdRead.data ?? 0n;
+
+  const identityHandleRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'handleOf',
+    args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
 
   const identityNameRead = useReadContract({
     address: contracts.identityProxy,
@@ -614,6 +803,127 @@ export default function App() {
     abi: identityAbi,
     functionName: 'pendingStakingRewards',
     query: {
+      refetchInterval: 10_000,
+    },
+  });
+
+  const directPaymentAllowanceRead = useReadContract({
+    address: normalizedPaymentTokenAddress ?? contracts.ser9Proxy,
+    abi: managedTokenAbi,
+    functionName: 'allowance',
+    args: [addressForReads, contracts.identityProxy],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress) && paymentAssetType === 'erc20' && Boolean(normalizedPaymentTokenAddress),
+    },
+  });
+
+  const requestPaymentAllowanceRead = useReadContract({
+    address: normalizedRequestTokenAddress ?? contracts.ser9Proxy,
+    abi: managedTokenAbi,
+    functionName: 'allowance',
+    args: [addressForReads, contracts.identityProxy],
+    query: {
+      enabled: Boolean(normalizedConnectedAddress) && requestAssetType === 'erc20' && Boolean(normalizedRequestTokenAddress),
+    },
+  });
+
+  const payerPaymentRequestCountRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'payerPaymentRequestCount',
+    args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
+
+  const payeePaymentRequestCountRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'payeePaymentRequestCount',
+    args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
+  const payerPaymentRequestCount = Number(payerPaymentRequestCountRead.data ?? 0n);
+  const payeePaymentRequestCount = Number(payeePaymentRequestCountRead.data ?? 0n);
+
+  const payerPaymentRequestIdContracts = useMemo(
+    () =>
+      Array.from({ length: payerPaymentRequestCount }, (_, index) => ({
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'payerPaymentRequestIdAt' as const,
+        args: [identityTokenIdForReads, BigInt(index)] as const,
+      })),
+    [identityTokenIdForReads, payerPaymentRequestCount],
+  );
+
+  const payeePaymentRequestIdContracts = useMemo(
+    () =>
+      Array.from({ length: payeePaymentRequestCount }, (_, index) => ({
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'payeePaymentRequestIdAt' as const,
+        args: [identityTokenIdForReads, BigInt(index)] as const,
+      })),
+    [identityTokenIdForReads, payeePaymentRequestCount],
+  );
+
+  const payerPaymentRequestIdsRead = useReadContracts({
+    contracts: payerPaymentRequestIdContracts,
+    query: {
+      enabled: identityTokenIdForReads > 0n && payerPaymentRequestIdContracts.length > 0,
+    },
+  });
+
+  const payeePaymentRequestIdsRead = useReadContracts({
+    contracts: payeePaymentRequestIdContracts,
+    query: {
+      enabled: identityTokenIdForReads > 0n && payeePaymentRequestIdContracts.length > 0,
+    },
+  });
+
+  const payerPaymentRequestIds = useMemo(
+    () =>
+      (payerPaymentRequestIdsRead.data ?? [])
+        .filter((result) => result.status === 'success' && typeof result.result === 'bigint')
+        .map((result) => result.result as bigint),
+    [payerPaymentRequestIdsRead.data],
+  );
+
+  const payeePaymentRequestIds = useMemo(
+    () =>
+      (payeePaymentRequestIdsRead.data ?? [])
+        .filter((result) => result.status === 'success' && typeof result.result === 'bigint')
+        .map((result) => result.result as bigint),
+    [payeePaymentRequestIdsRead.data],
+  );
+
+  const paymentRequestIds = useMemo(() => {
+    const unique = new Map<string, bigint>();
+    for (const requestId of [...payerPaymentRequestIds, ...payeePaymentRequestIds]) {
+      unique.set(requestId.toString(), requestId);
+    }
+    return Array.from(unique.values());
+  }, [payeePaymentRequestIds, payerPaymentRequestIds]);
+
+  const paymentRequestReadContracts = useMemo(
+    () =>
+      paymentRequestIds.map((requestId) => ({
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'paymentRequest' as const,
+        args: [requestId] as const,
+      })),
+    [paymentRequestIds],
+  );
+
+  const paymentRequestsRead = useReadContracts({
+    contracts: paymentRequestReadContracts,
+    query: {
+      enabled: paymentRequestReadContracts.length > 0,
       refetchInterval: 10_000,
     },
   });
@@ -754,6 +1064,35 @@ export default function App() {
 
     return items;
   }, [managedTokenListRead.data]);
+
+  const paymentRequests = useMemo(() => {
+    const parsed: PaymentRequestValue[] = [];
+
+    for (let index = 0; index < (paymentRequestsRead.data ?? []).length; index++) {
+      const result = paymentRequestsRead.data?.[index];
+      const requestId = paymentRequestIds[index];
+      if (!result || result.status !== 'success' || requestId === undefined) {
+        continue;
+      }
+
+      const request = parsePaymentRequest(requestId, result.result);
+      if (request) {
+        parsed.push(request);
+      }
+    }
+
+    return parsed;
+  }, [paymentRequestIds, paymentRequestsRead.data]);
+
+  const incomingPaymentRequests = useMemo(
+    () => paymentRequests.filter((request) => request.payerTokenId === identityTokenIdForReads),
+    [identityTokenIdForReads, paymentRequests],
+  );
+
+  const outgoingPaymentRequests = useMemo(
+    () => paymentRequests.filter((request) => request.payeeTokenId === identityTokenIdForReads),
+    [identityTokenIdForReads, paymentRequests],
+  );
 
   const pendingMonadUnstakeSummary = useMemo(() => {
     let totalAmount = 0n;
@@ -927,7 +1266,7 @@ export default function App() {
   const ser9ClaimableRewards = totalClaimableRewards > monadClaimableRewards
     ? totalClaimableRewards - monadClaimableRewards
     : 0n;
-  const identityTokenId = identityOwnerTokenIdRead.data ?? 0n;
+  const identityTokenId = identityTokenIdForReads;
   const hasIdentity = identityTokenId > 0n;
   const selectedIdentityFeeRead = identityEntityType === 'ai'
     ? identityAiMintFeeRead.data
@@ -946,6 +1285,34 @@ export default function App() {
     : identityIsAIRead.data
       ? t('identityAI')
       : t('identityHuman');
+  const currentIdentityHandle = identityHandleRead.data ?? '';
+  const paymentHandleBytes = utf8ByteLength(paymentHandle.trim());
+  const paymentMemoBytes = utf8ByteLength(paymentMemo.trim());
+  const requestMemoBytes = utf8ByteLength(requestMemo.trim());
+  const parsedPaymentAmount = useMemo(() => {
+    try {
+      return paymentAmount.trim() ? parsePositiveTokenAmount(paymentAmount) : null;
+    } catch {
+      return null;
+    }
+  }, [paymentAmount]);
+  const parsedRequestAmount = useMemo(() => {
+    try {
+      return requestAmount.trim() ? parsePositiveTokenAmount(requestAmount) : null;
+    } catch {
+      return null;
+    }
+  }, [requestAmount]);
+  const directPaymentNeedsApproval =
+    paymentAssetType === 'erc20' &&
+    parsedPaymentAmount !== null &&
+    Boolean(normalizedPaymentTokenAddress) &&
+    (directPaymentAllowanceRead.data === undefined || directPaymentAllowanceRead.data < parsedPaymentAmount);
+  const requestPaymentNeedsApproval =
+    requestAssetType === 'erc20' &&
+    parsedRequestAmount !== null &&
+    Boolean(normalizedRequestTokenAddress) &&
+    (requestPaymentAllowanceRead.data === undefined || requestPaymentAllowanceRead.data < parsedRequestAmount);
 
   const parsedQuickStakeAmount = useMemo(() => {
     const amount = quickStakeAmount.trim();
@@ -967,7 +1334,8 @@ export default function App() {
   const isTokensListPage = normalizedPathname === '/tokens' || normalizedPathname === '/tokens/create';
   const isTokenCreatePage = false;
   const isIdentityPage = normalizedPathname === '/identity';
-  const isHomePage = !isTokensListPage && !isTokenCreatePage && !isIdentityPage;
+  const isPaymentPage = normalizedPathname === '/payment';
+  const isHomePage = !isTokensListPage && !isTokenCreatePage && !isIdentityPage && !isPaymentPage;
   const hasTxActivity =
     tx.isWalletPrompt ||
     tx.isConfirming ||
@@ -1000,6 +1368,12 @@ export default function App() {
       setIsTxModalOpen(true);
     }
   }, [hasTxActivity]);
+
+  useEffect(() => {
+    if (identityHandleRead.data && !paymentHandle) {
+      setPaymentHandle(identityHandleRead.data);
+    }
+  }, [identityHandleRead.data, paymentHandle]);
 
   useEffect(() => {
     if (!isWalletModalOpen) {
@@ -1190,6 +1564,12 @@ export default function App() {
         return t('alreadyHasIdentity');
       case 'NO_IDENTITY_REWARDS':
         return t('noIdentityRewards');
+      case 'INVALID_PAYMENT_HANDLE':
+        return t('invalidPaymentHandle');
+      case 'INVALID_PAYMENT_MEMO':
+        return t('invalidPaymentMemo');
+      case 'INVALID_PAYMENT_DUE_AT':
+        return t('invalidPaymentDueAt');
       case 'REQUIRED_FIELD':
         return t('requiredField');
       default:
@@ -1432,6 +1812,166 @@ export default function App() {
     }
   }
 
+  async function runSetPaymentHandleFlow() {
+    resetErrors();
+
+    if (!hasIdentity) {
+      setFormError(t('identityRequired'));
+      return undefined;
+    }
+
+    try {
+      const handle = validatePaymentHandle(paymentHandle);
+      return await tx.execute(t('setPaymentHandle'), {
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'setHandle',
+        args: [identityTokenId, handle],
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
+  async function approvePaymentToken(tokenAddress: Address, amount: bigint, currentAllowance?: bigint) {
+    if (currentAllowance !== undefined && currentAllowance >= amount) {
+      return true;
+    }
+
+    const approveHash = await tx.execute(t('paymentApproveAsset'), {
+      address: tokenAddress,
+      abi: managedTokenAbi,
+      functionName: 'approve',
+      args: [contracts.identityProxy, maxUint256],
+    });
+
+    return Boolean(approveHash);
+  }
+
+  async function runDirectPaymentFlow() {
+    resetErrors();
+
+    if (!hasIdentity) {
+      setFormError(t('identityRequired'));
+      return undefined;
+    }
+
+    try {
+      const token = resolvePaymentToken(paymentAssetType, paymentTokenAddress);
+      const recipientHandle = validatePaymentHandle(paymentRecipientHandle);
+      const amount = parsePositiveTokenAmount(paymentAmount);
+      const memo = validatePaymentMemo(paymentMemo);
+
+      if (paymentAssetType === 'erc20') {
+        const approved = await approvePaymentToken(token, amount, directPaymentAllowanceRead.data);
+        if (!approved) {
+          return undefined;
+        }
+      }
+
+      if (paymentAssetType === 'mon') {
+        return await tx.executeSend(t('sendPayment'), {
+          to: contracts.identityProxy,
+          value: amount,
+          data: encodeFunctionData({
+            abi: identityAbi,
+            functionName: 'payToHandle',
+            args: [token, recipientHandle, amount, memo],
+          }),
+        });
+      }
+
+      return await tx.execute(t('sendPayment'), {
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'payToHandle',
+        args: [token, recipientHandle, amount, memo],
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
+  async function runCreatePaymentRequestFlow() {
+    resetErrors();
+
+    if (!hasIdentity) {
+      setFormError(t('identityRequired'));
+      return undefined;
+    }
+
+    try {
+      const token = resolvePaymentToken(requestAssetType, requestTokenAddress);
+      const payerHandle = validatePaymentHandle(requestPayerHandle);
+      const amount = parsePositiveTokenAmount(requestAmount);
+      const dueAt = parsePaymentDueAt(requestDueAt);
+      const memo = validatePaymentMemo(requestMemo);
+
+      return await tx.execute(t('createPaymentRequest'), {
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'createPaymentRequest',
+        args: [payerHandle, token, amount, dueAt, memo],
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
+  async function runPayPaymentRequestFlow(request: PaymentRequestValue) {
+    resetErrors();
+
+    try {
+      if (request.token !== zeroAddress) {
+        const allowance = await publicClient?.readContract({
+          address: request.token,
+          abi: managedTokenAbi,
+          functionName: 'allowance',
+          args: [addressForReads, contracts.identityProxy],
+        });
+
+        const approved = await approvePaymentToken(request.token, request.amount, allowance);
+        if (!approved) {
+          return undefined;
+        }
+      }
+
+      if (request.token === zeroAddress) {
+        return await tx.executeSend(t('payPaymentRequest'), {
+          to: contracts.identityProxy,
+          value: request.amount,
+          data: encodeFunctionData({
+            abi: identityAbi,
+            functionName: 'payPaymentRequest',
+            args: [request.id],
+          }),
+        });
+      }
+
+      return await tx.execute(t('payPaymentRequest'), {
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'payPaymentRequest',
+        args: [request.id],
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
+  async function runCancelPaymentRequestFlow(requestId: bigint) {
+    return await runWrite('cancelPaymentRequest', () => ({
+      address: contracts.identityProxy,
+      abi: identityAbi,
+      functionName: 'cancelPaymentRequest',
+      args: [requestId],
+    }));
+  }
+
   async function submitActionModal() {
     if (!activeActionModal) {
       return;
@@ -1564,6 +2104,81 @@ export default function App() {
     );
   }
 
+  function paymentAssetLabel(token: Address) {
+    return token === zeroAddress ? 'MON' : shortenAddress(token);
+  }
+
+  function paymentStatusLabel(request: PaymentRequestValue) {
+    const status = paymentRequestEffectiveStatus(request);
+    if (status === PAYMENT_STATUS.paid) return t('paymentStatusPaid');
+    if (status === PAYMENT_STATUS.cancelled) return t('paymentStatusCancelled');
+    if (status === PAYMENT_STATUS.expired) return t('paymentStatusExpired');
+    return t('paymentStatusPending');
+  }
+
+  function paymentDueLabel(request: PaymentRequestValue) {
+    if (request.dueAt === 0n) {
+      return '-';
+    }
+    return new Date(Number(request.dueAt) * 1000).toLocaleString(locale === 'ko' ? 'ko-KR' : 'en-US');
+  }
+
+  function renderPaymentRequestList(requests: PaymentRequestValue[], direction: 'incoming' | 'outgoing') {
+    if (!hasIdentity) {
+      return <p className="muted">{t('identityRequired')}</p>;
+    }
+
+    if (requests.length === 0) {
+      return <p className="muted">{t('noPaymentRequests')}</p>;
+    }
+
+    return (
+      <div className="payment-request-list">
+        {requests.map((request) => {
+          const effectiveStatus = paymentRequestEffectiveStatus(request);
+          const isPending = effectiveStatus === PAYMENT_STATUS.pending;
+          const canPay = direction === 'incoming' && isPending;
+          const canCancel = isPending;
+
+          return (
+            <article key={request.id.toString()} className="payment-request-card">
+              <div className="payment-request-head">
+                <strong>#{request.id.toString()}</strong>
+                <span className={`pill payment-status-${effectiveStatus}`}>{paymentStatusLabel(request)}</span>
+              </div>
+              <div className="metric-grid">
+                <MetricCard label={t('paymentAsset')} value={paymentAssetLabel(request.token)} />
+                <MetricCard label={t('amount')} value={formatTokenAmount(request.amount)} />
+                <MetricCard label={t('paymentDueAt')} value={paymentDueLabel(request)} />
+                <MetricCard
+                  label={direction === 'incoming' ? t('paymentFrom') : t('paymentTo')}
+                  value={`#${(direction === 'incoming' ? request.payeeTokenId : request.payerTokenId).toString()}`}
+                />
+              </div>
+              {request.memo && <p className="muted payment-memo">{request.memo}</p>}
+              <div className="status-actions status-actions-two">
+                <button
+                  type="button"
+                  disabled={!canPay || !isConnected || onWrongChain || Boolean(identityPausedRead.data)}
+                  onClick={() => void runPayPaymentRequestFlow(request)}
+                >
+                  {request.token === zeroAddress ? t('payWithMON') : t('payPaymentRequest')}
+                </button>
+                <button
+                  type="button"
+                  disabled={!canCancel || !isConnected || onWrongChain || Boolean(identityPausedRead.data)}
+                  onClick={() => void runCancelPaymentRequestFlow(request.id)}
+                >
+                  {t('cancelPaymentRequest')}
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
@@ -1578,6 +2193,9 @@ export default function App() {
               </a>
               <a href="/identity" className={isIdentityPage ? 'active' : ''}>
                 {t('navIdentity')}
+              </a>
+              <a href="/payment" className={isPaymentPage ? 'active' : ''}>
+                {t('navPayment')}
               </a>
             </nav>
             <div className="section-title hero-kicker">{t('stakingOverview')}</div>
@@ -1818,6 +2436,7 @@ export default function App() {
 
               <div className="metric-grid">
                 <MetricCard label={t('identityTokenId')} value={hasIdentity ? identityTokenId.toString() : '-'} />
+                <MetricCard label={t('paymentHandle')} value={hasIdentity ? currentIdentityHandle || '-' : '-'} />
                 <MetricCard label={t('identityReputation')} value={hasIdentity ? (identityReputationRead.data?.toString() ?? '-') : '-'} />
                 <MetricCard label={t('identityRewards')} value={formatRewardAmount(identityPendingRewardsRead.data)} />
                 <MetricCard label={t('identityStakingRewards')} value={formatRewardAmount(identityPendingStakingRewardsRead.data)} />
@@ -1849,6 +2468,153 @@ export default function App() {
                   {t('collectIdentityRewards')}
                 </button>
               </div>
+            </article>
+          </section>
+        </>
+      )}
+
+      {isPaymentPage && (
+        <>
+          <section className="card">
+            <div className="section-head section-head-highlight">
+              <div>
+                <div className="section-title section-title-inline">SERIES9 Payment</div>
+                <h2>{t('paymentPageTitle')}</h2>
+              </div>
+              <span className="pill">
+                {t('paused')}: {identityPausedRead.data === undefined ? '-' : identityPausedRead.data ? t('yes') : t('no')}
+              </span>
+            </div>
+            <p className="muted">{t('paymentPageHint')}</p>
+          </section>
+
+          <section className="payment-layout">
+            <form className="single-form identity-form" onSubmit={(event) => onSubmit(event, runSetPaymentHandleFlow)}>
+              <h3>{t('paymentHandle')}</h3>
+              <div className="metric-grid">
+                <MetricCard label={t('identityTokenId')} value={hasIdentity ? identityTokenId.toString() : '-'} />
+                <MetricCard label={t('currentPaymentHandle')} value={hasIdentity ? currentIdentityHandle || '-' : '-'} />
+              </div>
+              <label className="field-stack">
+                <span>{t('paymentHandle')}</span>
+                <input
+                  value={paymentHandle}
+                  onChange={(event) => setPaymentHandle(event.target.value)}
+                  placeholder="series9-user"
+                  disabled={!hasIdentity}
+                />
+                <small className={paymentHandleBytes > 32 ? 'error' : 'muted'}>
+                  {paymentHandleBytes}/32 bytes · a-z, 0-9, -
+                </small>
+              </label>
+              <button type="submit" className="primary" disabled={!isConnected || onWrongChain || !hasIdentity || Boolean(identityPausedRead.data)}>
+                {t('setPaymentHandle')}
+              </button>
+              {!hasIdentity && <p className="muted">{t('identityRequired')}</p>}
+            </form>
+
+            <form className="single-form identity-form" onSubmit={(event) => onSubmit(event, runDirectPaymentFlow)}>
+              <h3>{t('sendPayment')}</h3>
+              <div className="identity-type-row" role="group" aria-label={t('paymentAsset')}>
+                <button type="button" className={paymentAssetType === 'mon' ? 'active' : ''} onClick={() => setPaymentAssetType('mon')}>
+                  MON
+                </button>
+                <button type="button" className={paymentAssetType === 'erc20' ? 'active' : ''} onClick={() => setPaymentAssetType('erc20')}>
+                  ERC20
+                </button>
+              </div>
+              {paymentAssetType === 'erc20' && (
+                <label className="field-stack">
+                  <span>{t('tokenAddress')}</span>
+                  <input value={paymentTokenAddress} onChange={(event) => setPaymentTokenAddress(event.target.value)} />
+                </label>
+              )}
+              <label className="field-stack">
+                <span>{t('recipientHandle')}</span>
+                <input value={paymentRecipientHandle} onChange={(event) => setPaymentRecipientHandle(event.target.value)} placeholder="receiver" />
+              </label>
+              <label className="field-stack">
+                <span>{t('amount')}</span>
+                <input value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} placeholder="0.0" />
+              </label>
+              <label className="field-stack">
+                <span>{t('paymentMemo')}</span>
+                <textarea value={paymentMemo} onChange={(event) => setPaymentMemo(event.target.value)} placeholder={t('paymentMemoPlaceholder')} />
+                <small className={paymentMemoBytes > PAYMENT_MEMO_MAX_BYTES ? 'error' : 'muted'}>
+                  {paymentMemoBytes}/{PAYMENT_MEMO_MAX_BYTES} bytes
+                </small>
+              </label>
+              {paymentAssetType === 'erc20' && (
+                <MetricCard label={t('identityAllowance')} value={`${formatTokenAmount(directPaymentAllowanceRead.data)} ERC20`} />
+              )}
+              <button type="submit" className="primary" disabled={!isConnected || onWrongChain || !hasIdentity || Boolean(identityPausedRead.data)}>
+                {directPaymentNeedsApproval ? t('approveAndSendPayment') : t('sendPayment')}
+              </button>
+            </form>
+
+            <form className="single-form identity-form" onSubmit={(event) => onSubmit(event, runCreatePaymentRequestFlow)}>
+              <h3>{t('createPaymentRequest')}</h3>
+              <div className="identity-type-row" role="group" aria-label={t('paymentAsset')}>
+                <button type="button" className={requestAssetType === 'mon' ? 'active' : ''} onClick={() => setRequestAssetType('mon')}>
+                  MON
+                </button>
+                <button type="button" className={requestAssetType === 'erc20' ? 'active' : ''} onClick={() => setRequestAssetType('erc20')}>
+                  ERC20
+                </button>
+              </div>
+              {requestAssetType === 'erc20' && (
+                <label className="field-stack">
+                  <span>{t('tokenAddress')}</span>
+                  <input value={requestTokenAddress} onChange={(event) => setRequestTokenAddress(event.target.value)} />
+                </label>
+              )}
+              <label className="field-stack">
+                <span>{t('payerHandle')}</span>
+                <input value={requestPayerHandle} onChange={(event) => setRequestPayerHandle(event.target.value)} placeholder="payer" />
+              </label>
+              <label className="field-stack">
+                <span>{t('amount')}</span>
+                <input value={requestAmount} onChange={(event) => setRequestAmount(event.target.value)} placeholder="0.0" />
+              </label>
+              <label className="field-stack">
+                <span>{t('paymentDueAt')}</span>
+                <input type="datetime-local" value={requestDueAt} onChange={(event) => setRequestDueAt(event.target.value)} />
+              </label>
+              <label className="field-stack">
+                <span>{t('paymentMemo')}</span>
+                <textarea value={requestMemo} onChange={(event) => setRequestMemo(event.target.value)} placeholder={t('paymentMemoPlaceholder')} />
+                <small className={requestMemoBytes > PAYMENT_MEMO_MAX_BYTES ? 'error' : 'muted'}>
+                  {requestMemoBytes}/{PAYMENT_MEMO_MAX_BYTES} bytes
+                </small>
+              </label>
+              {requestAssetType === 'erc20' && (
+                <MetricCard label={t('identityAllowance')} value={`${formatTokenAmount(requestPaymentAllowanceRead.data)} ERC20`} />
+              )}
+              <button type="submit" className="primary" disabled={!isConnected || onWrongChain || !hasIdentity || Boolean(identityPausedRead.data)}>
+                {requestPaymentNeedsApproval ? t('createPaymentRequest') : t('createPaymentRequest')}
+              </button>
+            </form>
+          </section>
+
+          <section className="payment-requests-grid">
+            <article className="card">
+              <div className="section-head section-head-highlight">
+                <div>
+                  <div className="section-title section-title-inline">{t('incomingPaymentRequests')}</div>
+                  <h2>{t('incomingPaymentRequests')}</h2>
+                </div>
+              </div>
+              {renderPaymentRequestList(incomingPaymentRequests, 'incoming')}
+            </article>
+
+            <article className="card">
+              <div className="section-head section-head-highlight">
+                <div>
+                  <div className="section-title section-title-inline">{t('outgoingPaymentRequests')}</div>
+                  <h2>{t('outgoingPaymentRequests')}</h2>
+                </div>
+              </div>
+              {renderPaymentRequestList(outgoingPaymentRequests, 'outgoing')}
             </article>
           </section>
         </>

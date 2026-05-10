@@ -24,6 +24,8 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 - `Series9Identity`:
   - SER9 mint fee를 스테이킹하는 UUPS 기반 identity NFT
   - Identity 스테이킹 보상은 reputation score 비율로 분배 (기본값: Human 9, AI 1)
+  - 고유 payment handle 기반 ERC20/MON 송금 및 결제 요청 지원
+  - 기존 identity 보유자는 profile name 기반 legacy handle 우선권을 30일간 클레임 가능
   - `IDENTITY_PROXY`가 설정된 릴리즈 워크플로우에서 implementation 배포와 Safe 업그레이드 트랜잭션 생성 지원
 - 업그레이드 경로:
   - `upgradeSer9(...)`로 `SER9`를 명시적으로 업그레이드
@@ -45,6 +47,7 @@ Foundry 기반의 `SER9` 스테이킹 + 다중 관리 토큰 시스템입니다.
 10. `maxSupply > 0`인 토큰은 공급량이 상한에 가까워질수록 민트 담보 비용이 증가하며, 상한 초과 mint는 revert
 11. Monad unstake backing queue / validator reward harvest / matured undelegation withdraw / delegation rebalance는 더 이상 전체 배열 full scan에 의존하지 않고 bounded multi-call progress를 사용
 12. Identity NFT 보상은 각 identity의 reputation score 비율로 계산되며, owner가 점수를 조정할 수 있음
+13. Identity Payment는 현재 identity 소유자 본인이 실행할 때만 승인된 ERC20 또는 전송한 MON을 이동함
 
 ## 컨트랙트
 
@@ -155,7 +158,7 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 - `IDENTITY_PROXY` (설정 시 Identity implementation 배포 및 업그레이드 Safe tx 생성)
 - `STAKING_UPGRADE_DATA`
 - `SER9_UPGRADE_DATA`
-- `IDENTITY_UPGRADE_DATA`
+- `IDENTITY_UPGRADE_DATA` (기존 Identity 프록시에 Payment 초기화가 필요하면 `0x38cdfc0c`, `initializePayment()`)
 
 선택 GitHub Variables:
 
