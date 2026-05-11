@@ -72,6 +72,13 @@ export const identityAbi = [
   },
   {
     type: 'function',
+    name: 'legacyHandlePriorityDeadline',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint64', internalType: 'uint64' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
     name: 'humanMintFee',
     inputs: [],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],

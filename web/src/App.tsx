@@ -855,6 +855,15 @@ export default function App() {
     },
   });
 
+  const legacyHandlePriorityDeadlineRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'legacyHandlePriorityDeadline',
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
+
   const identityNameRead = useReadContract({
     address: contracts.identityProxy,
     abi: identityAbi,
@@ -1392,6 +1401,7 @@ export default function App() {
     ? identityTokenMetadata?.name || identityNameRead.data || 'SERIES9'
     : identityName.trim() || 'SERIES9';
   const currentIdentityHandle = identityHandleRead.data ?? '';
+  const hasEnteredPaymentHandle = paymentHandle.trim().length > 0;
   const paymentHandleBytes = utf8ByteLength(paymentHandle.trim());
   const paymentMemoBytes = utf8ByteLength(paymentMemo.trim());
   const requestMemoBytes = utf8ByteLength(requestMemo.trim());
@@ -1748,6 +1758,68 @@ export default function App() {
     void handler();
   }
 
+  async function ensureHandleRegistrationReady() {
+    if (!publicClient) {
+      if (legacyHandleReservationsFinalizedRead.data === false) {
+        throw new Error('LEGACY_HANDLES_PENDING');
+      }
+      return;
+    }
+
+    let finalized = legacyHandleReservationsFinalizedRead.data;
+    if (finalized === undefined) {
+      finalized = await publicClient.readContract({
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'legacyHandleReservationsFinalized',
+      });
+    }
+
+    if (finalized !== false) {
+      return;
+    }
+
+    let priorityDeadline = legacyHandlePriorityDeadlineRead.data;
+    if (priorityDeadline === undefined) {
+      priorityDeadline = await publicClient.readContract({
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'legacyHandlePriorityDeadline',
+      });
+    }
+
+    if (priorityDeadline > 0n) {
+      const latestBlock = await publicClient.getBlock();
+      if (latestBlock.timestamp > priorityDeadline) {
+        return;
+      }
+    }
+
+    const seedHash = await tx.execute(t('prepareLegacyHandles'), {
+      address: contracts.identityProxy,
+      abi: identityAbi,
+      functionName: 'seedLegacyHandleReservations',
+      args: [LEGACY_HANDLE_SEED_BATCH],
+    });
+
+    if (!seedHash) {
+      throw new Error('LEGACY_HANDLES_PENDING');
+    }
+
+    await publicClient.waitForTransactionReceipt({ hash: seedHash });
+    finalized = await publicClient.readContract({
+      address: contracts.identityProxy,
+      abi: identityAbi,
+      functionName: 'legacyHandleReservationsFinalized',
+    });
+
+    if (finalized === false) {
+      throw new Error('LEGACY_HANDLES_PENDING');
+    }
+
+    await queryClient.invalidateQueries();
+  }
+
   function renderTxStatusContent() {
     return (
       <div className="tx-feed" role="status" aria-live="polite">
@@ -1870,8 +1942,7 @@ export default function App() {
     }
 
     if (hasIdentity) {
-      setFormError(t('alreadyHasIdentity'));
-      return undefined;
+      return await runSetPaymentHandleFlow();
     }
 
     try {
@@ -1894,6 +1965,7 @@ export default function App() {
       const hue = validateUint8(identityHue);
       const saturation = validateUint8(identitySaturation);
       const allowance = identityAllowanceRead.data ?? 0n;
+      const handle = hasEnteredPaymentHandle ? validatePaymentHandle(paymentHandle) : '';
 
       if (selectedIdentityFeeRead === undefined || allowance < selectedIdentityFee) {
         const approveHash = await tx.execute(t('ser9Approve'), {
@@ -1906,6 +1978,24 @@ export default function App() {
         if (!approveHash) {
           return undefined;
         }
+
+        if (!publicClient) {
+          throw new Error('UNKNOWN');
+        }
+
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        await queryClient.invalidateQueries();
+      }
+
+      if (handle) {
+        await ensureHandleRegistrationReady();
+
+        return await tx.execute(t('mintIdentityWithHandle'), {
+          address: contracts.identityProxy,
+          abi: identityAbi,
+          functionName: 'mintIdentityWithHandle',
+          args: [name, bio, entityTypeValue, hue, saturation, handle],
+        });
       }
 
       return await tx.execute(t('mintIdentity'), {
@@ -1930,35 +2020,7 @@ export default function App() {
 
     try {
       const handle = validatePaymentHandle(paymentHandle);
-      if (legacyHandleReservationsFinalizedRead.data === false) {
-        const seedHash = await tx.execute(t('prepareLegacyHandles'), {
-          address: contracts.identityProxy,
-          abi: identityAbi,
-          functionName: 'seedLegacyHandleReservations',
-          args: [LEGACY_HANDLE_SEED_BATCH],
-        });
-
-        if (!seedHash) {
-          return undefined;
-        }
-
-        if (!publicClient) {
-          throw new Error('PUBLIC_CLIENT_UNAVAILABLE');
-        }
-
-        await publicClient.waitForTransactionReceipt({ hash: seedHash });
-        const finalized = await publicClient.readContract({
-          address: contracts.identityProxy,
-          abi: identityAbi,
-          functionName: 'legacyHandleReservationsFinalized',
-        });
-
-        if (finalized === false) {
-          throw new Error('LEGACY_HANDLES_PENDING');
-        }
-
-        await queryClient.invalidateQueries();
-      }
+      await ensureHandleRegistrationReady();
 
       return await tx.execute(t('setPaymentHandle'), {
         address: contracts.identityProxy,
@@ -2546,11 +2608,32 @@ export default function App() {
                 <MetricCard label={t('identityAllowance')} value={`${formatTokenAmount(identityAllowanceRead.data)} SER9`} />
               </div>
 
-              <button type="submit" className="primary" disabled={!isConnected || onWrongChain || hasIdentity || Boolean(identityPausedRead.data)}>
-                {identityNeedsApproval ? t('approveAndMintIdentity') : t('mintIdentity')}
+              <label className="field-stack">
+                <span>{t('paymentHandle')}</span>
+                <input
+                  value={paymentHandle}
+                  onChange={(event) => setPaymentHandle(event.target.value)}
+                  placeholder="series9-user"
+                />
+                <small className={paymentHandleBytes > 32 ? 'error' : 'muted'}>
+                  {paymentHandleBytes}/32 bytes · a-z, 0-9, -
+                </small>
+              </label>
+
+              <button type="submit" className="primary" disabled={!isConnected || onWrongChain || Boolean(identityPausedRead.data)}>
+                {hasIdentity
+                  ? t('setPaymentHandle')
+                  : identityNeedsApproval
+                    ? t('approveAndMintIdentity')
+                    : hasEnteredPaymentHandle
+                      ? t('mintIdentityWithHandle')
+                      : t('mintIdentity')}
               </button>
               {!isConnected && <p className="muted">{t('connectHint')}</p>}
               {hasIdentity && <p className="success">{t('alreadyHasIdentity')}</p>}
+              {legacyHandleReservationsFinalizedRead.data === false && (
+                <p className="muted">{t('legacyHandlesPending')}</p>
+              )}
             </form>
 
             <article className="status-card identity-preview-card">

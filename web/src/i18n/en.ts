@@ -85,6 +85,7 @@ export const en = {
   identityMintFee: 'Mint Fee',
   identityAllowance: 'Identity Allowance',
   mintIdentity: 'Mint Identity',
+  mintIdentityWithHandle: 'Mint Identity + Handle',
   approveAndMintIdentity: 'Approve + Mint',
   identityTokenId: 'Token ID',
   identityReputation: 'Reputation',

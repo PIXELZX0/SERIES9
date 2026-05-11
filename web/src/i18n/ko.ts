@@ -85,6 +85,7 @@ export const ko = {
   identityMintFee: '발행 수수료',
   identityAllowance: 'Identity 승인량',
   mintIdentity: 'Identity 발행',
+  mintIdentityWithHandle: 'Identity + 핸들 발행',
   approveAndMintIdentity: '승인 + 발행',
   identityTokenId: '토큰 ID',
   identityReputation: '평판 점수',
