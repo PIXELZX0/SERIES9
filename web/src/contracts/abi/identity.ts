@@ -247,6 +247,13 @@ export const identityAbi = [
   },
   {
     type: 'function',
+    name: 'tokenURI',
+    inputs: [{ name: 'tokenId', type: 'uint256', internalType: 'uint256' }],
+    outputs: [{ name: '', type: 'string', internalType: 'string' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
     name: 'tokenIdOfHandle',
     inputs: [{ name: 'handle', type: 'string', internalType: 'string' }],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],

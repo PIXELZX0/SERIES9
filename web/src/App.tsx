@@ -38,6 +38,13 @@ type PaymentRequestValue = {
   memo: string;
 };
 
+type IdentityTokenMetadata = {
+  name?: string;
+  description?: string;
+  image?: string;
+  image_data?: string;
+};
+
 type TokenConfigValue = {
   exists: boolean;
   creator: Address;
@@ -74,6 +81,7 @@ const monadStakingPrecompileAbi = [
 const MONAD_STAKING_PRECOMPILE = getAddress('0x0000000000000000000000000000000000001000');
 const MONAD_EPOCH_APPROX_MS = 5.5 * 60 * 60 * 1000;
 const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder();
 const IDENTITY_NAME_MAX_BYTES = 32;
 const IDENTITY_BIO_MAX_BYTES = 128;
 const PAYMENT_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
@@ -104,6 +112,76 @@ function identityAccentColor(hue: number, saturation: number): string {
   const hueDegrees = Math.round((hue / 255) * 360);
   const saturationPercent = Math.round(36 + (saturation / 255) * 54);
   return `hsl(${hueDegrees} ${saturationPercent}% 56%)`;
+}
+
+function decodeBase64Utf8(value: string): string {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return UTF8_DECODER.decode(bytes);
+}
+
+function decodeDataUri(uri: string): string | null {
+  const commaIndex = uri.indexOf(',');
+  if (!uri.startsWith('data:') || commaIndex === -1) {
+    return null;
+  }
+
+  const header = uri.slice(0, commaIndex).toLowerCase();
+  const body = uri.slice(commaIndex + 1);
+
+  try {
+    if (header.endsWith(';base64')) {
+      return decodeBase64Utf8(body);
+    }
+
+    return decodeURIComponent(body);
+  } catch {
+    return null;
+  }
+}
+
+function parseIdentityTokenMetadata(tokenUri: string | undefined): IdentityTokenMetadata | null {
+  if (!tokenUri) {
+    return null;
+  }
+
+  const metadataJson = tokenUri.startsWith('data:')
+    ? decodeDataUri(tokenUri)
+    : tokenUri;
+
+  if (!metadataJson) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const metadata = parsed as IdentityTokenMetadata;
+    return {
+      name: typeof metadata.name === 'string' ? metadata.name : undefined,
+      description: typeof metadata.description === 'string' ? metadata.description : undefined,
+      image: typeof metadata.image === 'string' ? metadata.image : undefined,
+      image_data: typeof metadata.image_data === 'string' ? metadata.image_data : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveIdentityImageSrc(metadata: IdentityTokenMetadata | null): string | null {
+  const image = metadata?.image ?? metadata?.image_data;
+  if (!image) {
+    return null;
+  }
+
+  if (image.trim().startsWith('<svg')) {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(image)}`;
+  }
+
+  return image;
 }
 
 function formatApproxRemainingEpochTime(locale: string, remainingEpochs: number): string {
@@ -758,6 +836,16 @@ export default function App() {
     },
   });
 
+  const identityTokenUriRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'tokenURI',
+    args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
+
   const legacyHandleReservationsFinalizedRead = useReadContract({
     address: contracts.identityProxy,
     abi: identityAbi,
@@ -1295,6 +1383,14 @@ export default function App() {
     : identityIsAIRead.data
       ? t('identityAI')
       : t('identityHuman');
+  const identityTokenMetadata = useMemo(
+    () => parseIdentityTokenMetadata(identityTokenUriRead.data),
+    [identityTokenUriRead.data],
+  );
+  const identityNftImageSrc = resolveIdentityImageSrc(identityTokenMetadata);
+  const identityDisplayName = hasIdentity
+    ? identityTokenMetadata?.name || identityNameRead.data || 'SERIES9'
+    : identityName.trim() || 'SERIES9';
   const currentIdentityHandle = identityHandleRead.data ?? '';
   const paymentHandleBytes = utf8ByteLength(paymentHandle.trim());
   const paymentMemoBytes = utf8ByteLength(paymentMemo.trim());
@@ -2466,13 +2562,27 @@ export default function App() {
                 <span className="pill">{hasIdentity ? `#${identityTokenId.toString()}` : t('identityNotMinted')}</span>
               </div>
 
-              <div className="identity-avatar-preview">
-                <div className="identity-avatar-ring" style={{ borderColor: identityPreviewColor }}>
-                  <div className="identity-avatar-core" style={{ background: identityPreviewColor }} />
-                </div>
+              <div className={`identity-avatar-preview ${hasIdentity && identityNftImageSrc ? 'identity-nft-preview' : ''}`}>
+                {hasIdentity && identityNftImageSrc ? (
+                  <img
+                    className="identity-nft-image"
+                    src={identityNftImageSrc}
+                    alt={identityDisplayName}
+                  />
+                ) : (
+                  <div className="identity-avatar-ring" style={{ borderColor: identityPreviewColor }}>
+                    <div className="identity-avatar-core" style={{ background: identityPreviewColor }} />
+                  </div>
+                )}
                 <div>
-                  <strong>{hasIdentity ? identityNameRead.data || 'SERIES9' : identityName.trim() || 'SERIES9'}</strong>
+                  <strong>{identityDisplayName}</strong>
                   <span>{hasIdentity ? identityDisplayType : identityEntityType === 'ai' ? t('identityAI') : t('identityHuman')}</span>
+                  {hasIdentity && !identityNftImageSrc && identityTokenUriRead.isLoading && (
+                    <span>{t('identityNftLoading')}</span>
+                  )}
+                  {hasIdentity && identityTokenUriRead.isError && (
+                    <span>{t('identityNftUnavailable')}</span>
+                  )}
                 </div>
               </div>
 

@@ -94,6 +94,8 @@ export const ko = {
   collectIdentityRewards: '스테이킹 보상 수집',
   alreadyHasIdentity: '이 지갑은 이미 SERIES9 Identity를 보유하고 있습니다.',
   identityNotMinted: '미발행',
+  identityNftLoading: 'NFT 이미지를 불러오는 중...',
+  identityNftUnavailable: 'NFT 이미지를 불러올 수 없습니다.',
   paymentPageTitle: 'SERIES9 Payment',
   paymentPageHint: 'SERIES9 handle로 ERC20 또는 네이티브 MON을 송금하고 결제 요청을 관리합니다.',
   paymentHandle: '결제 핸들',

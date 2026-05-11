@@ -665,6 +665,22 @@ button:disabled {
   font-size: 0.82rem;
 }
 
+.identity-nft-preview {
+  min-height: auto;
+  align-content: start;
+  padding: 0.85rem;
+}
+
+.identity-nft-image {
+  display: block;
+  width: 100%;
+  max-width: 340px;
+  aspect-ratio: 17 / 10;
+  object-fit: contain;
+  border: 1px solid var(--line-strong);
+  background: #050505;
+}
+
 .payment-layout {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

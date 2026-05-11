@@ -94,6 +94,8 @@ export const en = {
   collectIdentityRewards: 'Collect Staking Rewards',
   alreadyHasIdentity: 'This wallet already has a SERIES9 Identity.',
   identityNotMinted: 'Not minted',
+  identityNftLoading: 'Loading NFT image...',
+  identityNftUnavailable: 'NFT image is unavailable.',
   paymentPageTitle: 'SERIES9 Payment',
   paymentPageHint: 'Send ERC20 or native MON by SERIES9 handle and manage payment requests.',
   paymentHandle: 'Payment Handle',
