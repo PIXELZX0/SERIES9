@@ -58,6 +58,20 @@ export const identityAbi = [
   },
   {
     type: 'function',
+    name: 'legacyHandleReservationCursor',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'legacyHandleReservationsFinalized',
+    inputs: [],
+    outputs: [{ name: '', type: 'bool', internalType: 'bool' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
     name: 'humanMintFee',
     inputs: [],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
@@ -213,6 +227,13 @@ export const identityAbi = [
     inputs: [{ name: 'account', type: 'address', internalType: 'address' }],
     outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
     stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'seedLegacyHandleReservations',
+    inputs: [{ name: 'maxTokens', type: 'uint256', internalType: 'uint256' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
   },
   {
     type: 'function',

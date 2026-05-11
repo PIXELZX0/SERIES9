@@ -99,6 +99,8 @@ export const en = {
   paymentHandle: 'Payment Handle',
   currentPaymentHandle: 'Current Handle',
   setPaymentHandle: 'Set Handle',
+  prepareLegacyHandles: 'Prepare Legacy Handles',
+  legacyHandlesPending: 'Legacy name-based handle reservations need to be prepared first. Setting a handle may require one preparation transaction.',
   identityRequired: 'A SERIES9 Identity is required.',
   sendPayment: 'Send Payment',
   paymentAsset: 'Payment Asset',

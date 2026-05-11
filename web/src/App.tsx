@@ -78,6 +78,7 @@ const IDENTITY_NAME_MAX_BYTES = 32;
 const IDENTITY_BIO_MAX_BYTES = 128;
 const PAYMENT_HANDLE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])$/;
 const PAYMENT_MEMO_MAX_BYTES = 128;
+const LEGACY_HANDLE_SEED_BATCH = 1000n;
 const DEFAULT_AI_MINT_FEE = 10n * 10n ** 18n;
 const DEFAULT_HUMAN_MINT_FEE = 50n * 10n ** 18n;
 const PAYMENT_STATUS = {
@@ -752,6 +753,15 @@ export default function App() {
     abi: identityAbi,
     functionName: 'handleOf',
     args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
+
+  const legacyHandleReservationsFinalizedRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'legacyHandleReservationsFinalized',
     query: {
       enabled: identityTokenIdForReads > 0n,
     },
@@ -1570,6 +1580,8 @@ export default function App() {
         return t('invalidPaymentMemo');
       case 'INVALID_PAYMENT_DUE_AT':
         return t('invalidPaymentDueAt');
+      case 'LEGACY_HANDLES_PENDING':
+        return t('legacyHandlesPending');
       case 'REQUIRED_FIELD':
         return t('requiredField');
       default:
@@ -1822,6 +1834,36 @@ export default function App() {
 
     try {
       const handle = validatePaymentHandle(paymentHandle);
+      if (legacyHandleReservationsFinalizedRead.data === false) {
+        const seedHash = await tx.execute(t('prepareLegacyHandles'), {
+          address: contracts.identityProxy,
+          abi: identityAbi,
+          functionName: 'seedLegacyHandleReservations',
+          args: [LEGACY_HANDLE_SEED_BATCH],
+        });
+
+        if (!seedHash) {
+          return undefined;
+        }
+
+        if (!publicClient) {
+          throw new Error('PUBLIC_CLIENT_UNAVAILABLE');
+        }
+
+        await publicClient.waitForTransactionReceipt({ hash: seedHash });
+        const finalized = await publicClient.readContract({
+          address: contracts.identityProxy,
+          abi: identityAbi,
+          functionName: 'legacyHandleReservationsFinalized',
+        });
+
+        if (finalized === false) {
+          throw new Error('LEGACY_HANDLES_PENDING');
+        }
+
+        await queryClient.invalidateQueries();
+      }
+
       return await tx.execute(t('setPaymentHandle'), {
         address: contracts.identityProxy,
         abi: identityAbi,
@@ -2510,6 +2552,9 @@ export default function App() {
               <button type="submit" className="primary" disabled={!isConnected || onWrongChain || !hasIdentity || Boolean(identityPausedRead.data)}>
                 {t('setPaymentHandle')}
               </button>
+              {legacyHandleReservationsFinalizedRead.data === false && (
+                <p className="muted">{t('legacyHandlesPending')}</p>
+              )}
               {!hasIdentity && <p className="muted">{t('identityRequired')}</p>}
             </form>
 

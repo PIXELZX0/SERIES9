@@ -99,6 +99,8 @@ export const ko = {
   paymentHandle: '결제 핸들',
   currentPaymentHandle: '현재 핸들',
   setPaymentHandle: '핸들 설정',
+  prepareLegacyHandles: '기존 핸들 예약 준비',
+  legacyHandlesPending: '기존 Identity 이름 기반 핸들 예약을 먼저 준비합니다. 핸들 설정 전에 한 번의 준비 트랜잭션이 필요할 수 있습니다.',
   identityRequired: 'SERIES9 Identity가 필요합니다.',
   sendPayment: '결제 보내기',
   paymentAsset: '결제 자산',
