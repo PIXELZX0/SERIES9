@@ -725,6 +725,184 @@ contract Series9IdentityTest is Test {
         identity.payPaymentRequest(requestId);
     }
 
+    // ─────────────────── Signed payment ───────────────────
+
+    function _signPayPaymentRequest(
+        uint256 signerKey,
+        uint256 requestId,
+        uint256 nonce,
+        uint256 deadline
+    ) internal view returns (bytes memory sig) {
+        bytes32 digest = identity.payPaymentRequestDigest(requestId, nonce, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
+        sig = abi.encodePacked(r, s, v);
+    }
+
+    function _mintBobAndSignerWithHandles(string memory signerHandle)
+        internal
+        returns (uint256 signerKey, address signerAddr, uint256 bobTokenId, uint256 signerTokenId)
+    {
+        (signerAddr, signerKey) = makeAddrAndKey(signerHandle);
+        ser9.transfer(signerAddr, 100 ether);
+        vm.prank(signerAddr);
+        ser9.approve(address(identity), type(uint256).max);
+
+        vm.prank(bob);
+        bobTokenId = identity.mintIdentityWithHandle("Bob", "", Series9Identity.EntityType.Human, 120, 180, "bob");
+        vm.prank(signerAddr);
+        signerTokenId =
+            identity.mintIdentityWithHandle("Signer", "", Series9Identity.EntityType.Human, 50, 100, signerHandle);
+    }
+
+    function test_payPaymentRequestWithSig_erc20Happy() public {
+        (uint256 signerKey, address signerAddr,, ) = _mintBobAndSignerWithHandles("dave");
+
+        vm.prank(bob);
+        uint256 requestId = identity.createPaymentRequest(
+            "dave", address(ser9), 4 ether, uint64(block.timestamp + 1 days), "delegated"
+        );
+
+        // Relayer (charlie) has no identity but supplies funds
+        ser9.transfer(charlie, 10 ether);
+        vm.prank(charlie);
+        ser9.approve(address(identity), type(uint256).max);
+
+        uint256 nonce = identity.paymentNonces(signerAddr);
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _signPayPaymentRequest(signerKey, requestId, nonce, deadline);
+
+        uint256 bobBefore = ser9.balanceOf(bob);
+        uint256 signerBefore = ser9.balanceOf(signerAddr);
+        uint256 charlieBefore = ser9.balanceOf(charlie);
+
+        vm.prank(charlie);
+        identity.payPaymentRequestWithSig(requestId, nonce, deadline, sig);
+
+        // Funds come from relayer (msg.sender), not signer
+        assertEq(ser9.balanceOf(bob), bobBefore + 4 ether);
+        assertEq(ser9.balanceOf(signerAddr), signerBefore);
+        assertEq(ser9.balanceOf(charlie), charlieBefore - 4 ether);
+        assertEq(identity.paymentNonces(signerAddr), nonce + 1);
+        assertEq(
+            uint8(identity.effectivePaymentRequestStatus(requestId)), uint8(Series9Identity.PaymentRequestStatus.Paid)
+        );
+    }
+
+    function test_payPaymentRequestWithSig_monHappy() public {
+        (uint256 signerKey, address signerAddr,, ) = _mintBobAndSignerWithHandles("erin");
+
+        vm.prank(bob);
+        uint256 requestId = identity.createPaymentRequest(
+            "erin", address(0), 1 ether, uint64(block.timestamp + 1 days), "mon delegated"
+        );
+
+        uint256 nonce = identity.paymentNonces(signerAddr);
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _signPayPaymentRequest(signerKey, requestId, nonce, deadline);
+
+        vm.deal(charlie, 3 ether);
+        uint256 bobBefore = bob.balance;
+
+        vm.prank(charlie);
+        identity.payPaymentRequestWithSig{value: 1 ether}(requestId, nonce, deadline, sig);
+
+        assertEq(bob.balance, bobBefore + 1 ether);
+        assertEq(
+            uint8(identity.effectivePaymentRequestStatus(requestId)), uint8(Series9Identity.PaymentRequestStatus.Paid)
+        );
+    }
+
+    function test_payPaymentRequestWithSig_rejectsReplay() public {
+        (uint256 signerKey, address signerAddr,, ) = _mintBobAndSignerWithHandles("frank");
+
+        vm.prank(bob);
+        uint256 requestId =
+            identity.createPaymentRequest("frank", address(ser9), 1 ether, uint64(block.timestamp + 1 days), "replay");
+
+        ser9.transfer(charlie, 10 ether);
+        vm.prank(charlie);
+        ser9.approve(address(identity), type(uint256).max);
+
+        uint256 nonce = identity.paymentNonces(signerAddr);
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _signPayPaymentRequest(signerKey, requestId, nonce, deadline);
+
+        vm.prank(charlie);
+        identity.payPaymentRequestWithSig(requestId, nonce, deadline, sig);
+
+        vm.prank(charlie);
+        vm.expectRevert(Series9Identity.PaymentRequestNotPending.selector);
+        identity.payPaymentRequestWithSig(requestId, nonce, deadline, sig);
+    }
+
+    function test_payPaymentRequestWithSig_rejectsWrongSigner() public {
+        _mintBobAndSignerWithHandles("george");
+        (, uint256 strangerKey) = makeAddrAndKey("stranger");
+
+        vm.prank(bob);
+        uint256 requestId = identity.createPaymentRequest(
+            "george", address(ser9), 1 ether, uint64(block.timestamp + 1 days), "wrong signer"
+        );
+
+        ser9.transfer(charlie, 10 ether);
+        vm.prank(charlie);
+        ser9.approve(address(identity), type(uint256).max);
+
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _signPayPaymentRequest(strangerKey, requestId, 0, deadline);
+
+        vm.prank(charlie);
+        vm.expectRevert(Series9Identity.InvalidPaymentSignature.selector);
+        identity.payPaymentRequestWithSig(requestId, 0, deadline, sig);
+    }
+
+    function test_payPaymentRequestWithSig_rejectsExpired() public {
+        (uint256 signerKey, address signerAddr,, ) = _mintBobAndSignerWithHandles("hank");
+
+        vm.prank(bob);
+        uint256 requestId = identity.createPaymentRequest(
+            "hank", address(ser9), 1 ether, uint64(block.timestamp + 1 days), "expired sig"
+        );
+
+        uint256 nonce = identity.paymentNonces(signerAddr);
+        uint256 deadline = block.timestamp + 30;
+        bytes memory sig = _signPayPaymentRequest(signerKey, requestId, nonce, deadline);
+
+        vm.warp(deadline + 1);
+
+        ser9.transfer(charlie, 10 ether);
+        vm.prank(charlie);
+        ser9.approve(address(identity), type(uint256).max);
+
+        vm.prank(charlie);
+        vm.expectRevert(Series9Identity.PaymentSignatureExpired.selector);
+        identity.payPaymentRequestWithSig(requestId, nonce, deadline, sig);
+    }
+
+    function test_payPaymentRequestWithSig_rejectsCancelled() public {
+        (uint256 signerKey, address signerAddr,, ) = _mintBobAndSignerWithHandles("ivy");
+
+        vm.prank(bob);
+        uint256 requestId = identity.createPaymentRequest(
+            "ivy", address(ser9), 1 ether, uint64(block.timestamp + 1 days), "cancel then sig"
+        );
+
+        vm.prank(signerAddr);
+        identity.cancelPaymentRequest(requestId);
+
+        uint256 nonce = identity.paymentNonces(signerAddr);
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _signPayPaymentRequest(signerKey, requestId, nonce, deadline);
+
+        ser9.transfer(charlie, 10 ether);
+        vm.prank(charlie);
+        ser9.approve(address(identity), type(uint256).max);
+
+        vm.prank(charlie);
+        vm.expectRevert(Series9Identity.PaymentRequestNotPending.selector);
+        identity.payPaymentRequestWithSig(requestId, nonce, deadline, sig);
+    }
+
     function _fundIdentityRewards(uint256 amount) internal {
         MockStaking ms = MockStaking(identity.stakingContract());
         ser9.approve(address(ms), amount);

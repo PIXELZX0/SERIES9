@@ -155,6 +155,36 @@ export const identityAbi = [
   },
   {
     type: 'function',
+    name: 'payPaymentRequestWithSig',
+    inputs: [
+      { name: 'requestId', type: 'uint256', internalType: 'uint256' },
+      { name: 'nonce', type: 'uint256', internalType: 'uint256' },
+      { name: 'deadline', type: 'uint256', internalType: 'uint256' },
+      { name: 'signature', type: 'bytes', internalType: 'bytes' },
+    ],
+    outputs: [{ name: 'paymentId', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'payable',
+  },
+  {
+    type: 'function',
+    name: 'paymentNonces',
+    inputs: [{ name: '', type: 'address', internalType: 'address' }],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'payPaymentRequestDigest',
+    inputs: [
+      { name: 'requestId', type: 'uint256', internalType: 'uint256' },
+      { name: 'nonce', type: 'uint256', internalType: 'uint256' },
+      { name: 'deadline', type: 'uint256', internalType: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'bytes32', internalType: 'bytes32' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
     name: 'payToHandle',
     inputs: [
       { name: 'token', type: 'address', internalType: 'address' },

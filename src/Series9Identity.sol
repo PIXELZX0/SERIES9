@@ -9,6 +9,7 @@ import {PausableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ECDSA} from "openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
 import {Series9IdentityRenderer} from "./Series9IdentityRenderer.sol";
 
 /// @notice Interface for Series9Staking — stake() + reward claiming
@@ -129,6 +130,17 @@ contract Series9Identity is
     mapping(uint256 => uint256[]) private _payerPaymentRequestIds;
     mapping(uint256 => uint256[]) private _payeePaymentRequestIds;
 
+    // ─────────────────── EIP-712 signed payment ───────────────────
+
+    mapping(address => uint256) public paymentNonces;
+
+    bytes32 private constant _EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant _EIP712_NAME_HASH = keccak256("Series9Identity");
+    bytes32 private constant _EIP712_VERSION_HASH = keccak256("1");
+    bytes32 private constant _PAY_REQUEST_AUTH_TYPEHASH =
+        keccak256("PayPaymentRequestAuthorization(uint256 requestId,uint256 nonce,uint256 deadline)");
+
     /// @notice Emitted when AI mint fee is changed
     event AIMintFeeUpdated(uint256 previousFee, uint256 newFee);
     /// @notice Emitted when Human mint fee is changed
@@ -176,6 +188,14 @@ contract Series9Identity is
     );
     /// @notice Emitted when a payment request is paid
     event PaymentRequestPaid(uint256 indexed requestId, uint256 indexed paymentId);
+    /// @notice Emitted when a payment request is paid via a signed authorization from the payer.
+    event PaymentRequestPaidWithSig(
+        uint256 indexed requestId,
+        uint256 indexed paymentId,
+        address indexed signer,
+        address relayer,
+        uint256 nonce
+    );
     /// @notice Emitted when a payment request is cancelled
     event PaymentRequestCancelled(uint256 indexed requestId, address indexed caller);
 
@@ -210,6 +230,8 @@ contract Series9Identity is
     error PaymentRequestNotPending();
     error UnauthorizedPaymentActor();
     error InvalidPaymentDueAt();
+    error PaymentSignatureExpired();
+    error InvalidPaymentSignature();
 
     // ─────────────────── Init ───────────────────
 
@@ -561,6 +583,49 @@ contract Series9Identity is
             request.memo
         );
         emit PaymentRequestPaid(requestId, paymentId);
+    }
+
+    /// @notice Pay an outstanding payment request using an EIP-712 signature from the request's
+    ///         authorized payer. The signature delegates execution to msg.sender, who supplies the funds
+    ///         (ERC20 allowance or native MON value). Useful for paying on behalf of the request's payer.
+    /// @param requestId Outstanding payment request id.
+    /// @param nonce Off-chain nonce; must equal `paymentNonces[signer]` at execution time.
+    /// @param deadline Unix timestamp after which the signature is no longer valid.
+    /// @param signature 65-byte ECDSA signature over the EIP-712 digest.
+    function payPaymentRequestWithSig(uint256 requestId, uint256 nonce, uint256 deadline, bytes calldata signature)
+        external
+        payable
+        whenNotPaused
+        nonReentrant
+        returns (uint256 paymentId)
+    {
+        _requirePaymentInitialized();
+        if (block.timestamp > deadline) revert PaymentSignatureExpired();
+
+        PaymentRequest storage request = _paymentRequests[requestId];
+        if (request.status == PaymentRequestStatus.None) revert InvalidPaymentRequest();
+        if (_effectivePaymentRequestStatus(request) != PaymentRequestStatus.Pending) revert PaymentRequestNotPending();
+
+        address signer = _consumePayPaymentRequestSig(requestId, nonce, deadline, signature, request.payerTokenId);
+
+        address recipient = ownerOf(request.payeeTokenId);
+        paymentId = _nextPaymentId++;
+        request.status = PaymentRequestStatus.Paid;
+
+        _transferPaymentAsset(request.token, msg.sender, payable(recipient), request.amount);
+
+        emit IdentityPaymentSent(
+            paymentId,
+            request.payerTokenId,
+            request.payeeTokenId,
+            request.token,
+            msg.sender,
+            recipient,
+            request.amount,
+            request.memo
+        );
+        emit PaymentRequestPaid(requestId, paymentId);
+        emit PaymentRequestPaidWithSig(requestId, paymentId, signer, msg.sender, nonce);
     }
 
     /// @notice Cancel an outstanding payment request. Either current payer or current payee identity owner may cancel.
@@ -944,6 +1009,58 @@ contract Series9Identity is
         IERC20(token).safeTransferFrom(payer, recipient, amount);
     }
 
+    /// @notice EIP-712 domain separator for off-chain signing of payment authorizations.
+    function paymentDomainSeparator() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(_EIP712_DOMAIN_TYPEHASH, _EIP712_NAME_HASH, _EIP712_VERSION_HASH, block.chainid, address(this))
+        );
+    }
+
+    /// @notice Struct hash for the off-chain authorization message (without the EIP-712 prefix).
+    function payPaymentRequestStructHash(uint256 requestId, uint256 nonce, uint256 deadline)
+        public
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(_PAY_REQUEST_AUTH_TYPEHASH, requestId, nonce, deadline));
+    }
+
+    /// @notice Full EIP-712 digest the payer must sign to authorize delegated payment.
+    function payPaymentRequestDigest(uint256 requestId, uint256 nonce, uint256 deadline)
+        external
+        view
+        returns (bytes32)
+    {
+        return _payPaymentRequestDigest(requestId, nonce, deadline);
+    }
+
+    function _payPaymentRequestDigest(uint256 requestId, uint256 nonce, uint256 deadline)
+        internal
+        view
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encodePacked("\x19\x01", paymentDomainSeparator(), payPaymentRequestStructHash(requestId, nonce, deadline))
+        );
+    }
+
+    function _consumePayPaymentRequestSig(
+        uint256 requestId,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature,
+        uint256 expectedPayerTokenId
+    ) internal returns (address signer) {
+        bytes32 digest = _payPaymentRequestDigest(requestId, nonce, deadline);
+        (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, signature);
+        if (err != ECDSA.RecoverError.NoError || recovered == address(0)) revert InvalidPaymentSignature();
+        if (ownerTokenId[recovered] != expectedPayerTokenId) revert InvalidPaymentSignature();
+        if (paymentNonces[recovered] != nonce) revert InvalidPaymentSignature();
+
+        paymentNonces[recovered] = nonce + 1;
+        signer = recovered;
+    }
+
     function _effectivePaymentRequestStatus(PaymentRequest storage request)
         internal
         view
@@ -1007,5 +1124,5 @@ contract Series9Identity is
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[37] private __gap;
+    uint256[36] private __gap;
 }

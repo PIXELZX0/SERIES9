@@ -10,9 +10,10 @@ import {
   usePublicClient,
   useReadContract,
   useReadContracts,
+  useSignTypedData,
   useSwitchChain,
 } from 'wagmi';
-import { encodeFunctionData, getAddress, isAddress, maxUint256, zeroAddress, type Address } from 'viem';
+import { encodeFunctionData, getAddress, isAddress, isHex, maxUint256, zeroAddress, type Address, type Hex } from 'viem';
 
 import { explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
@@ -641,6 +642,8 @@ export default function App() {
     },
   });
 
+  const { signTypedDataAsync } = useSignTypedData();
+
   const [formError, setFormError] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [connectingConnectorUid, setConnectingConnectorUid] = useState<string | null>(null);
@@ -676,6 +679,16 @@ export default function App() {
   const [requestAmount, setRequestAmount] = useState('');
   const [requestDueAt, setRequestDueAt] = useState('');
   const [requestMemo, setRequestMemo] = useState('');
+  const [delegatedSignatureRequestId, setDelegatedSignatureRequestId] = useState('');
+  const [delegatedSignatureDeadlineMinutes, setDelegatedSignatureDeadlineMinutes] = useState('60');
+  const [delegatedSignatureOutput, setDelegatedSignatureOutput] = useState<{
+    requestId: string;
+    nonce: string;
+    deadline: string;
+    signature: Hex;
+    signer: Address;
+  } | null>(null);
+  const [relayPaymentPayload, setRelayPaymentPayload] = useState('');
 
   const normalizedConnectedAddress = address ? getAddress(address) : undefined;
   const addressForReads = normalizedConnectedAddress ?? zeroAddress;
@@ -2172,6 +2185,135 @@ export default function App() {
     }));
   }
 
+  async function runSignDelegatedPaymentFlow(request: PaymentRequestValue, deadlineMinutes: number) {
+    resetErrors();
+
+    if (!normalizedConnectedAddress) {
+      setFormError(t('connectHint'));
+      return undefined;
+    }
+
+    try {
+      const nonce = await publicClient?.readContract({
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'paymentNonces',
+        args: [normalizedConnectedAddress],
+      });
+      if (typeof nonce !== 'bigint') {
+        throw new Error('NONCE_FETCH_FAILED');
+      }
+
+      const minutes = Number.isFinite(deadlineMinutes) && deadlineMinutes > 0 ? deadlineMinutes : 60;
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + Math.floor(minutes * 60));
+
+      const signature = await signTypedDataAsync({
+        domain: {
+          name: 'Series9Identity',
+          version: '1',
+          chainId: networkConfig.chainId,
+          verifyingContract: contracts.identityProxy,
+        },
+        types: {
+          PayPaymentRequestAuthorization: [
+            { name: 'requestId', type: 'uint256' },
+            { name: 'nonce', type: 'uint256' },
+            { name: 'deadline', type: 'uint256' },
+          ],
+        },
+        primaryType: 'PayPaymentRequestAuthorization',
+        message: {
+          requestId: request.id,
+          nonce,
+          deadline,
+        },
+      });
+
+      setDelegatedSignatureOutput({
+        requestId: request.id.toString(),
+        nonce: nonce.toString(),
+        deadline: deadline.toString(),
+        signature,
+        signer: normalizedConnectedAddress,
+      });
+      return signature;
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
+  async function runRelayPaymentFlow(rawPayload: string) {
+    resetErrors();
+
+    try {
+      const trimmed = rawPayload.trim();
+      if (trimmed.length === 0) {
+        throw new Error('EMPTY_RELAY_PAYLOAD');
+      }
+      const parsed = JSON.parse(trimmed) as Partial<{
+        requestId: string | number;
+        nonce: string | number;
+        deadline: string | number;
+        signature: string;
+      }>;
+
+      if (
+        parsed.requestId === undefined ||
+        parsed.nonce === undefined ||
+        parsed.deadline === undefined ||
+        typeof parsed.signature !== 'string' ||
+        !isHex(parsed.signature as Hex)
+      ) {
+        throw new Error('INVALID_RELAY_PAYLOAD');
+      }
+
+      const requestId = BigInt(parsed.requestId);
+      const nonce = BigInt(parsed.nonce);
+      const deadline = BigInt(parsed.deadline);
+      const signature = parsed.signature as Hex;
+
+      const requestRaw = await publicClient?.readContract({
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'paymentRequest',
+        args: [requestId],
+      });
+      const request = parsePaymentRequest(requestId, requestRaw);
+      if (!request) {
+        throw new Error('INVALID_RELAY_REQUEST');
+      }
+
+      if (request.token !== zeroAddress) {
+        const allowance = await publicClient?.readContract({
+          address: request.token,
+          abi: managedTokenAbi,
+          functionName: 'allowance',
+          args: [addressForReads, contracts.identityProxy],
+        });
+        const approved = await approvePaymentToken(request.token, request.amount, allowance);
+        if (!approved) {
+          return undefined;
+        }
+      }
+
+      const value = request.token === zeroAddress ? request.amount : 0n;
+
+      return await tx.executeSend(t('payDelegatedPaymentRequest'), {
+        to: contracts.identityProxy,
+        value,
+        data: encodeFunctionData({
+          abi: identityAbi,
+          functionName: 'payPaymentRequestWithSig',
+          args: [requestId, nonce, deadline, signature],
+        }),
+      });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
   async function submitActionModal() {
     if (!activeActionModal) {
       return;
@@ -2372,6 +2514,22 @@ export default function App() {
                   {t('cancelPaymentRequest')}
                 </button>
               </div>
+              {canPay && (
+                <div className="status-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!isConnected || onWrongChain || Boolean(identityPausedRead.data)}
+                    onClick={() => {
+                      const minutes = Number(delegatedSignatureDeadlineMinutes) || 60;
+                      void runSignDelegatedPaymentFlow(request, minutes);
+                      setDelegatedSignatureRequestId(request.id.toString());
+                    }}
+                  >
+                    {t('signDelegatedPayment')}
+                  </button>
+                </div>
+              )}
             </article>
           );
         })}
@@ -2853,6 +3011,112 @@ export default function App() {
                 </div>
               </div>
               {renderPaymentRequestList(outgoingPaymentRequests, 'outgoing')}
+            </article>
+          </section>
+
+          <section className="payment-requests-grid">
+            <article className="card">
+              <div className="section-head section-head-highlight">
+                <div>
+                  <div className="section-title section-title-inline">{t('delegatedPaymentSign')}</div>
+                  <h2>{t('delegatedPaymentSign')}</h2>
+                </div>
+              </div>
+              <p className="muted">{t('delegatedPaymentSignHint')}</p>
+              <div className="form-row">
+                <label>
+                  <span>{t('delegatedSignatureDeadlineMinutes')}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={delegatedSignatureDeadlineMinutes}
+                    onChange={(event) => setDelegatedSignatureDeadlineMinutes(event.target.value)}
+                  />
+                </label>
+              </div>
+              {delegatedSignatureOutput && (
+                <div className="metric-grid">
+                  <MetricCard label={t('delegatedSignatureRequestId')} value={`#${delegatedSignatureOutput.requestId}`} />
+                  <MetricCard label={t('delegatedSignatureNonce')} value={delegatedSignatureOutput.nonce} />
+                  <MetricCard
+                    label={t('delegatedSignatureDeadline')}
+                    value={new Date(Number(delegatedSignatureOutput.deadline) * 1000).toLocaleString()}
+                  />
+                  <MetricCard
+                    label={t('delegatedSignatureSigner')}
+                    value={shortenAddress(delegatedSignatureOutput.signer, 6)}
+                  />
+                </div>
+              )}
+              {delegatedSignatureOutput && (
+                <>
+                  <textarea
+                    readOnly
+                    value={JSON.stringify(
+                      {
+                        requestId: delegatedSignatureOutput.requestId,
+                        nonce: delegatedSignatureOutput.nonce,
+                        deadline: delegatedSignatureOutput.deadline,
+                        signature: delegatedSignatureOutput.signature,
+                      },
+                      null,
+                      2,
+                    )}
+                  />
+                  <div className="status-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        void navigator.clipboard
+                          ?.writeText(
+                            JSON.stringify({
+                              requestId: delegatedSignatureOutput.requestId,
+                              nonce: delegatedSignatureOutput.nonce,
+                              deadline: delegatedSignatureOutput.deadline,
+                              signature: delegatedSignatureOutput.signature,
+                            }),
+                          )
+                          .catch(() => undefined);
+                      }}
+                    >
+                      {t('copyDelegatedSignature')}
+                    </button>
+                  </div>
+                </>
+              )}
+              {!delegatedSignatureOutput && (
+                <p className="muted">
+                  {delegatedSignatureRequestId
+                    ? t('delegatedPaymentSignPrompt')
+                    : t('delegatedPaymentSignNoRequest')}
+                </p>
+              )}
+            </article>
+
+            <article className="card">
+              <div className="section-head section-head-highlight">
+                <div>
+                  <div className="section-title section-title-inline">{t('delegatedPaymentRelay')}</div>
+                  <h2>{t('delegatedPaymentRelay')}</h2>
+                </div>
+              </div>
+              <p className="muted">{t('delegatedPaymentRelayHint')}</p>
+              <textarea
+                value={relayPaymentPayload}
+                onChange={(event) => setRelayPaymentPayload(event.target.value)}
+                placeholder={t('delegatedPaymentRelayPlaceholder')}
+              />
+              <div className="status-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!isConnected || onWrongChain || Boolean(identityPausedRead.data)}
+                  onClick={() => void runRelayPaymentFlow(relayPaymentPayload)}
+                >
+                  {t('payDelegatedPaymentRequest')}
+                </button>
+              </div>
             </article>
           </section>
         </>
