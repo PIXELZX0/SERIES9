@@ -59,10 +59,6 @@ contract Series9StakingHarness is Series9Staking {
         _updateMonadTargets();
     }
 
-    function exposeDelegatedShareBpsFromApy(uint256 observedApy) external pure returns (uint256) {
-        return _delegatedShareBpsFromApy(observedApy);
-    }
-
     function exposeTargetDelegatedPrincipal() external view returns (uint256) {
         return _targetDelegatedPrincipal();
     }
@@ -292,8 +288,7 @@ contract Series9StakingTest is Test {
     uint256 internal constant REWARD_PER_BLOCK = 1 ether;
     uint256 internal constant CREATION_FEE = 1 ether;
     uint256 internal constant MONAD_BLOCKS_PER_YEAR = 31_536_000;
-    uint256 internal constant MONAD_DELEGATED_SHARE_FLOOR_BPS = 3_000;
-    uint256 internal constant MONAD_DELEGATED_SHARE_CEILING_BPS = 10_000;
+    uint256 internal constant MONAD_DELEGATED_SHARE_BPS = 10_000;
 
     function setUp() public {
         SER9Token ser9Implementation = new SER9Token();
@@ -1526,8 +1521,9 @@ contract Series9StakingTest is Test {
         assertEq(claimed, 1 ether);
     }
 
-    function testFirstMonadTargetSampleUsesDelegatedShareFloor() public {
+    function testRebalanceDelegatesEntireStake() public {
         staking.initializeV2();
+        staking.initializeV3();
         _installMonadPrecompileMock();
         _configureValidatorSet123456();
 
@@ -1538,14 +1534,15 @@ contract Series9StakingTest is Test {
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.cachedMonadObservedApy(), 0);
-        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_FLOOR_BPS);
-        assertEq(staking.exposeTargetDelegatedPrincipal(), 3 ether);
-        assertEq(staking.totalDelegatedMonad(), 3 ether);
-        assertEq(address(staking).balance, 7 ether);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_BPS);
+        assertEq(staking.exposeTargetDelegatedPrincipal(), 10 ether);
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+        assertEq(address(staking).balance, 0);
     }
 
     function testStakeMonadAutoDelegatesUsingExistingTargets() public {
         staking.initializeV2();
+        staking.initializeV3();
         _installMonadPrecompileMock();
         _configureValidatorSet123456();
 
@@ -1554,79 +1551,21 @@ contract Series9StakingTest is Test {
         staking.stakeMonad{value: 10 ether}();
         staking.rebalanceMonadDelegations();
 
-        assertEq(staking.totalDelegatedMonad(), 3 ether);
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
 
         vm.deal(bob, 20 ether);
         vm.prank(bob);
         staking.stakeMonad{value: 3 ether}();
 
         uint64 lastTargetValidatorId = staking.targetValidatorIds(4);
-        assertEq(staking.totalDelegatedMonad(), 3.9 ether);
-        assertEq(staking.validatorDelegatedAmount(lastTargetValidatorId), 0.78 ether);
-        assertEq(address(staking).balance, 9.1 ether);
-    }
-
-    function testHighApyCapsDelegatedShareAtCeiling() public {
-        staking.initializeV2();
-        _installMonadPrecompileMock();
-        _configureValidatorSet123456();
-
-        vm.deal(alice, 20 ether);
-        vm.prank(alice);
-        staking.stakeMonad{value: 10 ether}();
-        staking.rebalanceMonadDelegations();
-
-        _rebalanceMonadDelegationsToObservedApy(2 ether);
-
-        assertGt(staking.cachedMonadObservedApy(), 1 ether);
-        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_CEILING_BPS);
-        assertEq(staking.exposeTargetDelegatedPrincipal(), 10 ether);
-        assertEq(staking.totalDelegatedMonad(), 10 ether);
-        assertEq(address(staking).balance, 0);
-    }
-
-    function testMidrangeApyInterpolatesDelegatedShareLinearly() public {
-        staking.initializeV2();
-        _installMonadPrecompileMock();
-        _configureValidatorSet123456();
-
-        vm.deal(alice, 20 ether);
-        vm.prank(alice);
-        staking.stakeMonad{value: 10 ether}();
-        staking.rebalanceMonadDelegations();
-
-        _rebalanceMonadDelegationsToObservedApy(0.5 ether);
-
-        assertEq(staking.cachedMonadDelegatedShareBps(), 6_500);
-        assertEq(staking.exposeDelegatedShareBpsFromApy(staking.cachedMonadObservedApy()), 6_500);
-        assertEq(staking.exposeTargetDelegatedPrincipal(), 6.5 ether);
-        assertEq(staking.totalDelegatedMonad(), 6.5 ether);
-        assertEq(address(staking).balance, 3.5 ether);
-    }
-
-    function testRebalanceUndelegatesWhenDelegatedShareFalls() public {
-        staking.initializeV2();
-        _installMonadPrecompileMock();
-        _configureValidatorSet123456();
-
-        vm.deal(alice, 20 ether);
-        vm.prank(alice);
-        staking.stakeMonad{value: 10 ether}();
-        staking.rebalanceMonadDelegations();
-        _rebalanceMonadDelegationsToObservedApy(2 ether);
-
-        vm.roll(block.number + 10);
-        staking.rebalanceMonadDelegations();
-
-        assertEq(staking.cachedMonadObservedApy(), 0);
-        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_FLOOR_BPS);
-        assertEq(staking.totalDelegatedMonad(), 3 ether);
-        assertEq(staking.totalPendingUndelegateMonad(), 7 ether);
+        assertEq(staking.totalDelegatedMonad(), 13 ether);
+        assertEq(staking.validatorDelegatedAmount(lastTargetValidatorId), 2.6 ether);
         assertEq(address(staking).balance, 0);
     }
 
     function testHarvestMonadValidatorRewardsClaimsAllTrackedValidators() public {
         staking.initializeV2();
+        staking.initializeV3();
         _installMonadPrecompileMock();
         _configureValidatorSet123456();
 
@@ -1643,7 +1582,7 @@ contract Series9StakingTest is Test {
         staking.harvestMonadValidatorRewards();
 
         assertEq(staking.protocolMonadYieldAccrued(), 3 ether);
-        assertEq(address(staking).balance, 10 ether);
+        assertEq(address(staking).balance, 3 ether);
     }
 
     function testTransferExcessMonadYieldOnlyTransfersHarvestedYield() public {
@@ -1719,6 +1658,7 @@ contract Series9StakingTest is Test {
 
     function testRebalanceSelectsTopFiveAndAccruesProtocolYield() public {
         staking.initializeV2();
+        staking.initializeV3();
         _installMonadPrecompileMock();
         _configureValidatorSet123456();
 
@@ -1736,9 +1676,9 @@ contract Series9StakingTest is Test {
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.targetValidatorCount(), 5);
-        assertEq(staking.totalDelegatedMonad(), 3 ether);
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
         assertEq(staking.targetValidatorIds(0), 1);
-        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_FLOOR_BPS);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_BPS);
 
         vm.roll(block.number + 10);
         monadStakingMock.bumpValidatorAccRewardPerToken(6, 1_000 ether);
@@ -1749,9 +1689,8 @@ contract Series9StakingTest is Test {
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.protocolMonadYieldAccrued(), 1 ether);
-        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_CEILING_BPS);
-        assertEq(staking.totalDelegatedMonad(), 7.6 ether);
-        assertEq(staking.totalPendingUndelegateMonad(), 2.4 ether);
+        assertEq(staking.cachedMonadDelegatedShareBps(), MONAD_DELEGATED_SHARE_BPS);
+        assertEq(staking.totalDelegatedMonad() + staking.totalPendingUndelegateMonad(), 10 ether);
 
         bool hasValidatorSix;
         for (uint256 i = 0; i < staking.targetValidatorCount(); ++i) {

@@ -25,9 +25,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 private constant BPS_DENOMINATOR = 10_000;
     uint256 private constant MONAD_SCORE_PRECISION = 1e18;
     uint256 private constant MONAD_BLOCKS_PER_YEAR = 31_536_000;
-    uint256 private constant MONAD_DELEGATED_SHARE_FLOOR_BPS = 3_000;
-    uint256 private constant MONAD_DELEGATED_SHARE_CEILING_BPS = BPS_DENOMINATOR;
-    uint256 private constant MONAD_DELEGATED_SHARE_APY_CEILING = 1e18;
+    uint256 private constant MONAD_DELEGATED_SHARE_FLOOR_BPS = BPS_DENOMINATOR;
     uint256 private constant MONAD_TARGET_COUNT = 5;
     uint256 private constant MONAD_VALIDATOR_BATCH_LIMIT = 25;
     uint256 private constant MONAD_TICKET_BATCH_LIMIT = 25;
@@ -366,6 +364,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         if (cachedMonadDelegatedShareBps == 0) {
             cachedMonadDelegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
         }
+    }
+
+    function initializeV3() external reinitializer(3) {
+        cachedMonadDelegatedShareBps = BPS_DENOMINATOR;
     }
 
     function setRewardRatePerBlock(uint256 newRewardRatePerBlock) external onlyOwner updateReward(address(0)) {
@@ -1502,29 +1504,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return availableAmount;
     }
 
-    function _delegatedShareBpsFromApy(uint256 observedApy) internal pure returns (uint256) {
-        if (observedApy >= MONAD_DELEGATED_SHARE_APY_CEILING) {
-            return MONAD_DELEGATED_SHARE_CEILING_BPS;
-        }
-
-        return MONAD_DELEGATED_SHARE_FLOOR_BPS
-            + Math.mulDiv(
-                observedApy,
-                MONAD_DELEGATED_SHARE_CEILING_BPS - MONAD_DELEGATED_SHARE_FLOOR_BPS,
-                MONAD_DELEGATED_SHARE_APY_CEILING
-            );
-    }
-
     function _targetDelegatedPrincipal() internal view returns (uint256) {
-        uint256 delegatedShareBps = cachedMonadDelegatedShareBps;
-        if (delegatedShareBps == 0) {
-            delegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
-        }
-        if (delegatedShareBps >= BPS_DENOMINATOR) {
-            return totalMonadStaked;
-        }
-
-        return Math.mulDiv(totalMonadStaked, delegatedShareBps, BPS_DENOMINATOR);
+        return totalMonadStaked;
     }
 
     function _autoDelegateMonadStake() internal {
@@ -2069,7 +2050,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         cachedMonadObservedApy = 0;
-        cachedMonadDelegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
 
         for (uint256 i = 0; i < MONAD_TARGET_COUNT; ++i) {
             targetValidatorIds[i] = 0;
@@ -2115,7 +2095,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
             cachedMonadObservedApy =
                 Math.mulDiv(weightedPortfolioScore, MONAD_BLOCKS_PER_YEAR, MONAD_SCORE_PRECISION);
-            cachedMonadDelegatedShareBps = _delegatedShareBpsFromApy(cachedMonadObservedApy);
         }
 
         targetValidatorCount = SafeCast.toUint8(selectedCount);
