@@ -75,12 +75,100 @@ jobs:
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
           echo "ref_slug=$REF_SLUG" >> "$GITHUB_OUTPUT"
 
+      - name: Detect contracts requiring upgrade
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # EIP-1967 implementation slot
+          IMPL_SLOT=0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
+
+          normalize_bytecode() {
+            local raw="$1"
+            printf '%s' "${raw#0x}" | tr 'A-F' 'a-f'
+          }
+
+          read_impl_address() {
+            local proxy="$1"
+            local raw
+            raw="$(cast storage "$proxy" "$IMPL_SLOT" --rpc-url "$MONAD_RPC_URL")"
+            # bytes32 -> address: take last 20 bytes (40 hex chars), drop "0x" + 24 leading-zero hex chars
+            printf '0x%s' "${raw:26}"
+          }
+
+          bytecode_matches() {
+            local impl="$1"
+            local artifact="$2"
+            local onchain local_bc
+            onchain="$(cast code "$impl" --rpc-url "$MONAD_RPC_URL")"
+            local_bc="$(jq -r '.deployedBytecode.object' "$artifact")"
+            [[ "$(normalize_bytecode "$onchain")" == "$(normalize_bytecode "$local_bc")" ]]
+          }
+
+          decide_deploy() {
+            local impl="$1"
+            local artifact="$2"
+            if [[ -z "$impl" || "$impl" == "0x" || "$impl" == "0x0000000000000000000000000000000000000000" ]]; then
+              echo true
+              return
+            fi
+            if bytecode_matches "$impl" "$artifact"; then
+              echo false
+            else
+              echo true
+            fi
+          }
+
+          STAKING_CURRENT_IMPL="$(read_impl_address "$STAKING_PROXY")"
+          DEPLOY_STAKING="$(decide_deploy "$STAKING_CURRENT_IMPL" out/Series9Staking.sol/Series9Staking.json)"
+
+          SER9_PROXY="$(cast call "$STAKING_PROXY" "ser9()(address)" --rpc-url "$MONAD_RPC_URL")"
+          SER9_CURRENT_IMPL="$(read_impl_address "$SER9_PROXY")"
+          DEPLOY_SER9="$(decide_deploy "$SER9_CURRENT_IMPL" out/SER9Token.sol/SER9Token.json)"
+
+          MANAGED_CURRENT_IMPL="$(cast call "$STAKING_PROXY" "managedTokenImplementation()(address)" --rpc-url "$MONAD_RPC_URL")"
+          DEPLOY_MANAGED="$(decide_deploy "$MANAGED_CURRENT_IMPL" out/Series9ManagedToken.sol/Series9ManagedToken.json)"
+
+          DEPLOY_IDENTITY=false
+          IDENTITY_CURRENT_IMPL=""
+          if [[ -n "${IDENTITY_PROXY:-}" ]]; then
+            IDENTITY_CURRENT_IMPL="$(read_impl_address "$IDENTITY_PROXY")"
+            DEPLOY_IDENTITY="$(decide_deploy "$IDENTITY_CURRENT_IMPL" out/Series9Identity.sol/Series9Identity.json)"
+          fi
+
+          {
+            echo "deploy_staking=$DEPLOY_STAKING"
+            echo "deploy_ser9=$DEPLOY_SER9"
+            echo "deploy_managed=$DEPLOY_MANAGED"
+            echo "deploy_identity=$DEPLOY_IDENTITY"
+            echo "staking_current_impl=$STAKING_CURRENT_IMPL"
+            echo "ser9_proxy=$SER9_PROXY"
+            echo "ser9_current_impl=$SER9_CURRENT_IMPL"
+            echo "managed_current_impl=$MANAGED_CURRENT_IMPL"
+            echo "identity_current_impl=$IDENTITY_CURRENT_IMPL"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Contract change detection"
+            echo "- Staking: deploy=\`$DEPLOY_STAKING\` (current=\`$STAKING_CURRENT_IMPL\`)"
+            echo "- SER9: deploy=\`$DEPLOY_SER9\` (current=\`$SER9_CURRENT_IMPL\`)"
+            echo "- ManagedToken: deploy=\`$DEPLOY_MANAGED\` (current=\`$MANAGED_CURRENT_IMPL\`)"
+            if [[ -n "${IDENTITY_PROXY:-}" ]]; then
+              echo "- Identity: deploy=\`$DEPLOY_IDENTITY\` (current=\`$IDENTITY_CURRENT_IMPL\`)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Deploy implementations and generate Safe Transaction Builder JSON
         id: deploy
         env:
           FOUNDRY_PROFILE: deploy
           SKIP_VERIFY_INPUT: ${{ vars.SKIP_VERIFY }}
           MONADVISION_VERIFIER_URL: https://sourcify-api-monad.blockvision.org/api
+          DEPLOY_STAKING: ${{ steps.detect.outputs.deploy_staking }}
+          DEPLOY_SER9: ${{ steps.detect.outputs.deploy_ser9 }}
+          DEPLOY_MANAGED: ${{ steps.detect.outputs.deploy_managed }}
+          DEPLOY_IDENTITY: ${{ steps.detect.outputs.deploy_identity }}
         run: |
           set -euo pipefail
 
@@ -114,65 +202,79 @@ jobs:
             REF_SLUG="run-${GITHUB_RUN_ID}"
           fi
 
-          echo "Deploying Staking implementation..."
-          STAKING_DEPLOY_JSON="$(forge create src/Series9Staking.sol:Series9Staking \
-            --rpc-url "$MONAD_RPC_URL" \
-            --private-key "$PRIVATE_KEY" \
-            --broadcast \
-            --json)"
-          STAKING_IMPL="$(echo "$STAKING_DEPLOY_JSON" | jq -r '.deployedTo')"
-          STAKING_TX_HASH="$(echo "$STAKING_DEPLOY_JSON" | jq -r '.transactionHash')"
-
-          echo "Deploying SER9 implementation..."
-          SER9_DEPLOY_JSON="$(forge create src/SER9Token.sol:SER9Token \
-            --rpc-url "$MONAD_RPC_URL" \
-            --private-key "$PRIVATE_KEY" \
-            --broadcast \
-            --json)"
-          SER9_IMPL="$(echo "$SER9_DEPLOY_JSON" | jq -r '.deployedTo')"
-          SER9_TX_HASH="$(echo "$SER9_DEPLOY_JSON" | jq -r '.transactionHash')"
-
-          echo "Deploying ManagedToken implementation..."
-          MANAGED_DEPLOY_JSON="$(forge create src/Series9ManagedToken.sol:Series9ManagedToken \
-            --rpc-url "$MONAD_RPC_URL" \
-            --broadcast \
-            --private-key "$PRIVATE_KEY" \
-            --json)"
-          MANAGED_IMPL="$(echo "$MANAGED_DEPLOY_JSON" | jq -r '.deployedTo')"
-          MANAGED_TX_HASH="$(echo "$MANAGED_DEPLOY_JSON" | jq -r '.transactionHash')"
-
+          STAKING_IMPL=""
+          STAKING_TX_HASH=""
+          SER9_IMPL=""
+          SER9_TX_HASH=""
+          MANAGED_IMPL=""
+          MANAGED_TX_HASH=""
           IDENTITY_IMPL=""
           IDENTITY_TX_HASH=""
-          IDENTITY_UPGRADE_CALLDATA=""
 
-          if [[ -n "${IDENTITY_PROXY:-}" ]]; then
+          parse_deploy_address() {
+            local label="$1"
+            local json="$2"
+            local addr
+            addr="$(echo "$json" | jq -r '.deployedTo')"
+            if [[ -z "$addr" || "$addr" == "null" ]]; then
+              echo "Failed to parse deployed $label implementation address" >&2
+              exit 1
+            fi
+            echo "$addr"
+          }
+
+          if [[ "$DEPLOY_STAKING" == "true" ]]; then
+            echo "Deploying Staking implementation..."
+            STAKING_DEPLOY_JSON="$(forge create src/Series9Staking.sol:Series9Staking \
+              --rpc-url "$MONAD_RPC_URL" \
+              --private-key "$PRIVATE_KEY" \
+              --broadcast \
+              --json)"
+            STAKING_IMPL="$(parse_deploy_address Staking "$STAKING_DEPLOY_JSON")"
+            STAKING_TX_HASH="$(echo "$STAKING_DEPLOY_JSON" | jq -r '.transactionHash')"
+          else
+            echo "Staking implementation matches on-chain bytecode; skipping deploy."
+          fi
+
+          if [[ "$DEPLOY_SER9" == "true" ]]; then
+            echo "Deploying SER9 implementation..."
+            SER9_DEPLOY_JSON="$(forge create src/SER9Token.sol:SER9Token \
+              --rpc-url "$MONAD_RPC_URL" \
+              --private-key "$PRIVATE_KEY" \
+              --broadcast \
+              --json)"
+            SER9_IMPL="$(parse_deploy_address SER9 "$SER9_DEPLOY_JSON")"
+            SER9_TX_HASH="$(echo "$SER9_DEPLOY_JSON" | jq -r '.transactionHash')"
+          else
+            echo "SER9 implementation matches on-chain bytecode; skipping deploy."
+          fi
+
+          if [[ "$DEPLOY_MANAGED" == "true" ]]; then
+            echo "Deploying ManagedToken implementation..."
+            MANAGED_DEPLOY_JSON="$(forge create src/Series9ManagedToken.sol:Series9ManagedToken \
+              --rpc-url "$MONAD_RPC_URL" \
+              --broadcast \
+              --private-key "$PRIVATE_KEY" \
+              --json)"
+            MANAGED_IMPL="$(parse_deploy_address ManagedToken "$MANAGED_DEPLOY_JSON")"
+            MANAGED_TX_HASH="$(echo "$MANAGED_DEPLOY_JSON" | jq -r '.transactionHash')"
+          else
+            echo "ManagedToken implementation matches on-chain bytecode; skipping deploy."
+          fi
+
+          if [[ -n "${IDENTITY_PROXY:-}" && "$DEPLOY_IDENTITY" == "true" ]]; then
             echo "Deploying Identity implementation..."
             IDENTITY_DEPLOY_JSON="$(forge create src/Series9Identity.sol:Series9Identity \
               --rpc-url "$MONAD_RPC_URL" \
               --broadcast \
               --private-key "$PRIVATE_KEY" \
               --json)"
-            IDENTITY_IMPL="$(echo "$IDENTITY_DEPLOY_JSON" | jq -r '.deployedTo')"
+            IDENTITY_IMPL="$(parse_deploy_address Identity "$IDENTITY_DEPLOY_JSON")"
             IDENTITY_TX_HASH="$(echo "$IDENTITY_DEPLOY_JSON" | jq -r '.transactionHash')"
-          else
+          elif [[ -z "${IDENTITY_PROXY:-}" ]]; then
             echo "IDENTITY_PROXY is not set; skipping Identity implementation deployment and upgrade transaction."
-          fi
-
-          if [[ -z "$SER9_IMPL" || "$SER9_IMPL" == "null" ]]; then
-            echo "Failed to parse deployed SER9 implementation address" >&2
-            exit 1
-          fi
-          if [[ -z "$STAKING_IMPL" || "$STAKING_IMPL" == "null" ]]; then
-            echo "Failed to parse deployed staking implementation address" >&2
-            exit 1
-          fi
-          if [[ -z "$MANAGED_IMPL" || "$MANAGED_IMPL" == "null" ]]; then
-            echo "Failed to parse deployed managed implementation address" >&2
-            exit 1
-          fi
-          if [[ -n "${IDENTITY_PROXY:-}" && ( -z "$IDENTITY_IMPL" || "$IDENTITY_IMPL" == "null" ) ]]; then
-            echo "Failed to parse deployed identity implementation address" >&2
-            exit 1
+          else
+            echo "Identity implementation matches on-chain bytecode; skipping deploy."
           fi
 
           VERIFICATION_STATUS="skipped"
@@ -200,103 +302,121 @@ jobs:
           }
 
           if [[ "$SKIP_VERIFY" == "false" ]]; then
-            echo "Verifying contracts on MonadVision via Sourcify..."
-            VERIFICATION_STATUS="success"
-            verify_contract "$STAKING_IMPL" src/Series9Staking.sol:Series9Staking "Series9Staking"
-            verify_contract "$SER9_IMPL" src/SER9Token.sol:SER9Token "SER9Token"
-            verify_contract "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken "Series9ManagedToken"
+            VERIFIED_ANY=false
+            if [[ -n "$STAKING_IMPL" ]]; then
+              echo "Verifying Staking on MonadVision via Sourcify..."
+              VERIFIED_ANY=true
+              verify_contract "$STAKING_IMPL" src/Series9Staking.sol:Series9Staking "Series9Staking"
+            fi
+            if [[ -n "$SER9_IMPL" ]]; then
+              echo "Verifying SER9 on MonadVision via Sourcify..."
+              VERIFIED_ANY=true
+              verify_contract "$SER9_IMPL" src/SER9Token.sol:SER9Token "SER9Token"
+            fi
+            if [[ -n "$MANAGED_IMPL" ]]; then
+              echo "Verifying ManagedToken on MonadVision via Sourcify..."
+              VERIFIED_ANY=true
+              verify_contract "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken "Series9ManagedToken"
+            fi
             if [[ -n "$IDENTITY_IMPL" ]]; then
+              echo "Verifying Identity on MonadVision via Sourcify..."
+              VERIFIED_ANY=true
               verify_contract "$IDENTITY_IMPL" src/Series9Identity.sol:Series9Identity "Series9Identity"
             fi
 
-            if [[ -n "$VERIFICATION_FAILURES" ]]; then
-              VERIFICATION_STATUS="partial_failure"
+            if [[ "$VERIFIED_ANY" == "true" ]]; then
+              if [[ -n "$VERIFICATION_FAILURES" ]]; then
+                VERIFICATION_STATUS="partial_failure"
+              else
+                VERIFICATION_STATUS="success"
+              fi
+            else
+              VERIFICATION_STATUS="not_required"
             fi
           else
             echo "Skipping verification (SKIP_VERIFY=true)."
           fi
 
-          STAKING_UPGRADE_CALLDATA="$(cast calldata \
-            "upgradeToAndCall(address,bytes)" \
-            "$STAKING_IMPL" \
-            "$STAKING_DATA")"
+          TX_ARRAY="[]"
+          DESCRIPTION_PARTS=""
 
-          UPGRADE_SER9_CALLDATA="$(cast calldata \
-            "upgradeSer9(address,bytes)" \
-            "$SER9_IMPL" \
-            "$SER9_DATA")"
+          append_description() {
+            if [[ -n "$DESCRIPTION_PARTS" ]]; then
+              DESCRIPTION_PARTS="${DESCRIPTION_PARTS}, $1"
+            else
+              DESCRIPTION_PARTS="$1"
+            fi
+          }
 
-          SET_MANAGED_IMPL_CALLDATA="$(cast calldata \
-            "setManagedTokenImplementation(address)" \
-            "$MANAGED_IMPL")"
+          if [[ -n "$STAKING_IMPL" ]]; then
+            STAKING_UPGRADE_CALLDATA="$(cast calldata \
+              "upgradeToAndCall(address,bytes)" \
+              "$STAKING_IMPL" \
+              "$STAKING_DATA")"
+            TX_ARRAY="$(echo "$TX_ARRAY" | jq \
+              --arg to "$STAKING_PROXY" \
+              --arg data "$STAKING_UPGRADE_CALLDATA" \
+              '. + [{"to": $to, "value": "0", "data": $data}]')"
+            append_description "Staking"
+          fi
+
+          if [[ -n "$SER9_IMPL" ]]; then
+            UPGRADE_SER9_CALLDATA="$(cast calldata \
+              "upgradeSer9(address,bytes)" \
+              "$SER9_IMPL" \
+              "$SER9_DATA")"
+            TX_ARRAY="$(echo "$TX_ARRAY" | jq \
+              --arg to "$STAKING_PROXY" \
+              --arg data "$UPGRADE_SER9_CALLDATA" \
+              '. + [{"to": $to, "value": "0", "data": $data}]')"
+            append_description "SER9"
+          fi
+
+          if [[ -n "$MANAGED_IMPL" ]]; then
+            SET_MANAGED_IMPL_CALLDATA="$(cast calldata \
+              "setManagedTokenImplementation(address)" \
+              "$MANAGED_IMPL")"
+            TX_ARRAY="$(echo "$TX_ARRAY" | jq \
+              --arg to "$STAKING_PROXY" \
+              --arg data "$SET_MANAGED_IMPL_CALLDATA" \
+              '. + [{"to": $to, "value": "0", "data": $data}]')"
+            append_description "ManagedToken"
+          fi
 
           if [[ -n "$IDENTITY_IMPL" ]]; then
             IDENTITY_UPGRADE_CALLDATA="$(cast calldata \
               "upgradeToAndCall(address,bytes)" \
               "$IDENTITY_IMPL" \
               "$IDENTITY_DATA")"
+            TX_ARRAY="$(echo "$TX_ARRAY" | jq \
+              --arg to "$IDENTITY_PROXY" \
+              --arg data "$IDENTITY_UPGRADE_CALLDATA" \
+              '. + [{"to": $to, "value": "0", "data": $data}]')"
+            append_description "Identity"
           fi
 
-          SAFE_JSON_OUT="safe-tx-upgrade-all-${REF_SLUG}.json"
+          TX_COUNT="$(echo "$TX_ARRAY" | jq 'length')"
+          DESCRIPTION="No contract changes detected."
+          if [[ "$TX_COUNT" != "0" ]]; then
+            DESCRIPTION="Upgrade ${DESCRIPTION_PARTS}."
+          fi
+
+          SAFE_JSON_OUT="safe-tx-upgrade-${REF_SLUG}.json"
           jq -n \
             --arg chainId "143" \
-            --arg to "$STAKING_PROXY" \
-            --arg identityTo "${IDENTITY_PROXY:-}" \
-            --arg stakingData "$STAKING_UPGRADE_CALLDATA" \
-            --arg ser9Data "$UPGRADE_SER9_CALLDATA" \
-            --arg managedImplData "$SET_MANAGED_IMPL_CALLDATA" \
-            --arg identityData "$IDENTITY_UPGRADE_CALLDATA" \
-            '[
-              {
-                "to": $to,
-                "value": "0",
-                "data": $stakingData
-              },
-              {
-                "to": $to,
-                "value": "0",
-                "data": $ser9Data
-              },
-              {
-                "to": $to,
-                "value": "0",
-                "data": $managedImplData
-              }
-            ] as $baseTransactions
-            | (
-              if $identityData == "" then
-                $baseTransactions
-              else
-                $baseTransactions + [
-                  {
-                    "to": $identityTo,
-                    "value": "0",
-                    "data": $identityData
-                  }
-                ]
-              end
-            ) as $transactions
-            | {
+            --arg description "$DESCRIPTION" \
+            --argjson transactions "$TX_ARRAY" \
+            '{
               "version": "1.0",
               "chainId": $chainId,
               "meta": {
-                "name": "Series9 Upgrade All",
-                "description": (
-                  if $identityData == "" then
-                    "Upgrade Staking and SER9, then set the latest managed token implementation"
-                  else
-                    "Upgrade Staking, SER9, and Identity, then set the latest managed token implementation"
-                  end
-                )
+                "name": "Series9 Upgrade",
+                "description": $description
               },
               "transactions": $transactions
             }' > "$SAFE_JSON_OUT"
 
-          EXPECTED_TX_COUNT=3
-          if [[ -n "$IDENTITY_UPGRADE_CALLDATA" ]]; then
-            EXPECTED_TX_COUNT=4
-          fi
-          jq -e --argjson expected "$EXPECTED_TX_COUNT" '.transactions | length == $expected' "$SAFE_JSON_OUT" >/dev/null
+          jq -e --argjson expected "$TX_COUNT" '.transactions | length == $expected' "$SAFE_JSON_OUT" >/dev/null
 
           RUN_FILE="release-deploy-${REF_SLUG}.json"
           jq -n \
@@ -311,43 +431,45 @@ jobs:
             --arg ser9TxHash "$SER9_TX_HASH" \
             --arg managedTxHash "$MANAGED_TX_HASH" \
             --arg identityTxHash "$IDENTITY_TX_HASH" \
+            --arg deployStaking "$DEPLOY_STAKING" \
+            --arg deploySer9 "$DEPLOY_SER9" \
+            --arg deployManaged "$DEPLOY_MANAGED" \
+            --arg deployIdentity "$DEPLOY_IDENTITY" \
             --arg safeJson "$SAFE_JSON_OUT" \
             --arg skipVerify "$SKIP_VERIFY" \
             --arg verificationStatus "$VERIFICATION_STATUS" \
             --arg verificationFailures "$VERIFICATION_FAILURES" \
+            --argjson txCount "$TX_COUNT" \
             --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{
               "staking": {
                 "address": $stakingImpl,
-                "txHash": $stakingTxHash
+                "txHash": $stakingTxHash,
+                "deployed": ($deployStaking == "true")
               },
               "ser9": {
                 "address": $ser9Impl,
-                "txHash": $ser9TxHash
+                "txHash": $ser9TxHash,
+                "deployed": ($deploySer9 == "true")
               },
               "managedToken": {
                 "address": $managedImpl,
-                "txHash": $managedTxHash
+                "txHash": $managedTxHash,
+                "deployed": ($deployManaged == "true")
+              },
+              "identity": {
+                "address": $identityImpl,
+                "txHash": $identityTxHash,
+                "deployed": ($deployIdentity == "true")
               }
-            } as $baseImplementations
-            | (
-              if $identityImpl == "" then
-                $baseImplementations
-              else
-                $baseImplementations + {
-                  "identity": {
-                    "address": $identityImpl,
-                    "txHash": $identityTxHash
-                  }
-                }
-              end
-            ) as $implementations
+            } as $implementations
             | {
               "chainId": $chainId,
               "stakingProxy": $stakingProxy,
               "identityProxy": $identityProxy,
               "implementations": $implementations,
               "safeTxJson": $safeJson,
+              "txCount": $txCount,
               "skipVerify": $skipVerify,
               "verificationStatus": $verificationStatus,
               "verificationFailures": $verificationFailures,
@@ -364,6 +486,7 @@ jobs:
           echo "ser9_impl=$SER9_IMPL" >> "$GITHUB_OUTPUT"
           echo "managed_impl=$MANAGED_IMPL" >> "$GITHUB_OUTPUT"
           echo "identity_impl=$IDENTITY_IMPL" >> "$GITHUB_OUTPUT"
+          echo "tx_count=$TX_COUNT" >> "$GITHUB_OUTPUT"
           echo "verification_status=$VERIFICATION_STATUS" >> "$GITHUB_OUTPUT"
           echo "verification_failures=$VERIFICATION_FAILURES" >> "$GITHUB_OUTPUT"
 
@@ -393,20 +516,37 @@ jobs:
             echo ""
             echo "- Release: \`${{ github.ref_name }}\`"
             echo "- Staking Proxy: \`${STAKING_PROXY}\`"
-            echo "- New Staking implementation: \`${{ steps.deploy.outputs.staking_impl }}\`"
-            echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
-            echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
-            if [[ -n "${{ steps.deploy.outputs.identity_impl }}" ]]; then
-              echo "- Identity Proxy: \`${IDENTITY_PROXY}\`"
-              echo "- New Identity implementation: \`${{ steps.deploy.outputs.identity_impl }}\`"
+            if [[ "${{ steps.detect.outputs.deploy_staking }}" == "true" ]]; then
+              echo "- New Staking implementation: \`${{ steps.deploy.outputs.staking_impl }}\`"
+            else
+              echo "- Staking implementation unchanged (current: \`${{ steps.detect.outputs.staking_current_impl }}\`)"
             fi
+            if [[ "${{ steps.detect.outputs.deploy_ser9 }}" == "true" ]]; then
+              echo "- New SER9 implementation: \`${{ steps.deploy.outputs.ser9_impl }}\`"
+            else
+              echo "- SER9 implementation unchanged (current: \`${{ steps.detect.outputs.ser9_current_impl }}\`)"
+            fi
+            if [[ "${{ steps.detect.outputs.deploy_managed }}" == "true" ]]; then
+              echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
+            else
+              echo "- ManagedToken implementation unchanged (current: \`${{ steps.detect.outputs.managed_current_impl }}\`)"
+            fi
+            if [[ -n "${IDENTITY_PROXY:-}" ]]; then
+              echo "- Identity Proxy: \`${IDENTITY_PROXY}\`"
+              if [[ "${{ steps.detect.outputs.deploy_identity }}" == "true" ]]; then
+                echo "- New Identity implementation: \`${{ steps.deploy.outputs.identity_impl }}\`"
+              else
+                echo "- Identity implementation unchanged (current: \`${{ steps.detect.outputs.identity_current_impl }}\`)"
+              fi
+            fi
+            echo "- Safe transactions queued: \`${{ steps.deploy.outputs.tx_count }}\`"
             echo "- Verification provider: \`MonadVision (Sourcify)\`"
             echo "- Verification URL: \`https://sourcify-api-monad.blockvision.org/api\`"
-             echo "- Verification status: \`${{ steps.deploy.outputs.verification_status }}\`"
-             if [[ -n "${{ steps.deploy.outputs.verification_failures }}" ]]; then
-               echo "- Verification failures: \`${{ steps.deploy.outputs.verification_failures }}\`"
-              fi
-             echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
-             echo "- ABI JSON directory: \`${{ steps.abi.outputs.abi_dir }}\`"
-             echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
-           } >> "$GITHUB_STEP_SUMMARY"
+            echo "- Verification status: \`${{ steps.deploy.outputs.verification_status }}\`"
+            if [[ -n "${{ steps.deploy.outputs.verification_failures }}" ]]; then
+              echo "- Verification failures: \`${{ steps.deploy.outputs.verification_failures }}\`"
+            fi
+            echo "- Safe Transaction Builder JSON: \`${{ steps.deploy.outputs.safe_json }}\`"
+            echo "- ABI JSON directory: \`${{ steps.abi.outputs.abi_dir }}\`"
+            echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
+          } >> "$GITHUB_STEP_SUMMARY"
