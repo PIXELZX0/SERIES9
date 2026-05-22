@@ -7,6 +7,18 @@ contract Series9IdentityRenderer {
     uint8 private constant ENTITY_HUMAN = 0;
     uint8 private constant ENTITY_AI = 1;
 
+    /// @notice 8-slot character avatar configuration. Each field accepts values 0..7.
+    struct AvatarConfig {
+        uint8 skinTone;
+        uint8 hairStyle;
+        uint8 hairColor;
+        uint8 eyes;
+        uint8 mouth;
+        uint8 outfit;
+        uint8 accessory;
+        uint8 background;
+    }
+
     struct RenderProfile {
         string name;
         string bio;
@@ -17,7 +29,7 @@ contract Series9IdentityRenderer {
         uint64 registeredAt;
         uint256 reputationScore;
         string handle;
-        string avatarSeed;
+        AvatarConfig avatar;
     }
 
     function _renderTokenURI(
@@ -31,7 +43,7 @@ contract Series9IdentityRenderer {
         uint64 registeredAt,
         uint256 reputationScore,
         string memory handle,
-        string memory avatarSeed
+        AvatarConfig memory avatar
     ) internal pure returns (string memory) {
         RenderProfile memory p = RenderProfile({
             name: name,
@@ -43,18 +55,14 @@ contract Series9IdentityRenderer {
             registeredAt: registeredAt,
             reputationScore: reputationScore,
             handle: handle,
-            avatarSeed: avatarSeed
+            avatar: avatar
         });
 
         string memory svg = _generateSVG(tokenId, p);
 
-        string memory json = string(
+        string memory baseAttrs = string(
             abi.encodePacked(
-                '{"name":"',
-                _escapeJson(p.name),
-                '","description":"Series9 Identity NFT","image":"data:image/svg+xml;base64,',
-                _base64Encode(bytes(svg)),
-                '","attributes":[{"trait_type":"Entity Type","value":"',
+                '{"trait_type":"Entity Type","value":"',
                 p.entityType == ENTITY_AI ? "AI" : "Human",
                 '"},{"trait_type":"Verified","value":"',
                 p.verified ? "true" : "false",
@@ -66,11 +74,49 @@ contract Series9IdentityRenderer {
                 _uint2str(p.reputationScore),
                 '"},{"trait_type":"Handle","value":"',
                 _escapeJson(p.handle),
-                '"}]}'
+                '"}'
+            )
+        );
+
+        string memory json = string(
+            abi.encodePacked(
+                '{"name":"',
+                _escapeJson(p.name),
+                '","description":"Series9 Identity NFT","image":"data:image/svg+xml;base64,',
+                _base64Encode(bytes(svg)),
+                '","attributes":[',
+                baseAttrs,
+                ",",
+                _avatarTraits(p.avatar),
+                "]}"
             )
         );
 
         return string(abi.encodePacked("data:application/json;base64,", _base64Encode(bytes(json))));
+    }
+
+    function _avatarTraits(AvatarConfig memory a) internal pure returns (string memory) {
+        return string(
+            abi.encodePacked(
+                '{"trait_type":"Skin Tone","value":"',
+                _skinToneName(a.skinTone),
+                '"},{"trait_type":"Hair Style","value":"',
+                _hairStyleName(a.hairStyle),
+                '"},{"trait_type":"Hair Color","value":"',
+                _hairColorName(a.hairColor),
+                '"},{"trait_type":"Eyes","value":"',
+                _eyesName(a.eyes),
+                '"},{"trait_type":"Mouth","value":"',
+                _mouthName(a.mouth),
+                '"},{"trait_type":"Outfit","value":"',
+                _outfitName(a.outfit),
+                '"},{"trait_type":"Accessory","value":"',
+                _accessoryName(a.accessory),
+                '"},{"trait_type":"Background","value":"',
+                _backgroundName(a.background),
+                '"}'
+            )
+        );
     }
 
     function _generateSVG(uint256 tokenId, RenderProfile memory p) internal pure returns (string memory) {
@@ -85,7 +131,7 @@ contract Series9IdentityRenderer {
                 _svgHead(tokenId, primary, dark, light, accent, bloomOpacity),
                 _entityBadge(p.entityType),
                 _verifiedBadge(p.verified),
-                _generateAvatarPattern(tokenId, p),
+                _renderCharacter(p),
                 _svgBody(tokenId, p, light)
             )
         );
@@ -270,9 +316,10 @@ contract Series9IdentityRenderer {
         );
     }
 
-    function _generateAvatarPattern(uint256 tokenId, RenderProfile memory p) internal pure returns (string memory) {
-        uint256 seed = uint256(keccak256(abi.encodePacked(tokenId, p.hue, p.saturation, p.registeredAt, p.avatarSeed)));
-
+    /// @notice Compose the 88x88 character avatar from layered slot renderers.
+    /// @dev Avatar lives inside the SVG defs clip `avClip` at (24, 62) of the parent canvas.
+    function _renderCharacter(RenderProfile memory p) internal pure returns (string memory) {
+        AvatarConfig memory a = p.avatar;
         return string(
             abi.encodePacked(
                 "<g>",
@@ -281,110 +328,572 @@ contract Series9IdentityRenderer {
                 '" opacity=".22"/>',
                 '<rect x="24" y="62" width="88" height="88" rx="18" fill="url(#avBg)"/>',
                 '<g clip-path="url(#avClip)">',
-                _constellation(seed, _colorFromHue(p.hue, 2)),
-                _entityGlyph(p.entityType),
+                _renderBackground(a.background, p.hue),
+                _renderBody(a.skinTone, a.outfit),
+                _renderMouth(a.mouth),
+                _renderEyes(a.eyes),
+                _renderHair(a.hairStyle, a.hairColor),
+                _renderAccessory(a.accessory),
                 "</g>",
                 '<rect x="24" y="62" width="88" height="88" rx="18" fill="none" stroke="#ffffff" stroke-opacity=".22" stroke-width="1"/>',
-                _avatarCornerMarks(),
                 "</g>"
             )
         );
     }
 
-    function _avatarCornerMarks() internal pure returns (string memory) {
-        return string(
-            abi.encodePacked(
-                '<g stroke="#ffffff" stroke-opacity=".55" stroke-width="1" stroke-linecap="round" fill="none">',
-                '<path d="M28 66h6M28 66v6"/>',
-                '<path d="M108 66h-6M108 66v6"/>',
-                '<path d="M28 148h6M28 148v-6"/>',
-                '<path d="M108 148h-6M108 148v-6"/>',
-                "</g>"
-            )
-        );
+    // ─────────────────── Avatar palettes ───────────────────
+
+    /// @dev Skin tone palette. 0=light, 1=tan, 2=brown, 3=dark, 4=olive, 5=pink, 6=alien green, 7=robot gray.
+    function _skinColor(uint8 tone) internal pure returns (string memory) {
+        if (tone == 0) return "#ffe0bd";
+        if (tone == 1) return "#f1c27d";
+        if (tone == 2) return "#c68642";
+        if (tone == 3) return "#8d5524";
+        if (tone == 4) return "#d4a373";
+        if (tone == 5) return "#ffc1cc";
+        if (tone == 6) return "#9ee493";
+        return "#b0bec5"; // robot
     }
 
-    function _constellation(uint256 seed, string memory dotColor) internal pure returns (string memory) {
-        string memory stars = "";
-        uint256[8] memory xs;
-        uint256[8] memory ys;
+    function _hairColorHex(uint8 c) internal pure returns (string memory) {
+        if (c == 0) return "#1a1a1a";
+        if (c == 1) return "#6f4e37";
+        if (c == 2) return "#f0e68c";
+        if (c == 3) return "#c1440e";
+        if (c == 4) return "#808080";
+        if (c == 5) return "#f5f5f5";
+        if (c == 6) return "#3b82f6";
+        return "#8b5cf6";
+    }
 
-        for (uint8 i = 0; i < 8; i++) {
-            seed = _nextSeed(seed);
-            uint256 cx = 32 + ((seed >> 8) % 72);
-            uint256 cy = 70 + ((seed >> 16) % 72);
-            uint256 r = 1 + ((seed >> 24) % 3);
-            xs[i] = cx;
-            ys[i] = cy;
+    function _outfitColor(uint8 o) internal pure returns (string memory) {
+        if (o == 0) return "#3b82f6"; // tee
+        if (o == 1) return "#22c55e"; // hoodie
+        if (o == 2) return "#1e293b"; // suit
+        if (o == 3) return "#ef4444"; // tank
+        if (o == 4) return "#9333ea"; // jacket
+        if (o == 5) return "#ec4899"; // dress
+        if (o == 6) return "#94a3b8"; // armor
+        return "#64748b"; // none/bare neutral
+    }
 
-            stars = string(
+    // ─────────────────── Avatar layers ───────────────────
+
+    function _renderBackground(uint8 opt, uint8 hue) internal pure returns (string memory) {
+        string memory primary = _colorFromHue(hue, 0);
+        string memory light = _colorFromHue(hue, 2);
+
+        if (opt == 0) {
+            return string(abi.encodePacked('<rect x="24" y="62" width="88" height="88" fill="', primary, '" opacity=".55"/>'));
+        }
+        if (opt == 1) {
+            return string(
                 abi.encodePacked(
-                    stars,
-                    '<circle cx="',
-                    _uint2str(cx),
-                    '" cy="',
-                    _uint2str(cy),
-                    '" r="',
-                    _uint2str(r),
-                    '" fill="',
-                    dotColor,
-                    '" opacity=".85"/>'
+                    '<rect x="24" y="62" width="88" height="44" fill="',
+                    light,
+                    '" opacity=".55"/>',
+                    '<rect x="24" y="106" width="88" height="44" fill="',
+                    primary,
+                    '" opacity=".55"/>'
                 )
             );
         }
-
-        string memory link = string(
-            abi.encodePacked(
-                '<path d="M',
-                _uint2str(xs[0]),
-                " ",
-                _uint2str(ys[0]),
-                "L",
-                _uint2str(xs[1]),
-                " ",
-                _uint2str(ys[1]),
-                "L",
-                _uint2str(xs[2]),
-                " ",
-                _uint2str(ys[2]),
-                "L",
-                _uint2str(xs[3]),
-                " ",
-                _uint2str(ys[3]),
-                '" stroke="',
-                dotColor,
-                '" stroke-opacity=".4" stroke-width=".5" fill="none"/>'
-            )
-        );
-
-        return string(abi.encodePacked(link, stars));
-    }
-
-    function _entityGlyph(uint8 entityType) internal pure returns (string memory) {
-        if (entityType == ENTITY_AI) {
+        if (opt == 2) {
             return string(
                 abi.encodePacked(
-                    '<g transform="translate(68 106)" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-linejoin="round" opacity=".92">',
-                    '<path d="M0-22L19-11V11L0 22L-19 11V-11Z" stroke-width="1.5"/>',
-                    '<circle cx="0" cy="0" r="9" stroke-width="1.2"/>',
-                    '<circle cx="0" cy="0" r="3" fill="#f8fafc">',
-                    '<animate attributeName="r" values="2;4;2" dur="2.6s" repeatCount="indefinite"/>',
-                    "</circle>",
-                    '<path d="M0-22V-30M19-11L26-7M19 11L26 15M0 22V30M-19 11L-26 15M-19-11L-26-7" stroke-width=".8" stroke-opacity=".7"/>',
+                    '<rect x="24" y="62" width="88" height="88" fill="',
+                    primary,
+                    '" opacity=".4"/>',
+                    '<rect x="24" y="74" width="88" height="6" fill="',
+                    light,
+                    '" opacity=".55"/>',
+                    '<rect x="24" y="100" width="88" height="6" fill="',
+                    light,
+                    '" opacity=".55"/>',
+                    '<rect x="24" y="126" width="88" height="6" fill="',
+                    light,
+                    '" opacity=".55"/>'
+                )
+            );
+        }
+        if (opt == 3) {
+            return string(
+                abi.encodePacked(
+                    '<rect x="24" y="62" width="88" height="88" fill="',
+                    primary,
+                    '" opacity=".4"/>',
+                    '<g fill="',
+                    light,
+                    '" opacity=".7">',
+                    '<circle cx="36" cy="74" r="2"/><circle cx="60" cy="74" r="2"/><circle cx="84" cy="74" r="2"/>',
+                    '<circle cx="48" cy="92" r="2"/><circle cx="72" cy="92" r="2"/><circle cx="96" cy="92" r="2"/>',
+                    '<circle cx="36" cy="110" r="2"/><circle cx="60" cy="110" r="2"/><circle cx="84" cy="110" r="2"/>',
+                    '<circle cx="48" cy="128" r="2"/><circle cx="72" cy="128" r="2"/><circle cx="96" cy="128" r="2"/>',
                     "</g>"
                 )
             );
         }
-
+        if (opt == 4) {
+            return string(
+                abi.encodePacked(
+                    '<rect x="24" y="62" width="88" height="88" fill="',
+                    primary,
+                    '" opacity=".35"/>',
+                    '<g stroke="',
+                    light,
+                    '" stroke-opacity=".55" stroke-width=".5" fill="none">',
+                    '<path d="M40 62v88M56 62v88M72 62v88M88 62v88M104 62v88M24 78h88M24 94h88M24 110h88M24 126h88M24 142h88"/>',
+                    "</g>"
+                )
+            );
+        }
+        if (opt == 5) {
+            return string(
+                abi.encodePacked(
+                    '<rect x="24" y="62" width="88" height="88" fill="#0f172a" opacity=".75"/>',
+                    '<g fill="#f8fafc">',
+                    '<circle cx="32" cy="70" r="1"/><circle cx="46" cy="80" r=".8"/><circle cx="58" cy="68" r="1.2"/>',
+                    '<circle cx="72" cy="76" r=".9"/><circle cx="88" cy="72" r="1"/><circle cx="100" cy="84" r=".8"/>',
+                    '<circle cx="40" cy="100" r=".7"/><circle cx="80" cy="108" r="1"/><circle cx="106" cy="120" r=".9"/>',
+                    '<circle cx="30" cy="132" r="1"/><circle cx="64" cy="140" r=".8"/><circle cx="96" cy="144" r="1.1"/>',
+                    "</g>"
+                )
+            );
+        }
+        if (opt == 6) {
+            return string(
+                abi.encodePacked(
+                    '<rect x="24" y="62" width="88" height="88" fill="',
+                    primary,
+                    '" opacity=".4"/>',
+                    '<g stroke="',
+                    light,
+                    '" stroke-opacity=".7" stroke-width=".7" fill="none">',
+                    '<path d="M68 106L24 62M68 106L112 62M68 106L24 150M68 106L112 150M68 106L24 106M68 106L112 106M68 106L68 62M68 106L68 150"/>',
+                    "</g>"
+                )
+            );
+        }
         return string(
             abi.encodePacked(
-                '<g transform="translate(68 108)" fill="#f8fafc" opacity=".92">',
-                '<circle cx="0" cy="-10" r="9"/>',
-                '<path d="M-16 22C-13 8 -7 2 0 2C7 2 13 8 16 22Z"/>',
-                '<circle cx="0" cy="-10" r="13" fill="none" stroke="#f8fafc" stroke-width=".8" stroke-opacity=".5"/>',
-                "</g>"
+                '<rect x="24" y="62" width="88" height="88" fill="#1a103d" opacity=".85"/>',
+                '<circle cx="40" cy="80" r="14" fill="',
+                primary,
+                '" opacity=".5"/>',
+                '<circle cx="90" cy="120" r="20" fill="',
+                light,
+                '" opacity=".4"/>',
+                '<circle cx="68" cy="100" r="8" fill="#f8fafc" opacity=".25"/>'
             )
         );
+    }
+
+    function _renderBody(uint8 skinTone, uint8 outfit) internal pure returns (string memory) {
+        string memory skin = _skinColor(skinTone);
+        return string(
+            abi.encodePacked(
+                _renderOutfit(outfit, skin),
+                '<rect x="62" y="86" width="12" height="10" fill="',
+                skin,
+                '"/>',
+                '<circle cx="68" cy="80" r="22" fill="',
+                skin,
+                '"/>'
+            )
+        );
+    }
+
+    function _renderOutfit(uint8 o, string memory skin) internal pure returns (string memory) {
+        string memory color = _outfitColor(o);
+        if (o == 0) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M40 150 Q40 116 60 110 L76 110 Q96 116 96 150 Z" fill="',
+                    color,
+                    '"/>'
+                )
+            );
+        }
+        if (o == 1) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M36 150 Q36 114 56 108 L80 108 Q100 114 100 150 Z" fill="',
+                    color,
+                    '"/>',
+                    '<path d="M52 96 Q68 90 84 96 L82 112 L54 112 Z" fill="',
+                    color,
+                    '" opacity=".85"/>'
+                )
+            );
+        }
+        if (o == 2) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M40 150 Q40 116 58 110 L78 110 Q96 116 96 150 Z" fill="',
+                    color,
+                    '"/>',
+                    '<path d="M58 110 L68 130 L78 110 Z" fill="#f8fafc"/>',
+                    '<path d="M68 112 L66 124 L68 128 L70 124 Z" fill="#ef4444"/>'
+                )
+            );
+        }
+        if (o == 3) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M48 150 Q48 118 60 112 L76 112 Q88 118 88 150 Z" fill="',
+                    color,
+                    '"/>',
+                    '<rect x="58" y="100" width="4" height="14" fill="',
+                    color,
+                    '"/>',
+                    '<rect x="74" y="100" width="4" height="14" fill="',
+                    color,
+                    '"/>'
+                )
+            );
+        }
+        if (o == 4) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M36 150 Q36 116 56 110 L80 110 Q100 116 100 150 Z" fill="',
+                    color,
+                    '"/>',
+                    '<path d="M56 110 L60 138 L68 116 L76 138 L80 110 Z" fill="#1e293b"/>'
+                )
+            );
+        }
+        if (o == 5) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M30 150 Q34 120 60 114 L76 114 Q102 120 106 150 Z" fill="',
+                    color,
+                    '"/>',
+                    '<path d="M56 114 Q68 108 80 114 L78 122 L58 122 Z" fill="',
+                    color,
+                    '" opacity=".7"/>'
+                )
+            );
+        }
+        if (o == 6) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M38 150 L38 116 L58 108 L78 108 L98 116 L98 150 Z" fill="',
+                    color,
+                    '"/>',
+                    '<path d="M50 116 L86 116 L86 140 L50 140 Z" fill="#cbd5e1" opacity=".5"/>',
+                    '<circle cx="68" cy="128" r="3" fill="#fbbf24"/>'
+                )
+            );
+        }
+        return string(
+            abi.encodePacked(
+                '<path d="M48 150 Q48 120 60 114 L76 114 Q88 120 88 150 Z" fill="',
+                skin,
+                '" opacity=".9"/>'
+            )
+        );
+    }
+
+    function _renderMouth(uint8 opt) internal pure returns (string memory) {
+        if (opt == 0) {
+            return '<rect x="62" y="90" width="12" height="2" rx="1" fill="#3a2a1a"/>';
+        }
+        if (opt == 1) {
+            return '<path d="M60 88 Q68 96 76 88" stroke="#3a2a1a" stroke-width="1.6" fill="none" stroke-linecap="round"/>';
+        }
+        if (opt == 2) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M58 88 Q68 98 78 88 L78 92 Q68 100 58 92 Z" fill="#3a2a1a"/>',
+                    '<rect x="60" y="90" width="16" height="2" fill="#f8fafc"/>'
+                )
+            );
+        }
+        if (opt == 3) {
+            return '<ellipse cx="68" cy="91" rx="5" ry="4" fill="#3a2a1a"/>';
+        }
+        if (opt == 4) {
+            return string(
+                abi.encodePacked(
+                    '<ellipse cx="68" cy="91" rx="6" ry="4" fill="#3a2a1a"/>',
+                    '<ellipse cx="68" cy="93" rx="3" ry="2" fill="#f472b6"/>'
+                )
+            );
+        }
+        if (opt == 5) {
+            return '<path d="M60 94 Q68 86 76 94" stroke="#3a2a1a" stroke-width="1.6" fill="none" stroke-linecap="round"/>';
+        }
+        if (opt == 6) {
+            return '<path d="M60 92 Q66 88 76 90" stroke="#3a2a1a" stroke-width="1.6" fill="none" stroke-linecap="round"/>';
+        }
+        return string(
+            abi.encodePacked(
+                '<path d="M62 88 Q60 92 64 94" stroke="#3a2a1a" stroke-width="1.4" fill="none" stroke-linecap="round"/>',
+                '<path d="M68 88 L68 94" stroke="#3a2a1a" stroke-width="1.4" stroke-linecap="round"/>',
+                '<path d="M74 88 Q76 92 72 94" stroke="#3a2a1a" stroke-width="1.4" fill="none" stroke-linecap="round"/>'
+            )
+        );
+    }
+
+    function _renderEyes(uint8 opt) internal pure returns (string memory) {
+        if (opt == 0) {
+            return '<g fill="#1a1a1a"><circle cx="60" cy="78" r="1.6"/><circle cx="76" cy="78" r="1.6"/></g>';
+        }
+        if (opt == 1) {
+            return string(
+                abi.encodePacked(
+                    '<g><circle cx="60" cy="78" r="2.8" fill="#1a1a1a"/><circle cx="76" cy="78" r="2.8" fill="#1a1a1a"/>',
+                    '<circle cx="61" cy="77" r="1" fill="#f8fafc"/><circle cx="77" cy="77" r="1" fill="#f8fafc"/></g>'
+                )
+            );
+        }
+        if (opt == 2) {
+            return string(
+                abi.encodePacked(
+                    '<g stroke="#1a1a1a" stroke-width="1.5" stroke-linecap="round" fill="none">',
+                    '<path d="M56 78 L62 76"/><path d="M62 76 L62 80"/>',
+                    '<path d="M80 78 L74 76"/><path d="M74 76 L74 80"/></g>'
+                )
+            );
+        }
+        if (opt == 3) {
+            return '<g stroke="#1a1a1a" stroke-width="1.6" stroke-linecap="round" fill="none"><path d="M56 78 Q60 80 64 78"/><path d="M72 78 Q76 80 80 78"/></g>';
+        }
+        if (opt == 4) {
+            return string(
+                abi.encodePacked(
+                    '<g fill="#1a1a1a"><circle cx="60" cy="78" r="2"/></g>',
+                    '<path d="M72 78 Q76 78 80 78" stroke="#1a1a1a" stroke-width="1.6" stroke-linecap="round" fill="none"/>'
+                )
+            );
+        }
+        if (opt == 5) {
+            return string(
+                abi.encodePacked(
+                    '<g fill="#fbbf24"><path d="M60 74 L61 77 L64 78 L61 79 L60 82 L59 79 L56 78 L59 77 Z"/>',
+                    '<path d="M76 74 L77 77 L80 78 L77 79 L76 82 L75 79 L72 78 L75 77 Z"/></g>'
+                )
+            );
+        }
+        if (opt == 6) {
+            return '<rect x="50" y="74" width="36" height="8" rx="3" fill="#1a1a1a"/><rect x="52" y="76" width="32" height="2" fill="#38bdf8" opacity=".7"/>';
+        }
+        return '<g stroke="#1a1a1a" stroke-width="1.5" stroke-linecap="round" fill="none"><path d="M56 78 L64 78"/><path d="M72 78 L80 78"/></g>';
+    }
+
+    function _renderHair(uint8 style, uint8 color) internal pure returns (string memory) {
+        if (style == 0) {
+            return "";
+        }
+        string memory hc = _hairColorHex(color);
+        if (style == 1) {
+            return string(
+                abi.encodePacked('<path d="M48 62 Q68 50 88 62 L88 70 Q68 60 48 70 Z" fill="', hc, '"/>')
+            );
+        }
+        if (style == 2) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M46 60 Q68 48 90 60 L92 96 L84 90 L84 70 Q68 60 52 70 L52 90 L44 96 Z" fill="',
+                    hc,
+                    '"/>'
+                )
+            );
+        }
+        if (style == 3) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M48 64 Q68 52 88 64 L88 74 Q68 64 48 74 Z" fill="',
+                    hc,
+                    '"/>',
+                    '<ellipse cx="92" cy="82" rx="6" ry="10" fill="',
+                    hc,
+                    '"/>'
+                )
+            );
+        }
+        if (style == 4) {
+            return string(
+                abi.encodePacked(
+                    '<circle cx="68" cy="54" r="8" fill="',
+                    hc,
+                    '"/>',
+                    '<path d="M50 64 Q68 56 86 64 L86 72 Q68 64 50 72 Z" fill="',
+                    hc,
+                    '"/>'
+                )
+            );
+        }
+        if (style == 5) {
+            return string(
+                abi.encodePacked(
+                    '<g fill="',
+                    hc,
+                    '"><circle cx="52" cy="62" r="6"/><circle cx="62" cy="56" r="6"/><circle cx="74" cy="56" r="6"/><circle cx="84" cy="62" r="6"/><circle cx="50" cy="74" r="5"/><circle cx="86" cy="74" r="5"/></g>'
+                )
+            );
+        }
+        if (style == 6) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M64 50 L62 80 L74 80 L72 50 Z" fill="',
+                    hc,
+                    '"/>'
+                )
+            );
+        }
+        return string(
+            abi.encodePacked(
+                '<path d="M44 70 Q68 50 92 70 L92 78 L44 78 Z" fill="',
+                hc,
+                '"/>',
+                '<rect x="42" y="74" width="52" height="4" fill="#1a1a1a"/>'
+            )
+        );
+    }
+
+    function _renderAccessory(uint8 opt) internal pure returns (string memory) {
+        if (opt == 0) {
+            return "";
+        }
+        if (opt == 1) {
+            return string(
+                abi.encodePacked(
+                    '<g stroke="#1a1a1a" stroke-width="1.4" fill="none">',
+                    '<circle cx="60" cy="78" r="5"/><circle cx="76" cy="78" r="5"/>',
+                    '<path d="M65 78 L71 78"/></g>'
+                )
+            );
+        }
+        if (opt == 2) {
+            return string(
+                abi.encodePacked(
+                    '<g fill="#0f172a">',
+                    '<rect x="54" y="74" width="12" height="8" rx="2"/>',
+                    '<rect x="70" y="74" width="12" height="8" rx="2"/>',
+                    '<rect x="66" y="77" width="4" height="2"/></g>'
+                )
+            );
+        }
+        if (opt == 3) {
+            return '<g fill="#fbbf24"><circle cx="46" cy="86" r="2"/><circle cx="90" cy="86" r="2"/></g>';
+        }
+        if (opt == 4) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M52 102 Q68 116 84 102" stroke="#fbbf24" stroke-width="1.4" fill="none"/>',
+                    '<circle cx="68" cy="112" r="3" fill="#ef4444"/>'
+                )
+            );
+        }
+        if (opt == 5) {
+            return '<rect x="54" y="85" width="28" height="12" rx="3" fill="#f8fafc" opacity=".85"/>';
+        }
+        if (opt == 6) {
+            return string(
+                abi.encodePacked(
+                    '<path d="M44 78 Q44 56 68 56 Q92 56 92 78" stroke="#1a1a1a" stroke-width="2.5" fill="none"/>',
+                    '<rect x="40" y="76" width="10" height="14" rx="3" fill="#1a1a1a"/>',
+                    '<rect x="86" y="76" width="10" height="14" rx="3" fill="#1a1a1a"/>'
+                )
+            );
+        }
+        return string(
+            abi.encodePacked(
+                '<path d="M50 62 L54 50 L58 60 L62 46 L68 58 L74 46 L78 60 L82 50 L86 62 Z" fill="#fbbf24" stroke="#b45309" stroke-width=".6"/>',
+                '<circle cx="68" cy="54" r="1.5" fill="#ef4444"/>'
+            )
+        );
+    }
+
+    // ─────────────────── Avatar trait name helpers ───────────────────
+
+    function _skinToneName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "Light";
+        if (v == 1) return "Tan";
+        if (v == 2) return "Brown";
+        if (v == 3) return "Dark";
+        if (v == 4) return "Olive";
+        if (v == 5) return "Pink";
+        if (v == 6) return "Alien";
+        return "Robot";
+    }
+
+    function _hairStyleName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "Bald";
+        if (v == 1) return "Short";
+        if (v == 2) return "Long";
+        if (v == 3) return "Ponytail";
+        if (v == 4) return "Bun";
+        if (v == 5) return "Curly";
+        if (v == 6) return "Mohawk";
+        return "Hat";
+    }
+
+    function _hairColorName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "Black";
+        if (v == 1) return "Brown";
+        if (v == 2) return "Blonde";
+        if (v == 3) return "Red";
+        if (v == 4) return "Gray";
+        if (v == 5) return "White";
+        if (v == 6) return "Blue";
+        return "Purple";
+    }
+
+    function _eyesName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "Dot";
+        if (v == 1) return "Round";
+        if (v == 2) return "Sharp";
+        if (v == 3) return "Sleepy";
+        if (v == 4) return "Wink";
+        if (v == 5) return "Star";
+        if (v == 6) return "Visor";
+        return "Closed";
+    }
+
+    function _mouthName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "Neutral";
+        if (v == 1) return "Smile";
+        if (v == 2) return "Grin";
+        if (v == 3) return "Open";
+        if (v == 4) return "Tongue";
+        if (v == 5) return "Frown";
+        if (v == 6) return "Smirk";
+        return "Heh";
+    }
+
+    function _outfitName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "Tee";
+        if (v == 1) return "Hoodie";
+        if (v == 2) return "Suit";
+        if (v == 3) return "Tank";
+        if (v == 4) return "Jacket";
+        if (v == 5) return "Dress";
+        if (v == 6) return "Armor";
+        return "Bare";
+    }
+
+    function _accessoryName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "None";
+        if (v == 1) return "Glasses";
+        if (v == 2) return "Sunglasses";
+        if (v == 3) return "Earring";
+        if (v == 4) return "Necklace";
+        if (v == 5) return "Mask";
+        if (v == 6) return "Headphones";
+        return "Crown";
+    }
+
+    function _backgroundName(uint8 v) internal pure returns (string memory) {
+        if (v == 0) return "Solid";
+        if (v == 1) return "Gradient";
+        if (v == 2) return "Stripes";
+        if (v == 3) return "Dots";
+        if (v == 4) return "Grid";
+        if (v == 5) return "Starfield";
+        if (v == 6) return "Rays";
+        return "Cosmic";
     }
 
     function _opacityPercent(uint256 percent) internal pure returns (string memory) {

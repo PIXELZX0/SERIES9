@@ -23,6 +23,12 @@ import { type MessageKey } from './i18n';
 import { useI18n } from './i18n/useI18n';
 import { formatRewardAmount, formatTokenAmount, shortenAddress } from './utils/format';
 import { parsePositiveTokenAmount } from './utils/validation';
+import {
+  DEFAULT_AVATAR_CONFIG,
+  equalConfig as equalAvatarConfig,
+  type AvatarConfig,
+} from './utils/avatarRenderer';
+import { AvatarBuilder } from './components/AvatarBuilder';
 
 type ActionModalType = 'ser9Stake' | 'ser9Unstake' | 'monadStake' | 'monadUnstake';
 type IdentityEntityType = 'human' | 'ai';
@@ -667,6 +673,7 @@ export default function App() {
   const [identityEntityType, setIdentityEntityType] = useState<IdentityEntityType>('human');
   const [identityHue, setIdentityHue] = useState(145);
   const [identitySaturation, setIdentitySaturation] = useState(180);
+  const [avatarDraft, setAvatarDraft] = useState<AvatarConfig>(DEFAULT_AVATAR_CONFIG);
   const [paymentHandle, setPaymentHandle] = useState('');
   const [paymentAssetType, setPaymentAssetType] = useState<PaymentAssetType>('mon');
   const [paymentTokenAddress, setPaymentTokenAddress] = useState<string>(contracts.ser9Proxy);
@@ -853,6 +860,16 @@ export default function App() {
     address: contracts.identityProxy,
     abi: identityAbi,
     functionName: 'tokenURI',
+    args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
+
+  const identityAvatarConfigRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'avatarConfig',
     args: [identityTokenIdForReads],
     query: {
       enabled: identityTokenIdForReads > 0n,
@@ -1504,6 +1521,19 @@ export default function App() {
     }
   }, [identityHandleRead.data, paymentHandle]);
 
+  const currentAvatarConfig = useMemo<AvatarConfig>(() => {
+    const data = identityAvatarConfigRead.data;
+    if (!data) return DEFAULT_AVATAR_CONFIG;
+    const [skinTone, hairStyle, hairColor, eyes, mouth, outfit, accessory, background] = data;
+    return { skinTone, hairStyle, hairColor, eyes, mouth, outfit, accessory, background };
+  }, [identityAvatarConfigRead.data]);
+
+  useEffect(() => {
+    setAvatarDraft(currentAvatarConfig);
+  }, [currentAvatarConfig]);
+
+  const avatarDirty = !equalAvatarConfig(avatarDraft, currentAvatarConfig);
+
   useEffect(() => {
     if (!isWalletModalOpen) {
       return;
@@ -2041,6 +2071,34 @@ export default function App() {
         functionName: 'setHandle',
         args: [identityTokenId, handle],
       });
+    } catch (error) {
+      setFormError(mapLocalError(error));
+      return undefined;
+    }
+  }
+
+  async function runSetAvatarFlow() {
+    resetErrors();
+
+    if (!hasIdentity) {
+      setFormError(t('identityRequired'));
+      return undefined;
+    }
+
+    try {
+      const hash = await tx.execute(t('saveAvatar'), {
+        address: contracts.identityProxy,
+        abi: identityAbi,
+        functionName: 'setAvatar',
+        args: [identityTokenId, avatarDraft],
+      });
+
+      if (hash) {
+        await identityAvatarConfigRead.refetch();
+        await identityTokenUriRead.refetch();
+      }
+
+      return hash;
     } catch (error) {
       setFormError(mapLocalError(error));
       return undefined;
@@ -2863,6 +2921,24 @@ export default function App() {
               </div>
             </article>
           </section>
+
+          {hasIdentity && (
+            <section className="card avatar-card">
+              <AvatarBuilder
+                config={avatarDraft}
+                onChange={setAvatarDraft}
+                hue={identityHue}
+                disabled={!isConnected || onWrongChain || Boolean(identityPausedRead.data)}
+                busy={tx.isWalletPrompt || tx.isConfirming}
+                dirty={avatarDirty}
+                onSave={() => void runSetAvatarFlow()}
+                title={t('avatarBuilderTitle')}
+                hint={t('avatarBuilderHint')}
+                saveLabel={t('saveAvatar')}
+                resolveLabel={(key) => t(key as MessageKey)}
+              />
+            </section>
+          )}
         </>
       )}
 

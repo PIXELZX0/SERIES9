@@ -1111,3 +1111,122 @@ textarea::placeholder {
     scroll-behavior: auto;
   }
 }
+
+.avatar-card {
+  padding: 1.4rem;
+  margin-top: 1.2rem;
+}
+
+.avatar-builder {
+  display: grid;
+  gap: 1.4rem;
+}
+
+.avatar-builder-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1.2rem;
+}
+
+.avatar-builder-head h3 {
+  margin: 0.3rem 0 0.4rem;
+}
+
+.avatar-builder-head .muted {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.avatar-builder-preview {
+  width: 144px;
+  height: 144px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #060812;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.avatar-builder-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.avatar-builder-slots {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.avatar-slot-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 0.8rem;
+  align-items: center;
+}
+
+.avatar-slot-label {
+  font-size: 0.8rem;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.avatar-slot-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.avatar-slot-chip {
+  border: 1px solid var(--line);
+  background: #0a0c14;
+  color: var(--text);
+  padding: 0.35rem 0.6rem;
+  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.avatar-slot-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.avatar-slot-chip.active {
+  background: #ffffff;
+  color: #050505;
+  border-color: #ffffff;
+}
+
+.avatar-slot-chip-index {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.7rem;
+  opacity: 0.6;
+}
+
+.avatar-slot-chip.active .avatar-slot-chip-index {
+  opacity: 0.7;
+}
+
+.avatar-builder-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 600px) {
+  .avatar-builder-head {
+    grid-template-columns: 1fr;
+  }
+  .avatar-builder-preview {
+    justify-self: center;
+  }
+  .avatar-slot-row {
+    grid-template-columns: 1fr;
+  }
+}

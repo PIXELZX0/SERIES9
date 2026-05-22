@@ -85,11 +85,13 @@ contract Series9Identity is
 
     mapping(uint256 => IdentityProfile) public profiles;
     mapping(address => uint256) public ownerTokenId; // 1 identity per address
-    mapping(uint256 => string) public customAvatarSeed; // Optional seed for generative art
+    mapping(uint256 => string) public customAvatarSeed; // Deprecated: unused after avatar v2; slot kept for storage layout compatibility
+    mapping(uint256 => AvatarConfig) public avatarConfig; // 8-slot character avatar customization
 
     uint256 private constant PRECISION = 1e18;
     address public constant NATIVE_MON = address(0);
     uint256 public constant MAX_AVATAR_SEED_BYTES = 64;
+    uint8 public constant MAX_AVATAR_SLOT_OPTION = 7; // each AvatarConfig slot accepts values 0..7
     uint256 public constant MIN_HANDLE_BYTES = 3;
     uint256 public constant MAX_HANDLE_BYTES = 32;
     uint256 public constant MAX_PAYMENT_MEMO_BYTES = 128;
@@ -161,6 +163,8 @@ contract Series9Identity is
     event ReputationScoreUpdated(uint256 indexed tokenId, uint256 previousScore, uint256 newScore);
     /// @notice Emitted when a payment handle is changed
     event IdentityHandleUpdated(uint256 indexed tokenId, string previousHandle, string newHandle);
+    /// @notice Emitted when a token's avatar configuration is changed
+    event AvatarUpdated(uint256 indexed tokenId, AvatarConfig config);
     /// @notice Emitted when a legacy display name reserves a payment handle
     event LegacyHandleReserved(bytes32 indexed handleHash, string handle, uint256 indexed tokenId, uint64 expiresAt);
     /// @notice Emitted when all legacy handle reservations have been scanned
@@ -215,6 +219,7 @@ contract Series9Identity is
     error InvalidReputationScore();
     error NonexistentToken();
     error AvatarSeedTooLong();
+    error InvalidAvatarSlot();
     error PaymentNotInitialized();
     error LegacyHandleReservationsNotFinalized();
     error InvalidHandle();
@@ -435,10 +440,28 @@ contract Series9Identity is
     }
 
     /// @notice Set a custom avatar seed for advanced generative art
+    /// @dev Deprecated: retained for backward compatibility; the active renderer ignores this value.
     function setCustomAvatarSeed(uint256 tokenId, string calldata seed) external whenNotPaused {
         if (ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
         if (bytes(seed).length > MAX_AVATAR_SEED_BYTES) revert AvatarSeedTooLong();
         customAvatarSeed[tokenId] = seed;
+    }
+
+    /// @notice Update the 8-slot character avatar for a token. Each slot accepts values 0..MAX_AVATAR_SLOT_OPTION.
+    function setAvatar(uint256 tokenId, AvatarConfig calldata config) external whenNotPaused {
+        if (ownerOf(tokenId) != msg.sender) revert NotTokenOwner();
+        _validateAvatarConfig(config);
+        avatarConfig[tokenId] = config;
+        emit AvatarUpdated(tokenId, config);
+    }
+
+    function _validateAvatarConfig(AvatarConfig calldata c) internal pure {
+        if (
+            c.skinTone > MAX_AVATAR_SLOT_OPTION || c.hairStyle > MAX_AVATAR_SLOT_OPTION
+                || c.hairColor > MAX_AVATAR_SLOT_OPTION || c.eyes > MAX_AVATAR_SLOT_OPTION
+                || c.mouth > MAX_AVATAR_SLOT_OPTION || c.outfit > MAX_AVATAR_SLOT_OPTION
+                || c.accessory > MAX_AVATAR_SLOT_OPTION || c.background > MAX_AVATAR_SLOT_OPTION
+        ) revert InvalidAvatarSlot();
     }
 
     // ─────────────────── Payment Handles ───────────────────
@@ -1114,7 +1137,7 @@ contract Series9Identity is
             p.registeredAt,
             _reputationScore(tokenId),
             handles[tokenId],
-            customAvatarSeed[tokenId]
+            avatarConfig[tokenId]
         );
     }
 
@@ -1124,5 +1147,5 @@ contract Series9Identity is
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[36] private __gap;
+    uint256[35] private __gap;
 }
