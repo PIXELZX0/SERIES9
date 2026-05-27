@@ -339,11 +339,13 @@ export function renderAvatarSvg(config: AvatarConfig, hue: number): string {
     `<rect x="24" y="62" width="88" height="88" rx="18" fill="url(#avBg)"/>` +
     `<g clip-path="url(#avClipPrev)">` +
     renderBackground(config.background, hue) +
+    `<g transform="translate(0,8)">` +
     renderBody(config.skinTone, config.outfit) +
     renderMouth(config.mouth) +
     renderEyes(config.eyes) +
     renderHair(config.hairStyle, config.hairColor) +
     renderAccessory(config.accessory) +
+    `</g>` +
     `</g>` +
     `<rect x="24" y="62" width="88" height="88" rx="18" fill="none" stroke="#ffffff" stroke-opacity=".22" stroke-width="1"/>` +
     `</svg>`

@@ -329,11 +329,13 @@ contract Series9IdentityRenderer {
                 '<rect x="24" y="62" width="88" height="88" rx="18" fill="url(#avBg)"/>',
                 '<g clip-path="url(#avClip)">',
                 _renderBackground(a.background, p.hue),
+                '<g transform="translate(0,8)">',
                 _renderBody(a.skinTone, a.outfit),
                 _renderMouth(a.mouth),
                 _renderEyes(a.eyes),
                 _renderHair(a.hairStyle, a.hairColor),
                 _renderAccessory(a.accessory),
+                "</g>",
                 "</g>",
                 '<rect x="24" y="62" width="88" height="88" rx="18" fill="none" stroke="#ffffff" stroke-opacity=".22" stroke-width="1"/>',
                 "</g>"
