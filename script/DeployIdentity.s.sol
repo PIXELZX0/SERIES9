@@ -22,7 +22,8 @@ interface ISeries9StakingSer9 {
 ///   IDENTITY_HUMAN_FEE=50000000000000000000
 ///   SKIP_VERIFY=true
 contract DeployIdentity is Script {
-    string constant VERIFIER_URL = "https://sourcify-api-monad.blockvision.org/api";
+    string constant SOURCIFY_VERIFIER_URL = "https://sourcify-api-monad.blockvision.org";
+    string constant SOCIALSCAN_VERIFIER_URL = "https://api.socialscan.io/monad/v1/explorer/command_api/contract";
     string constant CHAIN_ID = "143";
 
     function run() external {
@@ -97,46 +98,87 @@ contract DeployIdentity is Script {
     }
 
     function _verify(address contractAddr, string memory contractName, string memory constructorArgs) internal {
-        string[] memory cmd;
-
+        // 1. Sourcify (Blockvision)
+        string[] memory sourcifyCmd;
         if (bytes(constructorArgs).length == 0) {
-            cmd = new string[](12);
-            cmd[0] = "forge";
-            cmd[1] = "verify-contract";
-            cmd[2] = vm.toString(contractAddr);
-            cmd[3] = contractName;
-            cmd[4] = "--chain";
-            cmd[5] = CHAIN_ID;
-            cmd[6] = "--rpc-url";
-            cmd[7] = vm.envString("MONAD_RPC_URL");
-            cmd[8] = "--verifier";
-            cmd[9] = "sourcify";
-            cmd[10] = "--verifier-url";
-            cmd[11] = VERIFIER_URL;
+            sourcifyCmd = new string[](12);
+            sourcifyCmd[0] = "forge";
+            sourcifyCmd[1] = "verify-contract";
+            sourcifyCmd[2] = vm.toString(contractAddr);
+            sourcifyCmd[3] = contractName;
+            sourcifyCmd[4] = "--chain";
+            sourcifyCmd[5] = CHAIN_ID;
+            sourcifyCmd[6] = "--rpc-url";
+            sourcifyCmd[7] = vm.envString("MONAD_RPC_URL");
+            sourcifyCmd[8] = "--verifier";
+            sourcifyCmd[9] = "sourcify";
+            sourcifyCmd[10] = "--verifier-url";
+            sourcifyCmd[11] = SOURCIFY_VERIFIER_URL;
         } else {
-            cmd = new string[](14);
-            cmd[0] = "forge";
-            cmd[1] = "verify-contract";
-            cmd[2] = vm.toString(contractAddr);
-            cmd[3] = contractName;
-            cmd[4] = "--chain";
-            cmd[5] = CHAIN_ID;
-            cmd[6] = "--rpc-url";
-            cmd[7] = vm.envString("MONAD_RPC_URL");
-            cmd[8] = "--verifier";
-            cmd[9] = "sourcify";
-            cmd[10] = "--verifier-url";
-            cmd[11] = VERIFIER_URL;
-            cmd[12] = "--constructor-args";
-            cmd[13] = constructorArgs;
+            sourcifyCmd = new string[](14);
+            sourcifyCmd[0] = "forge";
+            sourcifyCmd[1] = "verify-contract";
+            sourcifyCmd[2] = vm.toString(contractAddr);
+            sourcifyCmd[3] = contractName;
+            sourcifyCmd[4] = "--chain";
+            sourcifyCmd[5] = CHAIN_ID;
+            sourcifyCmd[6] = "--rpc-url";
+            sourcifyCmd[7] = vm.envString("MONAD_RPC_URL");
+            sourcifyCmd[8] = "--verifier";
+            sourcifyCmd[9] = "sourcify";
+            sourcifyCmd[10] = "--verifier-url";
+            sourcifyCmd[11] = SOURCIFY_VERIFIER_URL;
+            sourcifyCmd[12] = "--constructor-args";
+            sourcifyCmd[13] = constructorArgs;
         }
 
         console.log("Verifying:", contractName, "at", contractAddr);
         // forge-lint: disable-next-line(unsafe-cheatcode)
-        try vm.ffi(cmd) returns (bytes memory result) {
-            console.log(string(result));
+        try vm.ffi(sourcifyCmd) returns (bytes memory result) {
+            console.log("  [Sourcify] ", string(result));
         } catch {
-            console.log("  [WARN] MonadVision verification failed, verify manually");
+            console.log("  [WARN] Sourcify verification failed");
+        }
+
+        // 2. SocialScan (Blockscout)
+        string[] memory socialscanCmd;
+        if (bytes(constructorArgs).length == 0) {
+            socialscanCmd = new string[](12);
+            socialscanCmd[0] = "forge";
+            socialscanCmd[1] = "verify-contract";
+            socialscanCmd[2] = vm.toString(contractAddr);
+            socialscanCmd[3] = contractName;
+            socialscanCmd[4] = "--chain";
+            socialscanCmd[5] = CHAIN_ID;
+            socialscanCmd[6] = "--rpc-url";
+            socialscanCmd[7] = vm.envString("MONAD_RPC_URL");
+            socialscanCmd[8] = "--verifier";
+            socialscanCmd[9] = "blockscout";
+            socialscanCmd[10] = "--verifier-url";
+            socialscanCmd[11] = SOCIALSCAN_VERIFIER_URL;
+        } else {
+            socialscanCmd = new string[](14);
+            socialscanCmd[0] = "forge";
+            socialscanCmd[1] = "verify-contract";
+            socialscanCmd[2] = vm.toString(contractAddr);
+            socialscanCmd[3] = contractName;
+            socialscanCmd[4] = "--chain";
+            socialscanCmd[5] = CHAIN_ID;
+            socialscanCmd[6] = "--rpc-url";
+            socialscanCmd[7] = vm.envString("MONAD_RPC_URL");
+            socialscanCmd[8] = "--verifier";
+            socialscanCmd[9] = "blockscout";
+            socialscanCmd[10] = "--verifier-url";
+            socialscanCmd[11] = SOCIALSCAN_VERIFIER_URL;
+            socialscanCmd[12] = "--constructor-args";
+            socialscanCmd[13] = constructorArgs;
+        }
+
+        // forge-lint: disable-next-line(unsafe-cheatcode)
+        try vm.ffi(socialscanCmd) returns (bytes memory result2) {
+            console.log("  [SocialScan] ", string(result2));
+        } catch {
+            console.log("  [WARN] SocialScan verification failed");
         }
     }
 }
