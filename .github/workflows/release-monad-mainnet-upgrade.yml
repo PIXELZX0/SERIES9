@@ -164,7 +164,7 @@ jobs:
         env:
           FOUNDRY_PROFILE: deploy
           SKIP_VERIFY_INPUT: ${{ vars.SKIP_VERIFY }}
-          MONADVISION_VERIFIER_URL: https://sourcify-api-monad.blockvision.org/api
+          SOCIALSCAN_VERIFIER_URL: https://api.socialscan.io/monad/v1/explorer/command_api/contract
           DEPLOY_STAKING: ${{ steps.detect.outputs.deploy_staking }}
           DEPLOY_SER9: ${{ steps.detect.outputs.deploy_ser9 }}
           DEPLOY_MANAGED: ${{ steps.detect.outputs.deploy_managed }}
@@ -172,7 +172,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Verify on MonadVision by default.
+          # Verify on SocialScan by default.
           # Set repository variable SKIP_VERIFY=true only when you explicitly want to skip verification.
           if [[ -n "${SKIP_VERIFY_INPUT:-}" ]]; then
             case "${SKIP_VERIFY_INPUT,,}" in
@@ -288,8 +288,8 @@ jobs:
             if forge verify-contract "$contract_address" "$contract_name" \
               --chain 143 \
               --rpc-url "$MONAD_RPC_URL" \
-              --verifier sourcify \
-              --verifier-url "$MONADVISION_VERIFIER_URL"; then
+              --verifier blockscout \
+              --verifier-url "$SOCIALSCAN_VERIFIER_URL"; then
               echo "Verification succeeded for ${contract_label}."
             else
               echo "::warning title=Contract verification failed::${contract_label} verification failed; continuing to generate Safe Transaction Builder JSON."
@@ -304,22 +304,22 @@ jobs:
           if [[ "$SKIP_VERIFY" == "false" ]]; then
             VERIFIED_ANY=false
             if [[ -n "$STAKING_IMPL" ]]; then
-              echo "Verifying Staking on MonadVision via Sourcify..."
+              echo "Verifying Staking on SocialScan via Blockscout..."
               VERIFIED_ANY=true
               verify_contract "$STAKING_IMPL" src/Series9Staking.sol:Series9Staking "Series9Staking"
             fi
             if [[ -n "$SER9_IMPL" ]]; then
-              echo "Verifying SER9 on MonadVision via Sourcify..."
+              echo "Verifying SER9 on SocialScan via Blockscout..."
               VERIFIED_ANY=true
               verify_contract "$SER9_IMPL" src/SER9Token.sol:SER9Token "SER9Token"
             fi
             if [[ -n "$MANAGED_IMPL" ]]; then
-              echo "Verifying ManagedToken on MonadVision via Sourcify..."
+              echo "Verifying ManagedToken on SocialScan via Blockscout..."
               VERIFIED_ANY=true
               verify_contract "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken "Series9ManagedToken"
             fi
             if [[ -n "$IDENTITY_IMPL" ]]; then
-              echo "Verifying Identity on MonadVision via Sourcify..."
+              echo "Verifying Identity on SocialScan via Blockscout..."
               VERIFIED_ANY=true
               verify_contract "$IDENTITY_IMPL" src/Series9Identity.sol:Series9Identity "Series9Identity"
             fi
@@ -474,8 +474,8 @@ jobs:
               "verificationStatus": $verificationStatus,
               "verificationFailures": $verificationFailures,
               "verifier": {
-                "provider": "MonadVision",
-                "url": "https://sourcify-api-monad.blockvision.org/api"
+                "provider": "SocialScan",
+                "url": "https://api.socialscan.io/monad/v1/explorer/command_api/contract"
               },
               "generatedAt": $generatedAt
             }' > "$RUN_FILE"
@@ -540,8 +540,8 @@ jobs:
               fi
             fi
             echo "- Safe transactions queued: \`${{ steps.deploy.outputs.tx_count }}\`"
-            echo "- Verification provider: \`MonadVision (Sourcify)\`"
-            echo "- Verification URL: \`https://sourcify-api-monad.blockvision.org/api\`"
+            echo "- Verification provider: \`SocialScan (Blockscout)\`"
+            echo "- Verification URL: \`https://api.socialscan.io/monad/v1/explorer/command_api/contract\`"
             echo "- Verification status: \`${{ steps.deploy.outputs.verification_status }}\`"
             if [[ -n "${{ steps.deploy.outputs.verification_failures }}" ]]; then
               echo "- Verification failures: \`${{ steps.deploy.outputs.verification_failures }}\`"
