@@ -704,7 +704,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         onlyMonadRebalanceOperator
         updateReward(address(0))
     {
-        _harvestMonadValidatorRewards(MONAD_VALIDATOR_BATCH_LIMIT);
+        _harvestMonadValidatorRewards(trackedValidators.length);
     }
 
     function transferExcessMonadYield(address payable recipient, uint256 amount)
@@ -730,6 +730,27 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         emit MonadYieldTransferred(recipient, amount);
+    }
+
+    function transferAllExcessMonadYield(address payable recipient)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyMonadRebalanceOperator
+    {
+        uint256 availableAmount = _availableExcessMonadYield();
+        if (availableAmount == 0) {
+            revert ZeroAmount();
+        }
+
+        protocolMonadYieldAccrued -= availableAmount;
+
+        (bool ok,) = recipient.call{value: availableAmount}("");
+        if (!ok) {
+            revert MonadPayoutFailed();
+        }
+
+        emit MonadYieldTransferred(recipient, availableAmount);
     }
 
     function requestUnstakeMonad(uint256 amount)
