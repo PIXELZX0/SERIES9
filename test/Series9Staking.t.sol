@@ -1585,6 +1585,58 @@ contract Series9StakingTest is Test {
         assertEq(address(staking).balance, 3 ether);
     }
 
+    function testHarvestClaimsAllFiveDelegatedValidatorsViaDirectCall() public {
+        staking.initializeV2();
+        staking.initializeV3();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        // All five targets carry stake after a rebalance with equal scores.
+        for (uint64 i = 1; i <= 5; ++i) {
+            assertEq(staking.validatorDelegatedAmount(i), 2 ether);
+            monadStakingMock.setDelegatorRewards(i, address(staking), uint256(i) * 1 ether);
+        }
+
+        staking.harvestMonadValidatorRewards();
+
+        // Every delegated validator is harvested: 1+2+3+4+5 = 15 ether.
+        assertEq(staking.protocolMonadYieldAccrued(), 15 ether);
+    }
+
+    function testHarvestClaimsResidualRewardsFromFullyUndelegatedValidators() public {
+        staking.initializeV2();
+        staking.initializeV3();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        // Fully exit every validator: active delegation and pending both drop to zero.
+        vm.prank(alice);
+        staking.requestUnstakeMonad(10 ether);
+        monadStakingMock.setEpoch(6, false);
+        staking.processMaturedMonadUndelegations(0);
+        assertEq(staking.totalDelegatedMonad(), 0);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+
+        // Rewards still sit on a validator that now has zero active delegation.
+        monadStakingMock.setDelegatorRewards(3, address(staking), 1 ether);
+
+        staking.harvestMonadValidatorRewards();
+
+        // Harvest must still claim the residual reward before compacting the validator out.
+        assertEq(staking.protocolMonadYieldAccrued(), 1 ether);
+        assertEq(staking.trackedValidatorsLength(), 0);
+    }
+
     function testTransferExcessMonadYieldOnlyTransfersHarvestedYield() public {
         staking.initializeV2();
         _installMonadPrecompileMock();
@@ -1608,7 +1660,12 @@ contract Series9StakingTest is Test {
         staking.rebalanceMonadDelegations();
 
         uint256 bobBefore = bob.balance;
+
+        // Protocol yield withdrawal is owner-only; a keeper must be rejected.
         vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", bob));
+        staking.transferExcessMonadYield(payable(bob), 2 ether);
+
         staking.transferExcessMonadYield(payable(bob), 2 ether);
 
         assertEq(bob.balance, bobBefore + 2 ether);

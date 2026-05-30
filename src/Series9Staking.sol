@@ -31,6 +31,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 private constant MONAD_TICKET_BATCH_LIMIT = 25;
     uint256 private constant MONAD_COMPACTION_BATCH_LIMIT = 50;
     uint64 private constant UNSTAKE_DELAY_EPOCHS = 5;
+    uint64 private constant MONAD_MAX_UNSTAKE_DELAY_EPOCHS = 30;
     uint64 private constant MONAD_PRECOMPILE_ADDRESS = 0x1000;
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
@@ -215,6 +216,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error MonadPayoutFailed();
     error NotInitialized();
     error MonadEpochReadFailed();
+    error InvalidUnstakeDelayEpochs();
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -261,6 +263,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event FeeRewardsClaimed(address indexed user, address indexed token, uint256 rewardAmount);
     event MonadRewardRateUpdated(uint256 previousRate, uint256 newRate);
     event MonadRebalanceKeeperUpdated(address indexed keeper, bool allowed);
+    event MonadUnstakeDelayEpochsUpdated(uint64 previousEpochs, uint64 newEpochs);
     event MonadStaked(address indexed user, uint256 amount);
     event Ser9UnstakeRequested(
         address indexed user, uint256 indexed requestId, uint256 amount, uint64 requestEpoch, uint64 minClaimEpoch
@@ -384,6 +387,19 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     function setMonadRebalanceKeeper(address keeper, bool allowed) external onlyOwner {
         monadRebalanceKeepers[keeper] = allowed;
         emit MonadRebalanceKeeperUpdated(keeper, allowed);
+    }
+
+    /// @notice Configure the epoch delay applied to Monad unstake coverage and undelegation tickets.
+    /// @dev Must track the Monad protocol's actual withdrawal/unbonding period. A value of 0 in storage
+    ///      falls back to UNSTAKE_DELAY_EPOCHS; the setter rejects 0 so the fallback stays internal.
+    function setMonadUnstakeDelayEpochs(uint64 newDelayEpochs) external onlyOwner {
+        if (newDelayEpochs == 0 || newDelayEpochs > MONAD_MAX_UNSTAKE_DELAY_EPOCHS) {
+            revert InvalidUnstakeDelayEpochs();
+        }
+
+        uint64 previousEpochs = _monadUnstakeDelayEpochs();
+        monadUnstakeDelayEpochs = newDelayEpochs;
+        emit MonadUnstakeDelayEpochsUpdated(previousEpochs, newDelayEpochs);
     }
 
     function pause() external onlyOwner {
@@ -711,7 +727,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         external
         whenNotPaused
         nonReentrant
-        onlyMonadRebalanceOperator
+        onlyOwner
     {
         if (amount == 0) {
             revert ZeroAmount();
@@ -736,7 +752,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         external
         whenNotPaused
         nonReentrant
-        onlyMonadRebalanceOperator
+        onlyOwner
     {
         uint256 availableAmount = _availableExcessMonadYield();
         if (availableAmount == 0) {
@@ -1492,6 +1508,31 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
     }
 
+    function _monadUnstakeDelayEpochs() internal view returns (uint64) {
+        uint64 configured = monadUnstakeDelayEpochs;
+        return configured == 0 ? UNSTAKE_DELAY_EPOCHS : configured;
+    }
+
+    /// @dev Credit any unexpected balance increase from a Monad precompile call to protocol yield.
+    ///      Some Monad staking precompile operations (delegate/undelegate/withdraw) may auto-pay
+    ///      accrued validator rewards alongside the requested action. Without this, that MON would be
+    ///      misclassified as principal and become unsweepable. `expectedOutflow`/`expectedInflow` are
+    ///      the principal movements the caller already accounts for; only the surplus is treated as yield.
+    function _accruePrecompileYield(
+        uint64 validatorId,
+        uint256 balanceBefore,
+        uint256 expectedOutflow,
+        uint256 expectedInflow
+    ) internal {
+        uint256 expectedBalance = balanceBefore + expectedInflow - expectedOutflow;
+        uint256 balanceAfter = address(this).balance;
+        if (balanceAfter > expectedBalance) {
+            uint256 yieldAmount = balanceAfter - expectedBalance;
+            protocolMonadYieldAccrued += yieldAmount;
+            emit MonadYieldAccrued(validatorId, yieldAmount);
+        }
+    }
+
     function _availableLiquidForActiveDelegation() internal view returns (uint256) {
         uint256 balance = address(this).balance;
         uint256 reserved = pendingMonadUnstakePrincipal + protocolMonadYieldAccrued;
@@ -1626,6 +1667,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
 
         _trackValidator(validatorId);
+        uint256 balanceBefore = address(this).balance;
         try _monadStaking().delegate{value: amount}(validatorId) returns (bool success) {
             if (!success) {
                 return false;
@@ -1633,6 +1675,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         } catch {
             return false;
         }
+        _accruePrecompileYield(validatorId, balanceBefore, amount, 0);
 
         validatorDelegatedAmount[validatorId] += amount;
         totalDelegatedMonad += amount;
@@ -1707,7 +1750,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         (, uint64 queuedClaimEpoch) = _queueUnstakeFromDelegations(undelegateAmount, epoch, maxValidators);
 
-        uint64 coverageClaimEpoch = epoch + UNSTAKE_DELAY_EPOCHS;
+        uint64 coverageClaimEpoch = epoch + _monadUnstakeDelayEpochs();
         if (queuedClaimEpoch > coverageClaimEpoch) {
             coverageClaimEpoch = queuedClaimEpoch;
         }
@@ -1737,7 +1780,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 requestCount = _pendingMonadUnstakeRequests.length;
         uint256 cursor = monadCoverageRequestCursor;
-        uint256 originalCursor = cursor;
 
         while (cursor < requestCount && amount > 0) {
             MonadUnstakeRequestRef memory requestRef = _pendingMonadUnstakeRequests[cursor];
@@ -1765,7 +1807,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         monadCoverageRequestCursor = cursor;
 
-        if (cursor == requestCount && originalCursor != 0) {
+        if (cursor == requestCount) {
             delete _pendingMonadUnstakeRequests;
             monadCoverageRequestCursor = 0;
         }
@@ -1814,6 +1856,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             return (0, 0);
         }
 
+        uint256 balanceBefore = address(this).balance;
         try _monadStaking().undelegate(validatorId, undelegatedAmount, withdrawId) returns (bool success) {
             if (!success) {
                 _withdrawIdInUse[validatorId][withdrawId] = false;
@@ -1823,8 +1866,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             _withdrawIdInUse[validatorId][withdrawId] = false;
             return (0, 0);
         }
+        _accruePrecompileYield(validatorId, balanceBefore, 0, 0);
 
-        claimableEpoch = epoch + UNSTAKE_DELAY_EPOCHS;
+        claimableEpoch = epoch + _monadUnstakeDelayEpochs();
 
         validatorDelegatedAmount[validatorId] = delegatedAmount - undelegatedAmount;
         validatorPendingUndelegateAmount[validatorId] += undelegatedAmount;
@@ -1883,17 +1927,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         while (scanned < trackedLength && scanned < maxValidators) {
             uint64 validatorId = trackedValidators[cursor];
-            if (validatorDelegatedAmount[validatorId] == 0 && validatorPendingUndelegateAmount[validatorId] == 0) {
-                unchecked {
-                    ++scanned;
-                    ++cursor;
-                }
-                if (cursor == trackedLength) {
-                    cursor = 0;
-                }
-                continue;
-            }
 
+            // Claim from every validator the contract has staked to (all tracked validators),
+            // including ones whose active delegation is currently zero — they may still hold
+            // unclaimed rewards that would otherwise be stranded when the validator is compacted out.
             uint256 beforeBalance = address(this).balance;
             try _monadStaking().claimRewards(validatorId) {} catch {
                 unchecked {
@@ -1953,6 +1990,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 continue;
             }
 
+            uint256 balanceBefore = address(this).balance;
             try _monadStaking().withdraw(ticket.validatorId, ticket.withdrawId) returns (bool success) {
                 if (!success) {
                     unchecked {
@@ -1974,6 +2012,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 }
                 continue;
             }
+
+            _accruePrecompileYield(ticket.validatorId, balanceBefore, 0, ticket.amount);
 
             ticket.withdrawn = true;
             validatorPendingUndelegateAmount[ticket.validatorId] -= ticket.amount;
@@ -2382,6 +2422,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     uint256 public cachedMonadObservedApy;
     uint256 public cachedMonadDelegatedShareBps;
+    uint64 public monadUnstakeDelayEpochs;
 
-    uint256[13] private _gap;
+    uint256[12] private _gap;
 }
