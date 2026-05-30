@@ -1650,6 +1650,32 @@ contract Series9StakingTest is Test {
         assertEq(address(staking).balance, 3 ether);
     }
 
+    function testOwnerCanClaimMonadValidatorReward() public {
+        staking.initializeV2();
+        staking.initializeV3();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+        staking.rebalanceMonadDelegations();
+
+        monadStakingMock.setDelegatorRewards(3, address(staking), 5 ether);
+
+        uint256 beforeBalance = address(staking).balance;
+        staking.claimMonadValidatorReward(3);
+
+        assertEq(staking.protocolMonadYieldAccrued(), 5 ether);
+        assertEq(address(staking).balance, beforeBalance + 5 ether);
+    }
+
+    function testNonOwnerCannotClaimMonadValidatorReward() public {
+        vm.expectRevert();
+        vm.prank(alice);
+        staking.claimMonadValidatorReward(1);
+    }
+
     function testHarvestClaimsAllFiveDelegatedValidatorsViaDirectCall() public {
         staking.initializeV2();
         staking.initializeV3();

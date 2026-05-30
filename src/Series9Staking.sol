@@ -784,6 +784,30 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         _harvestMonadValidatorRewards(trackedValidators.length);
     }
 
+    /// @notice Owner-only escape hatch to claim MONAD rewards from a specific validator.
+    /// @dev This allows the owner to directly claim rewards from a single validator without
+    ///      going through the full rebalance/harvest cycle.
+    function claimMonadValidatorReward(uint64 validatorId)
+        external
+        whenNotPaused
+        nonReentrant
+        onlyOwner
+        updateReward(address(0))
+    {
+        uint256 beforeBalance = address(this).balance;
+        try _monadStaking().claimRewards(validatorId) {} catch (bytes memory reason) {
+            emit MonadClaimRewardsFailed(validatorId, reason);
+            return;
+        }
+
+        uint256 afterBalance = address(this).balance;
+        if (afterBalance > beforeBalance) {
+            uint256 claimedAmount = afterBalance - beforeBalance;
+            protocolMonadYieldAccrued += claimedAmount;
+            emit MonadYieldAccrued(validatorId, claimedAmount);
+        }
+    }
+
     function transferExcessMonadYield(address payable recipient, uint256 amount)
         external
         whenNotPaused
