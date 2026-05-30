@@ -114,24 +114,25 @@ contract Series9ManagedToken is Initializable, ERC20Upgradeable, OwnableUpgradea
     }
 
     function _update(address from, address to, uint256 value) internal virtual override {
-        _requestUpgradeIfNeeded();
-
         if (
             !feeEnabled || from == address(0) || to == address(0) || feeBps == 0 || isFeeExempt[from] || isFeeExempt[to]
         ) {
             super._update(from, to, value);
-            return;
+        } else {
+            uint256 feeAmount = (value * feeBps) / BPS_DENOMINATOR;
+            if (feeAmount == 0) {
+                super._update(from, to, value);
+            } else {
+                uint256 netAmount = value - feeAmount;
+                super._update(from, feeRecipient, feeAmount);
+                super._update(from, to, netAmount);
+            }
         }
 
-        uint256 feeAmount = (value * feeBps) / BPS_DENOMINATOR;
-        if (feeAmount == 0) {
-            super._update(from, to, value);
-            return;
-        }
-
-        uint256 netAmount = value - feeAmount;
-        super._update(from, feeRecipient, feeAmount);
-        super._update(from, to, netAmount);
+        // Run the upgrade check after balances settle (checks-effects-interactions): the external
+        // call into the staking owner — and any resulting self-upgrade — cannot interfere with the
+        // in-flight transfer accounting.
+        _requestUpgradeIfNeeded();
     }
 
     function _requestUpgradeIfNeeded() internal returns (bool upgraded) {
