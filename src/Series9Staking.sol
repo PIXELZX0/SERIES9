@@ -279,6 +279,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event MonadYieldTransferred(address indexed recipient, uint256 amount);
     event MonadTargetsUpdated(uint64[5] validatorIds, uint16[5] weightsBps, uint8 targetCount);
     event MonadRebalanced(uint256 totalMonadStaked, uint256 totalDelegatedMonad, uint256 totalPendingUndelegateMonad);
+    event MonadDelegateFailed(uint64 indexed validatorId, uint256 amount, bytes reason);
+    event MonadClaimRewardsFailed(uint64 indexed validatorId, bytes reason);
 
     modifier updateReward(address account) {
         _updateReward(account);
@@ -1670,9 +1672,11 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 balanceBefore = address(this).balance;
         try _monadStaking().delegate{value: amount}(validatorId) returns (bool success) {
             if (!success) {
+                emit MonadDelegateFailed(validatorId, amount, "");
                 return false;
             }
-        } catch {
+        } catch (bytes memory reason) {
+            emit MonadDelegateFailed(validatorId, amount, reason);
             return false;
         }
         _accruePrecompileYield(validatorId, balanceBefore, amount, 0);
@@ -1932,7 +1936,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             // including ones whose active delegation is currently zero — they may still hold
             // unclaimed rewards that would otherwise be stranded when the validator is compacted out.
             uint256 beforeBalance = address(this).balance;
-            try _monadStaking().claimRewards(validatorId) {} catch {
+            try _monadStaking().claimRewards(validatorId) {} catch (bytes memory reason) {
+                emit MonadClaimRewardsFailed(validatorId, reason);
                 unchecked {
                     ++scanned;
                     ++cursor;
@@ -2187,18 +2192,18 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             length = lastIndex;
             removals++;
 
-            if (monadHarvestValidatorCursor > length) {
-                monadHarvestValidatorCursor = length;
-            }
-            if (monadUndelegateValidatorCursor > length) {
-                monadUndelegateValidatorCursor = length;
-            }
-            if (monadFallbackValidatorCursor > length) {
-                monadFallbackValidatorCursor = length;
-            }
-            if (monadRebalanceValidatorCursor > length) {
-                monadRebalanceValidatorCursor = length;
-            }
+        if (monadHarvestValidatorCursor >= length) {
+            monadHarvestValidatorCursor = 0;
+        }
+        if (monadUndelegateValidatorCursor >= length) {
+            monadUndelegateValidatorCursor = 0;
+        }
+        if (monadFallbackValidatorCursor >= length) {
+            monadFallbackValidatorCursor = 0;
+        }
+        if (monadRebalanceValidatorCursor >= length) {
+            monadRebalanceValidatorCursor = 0;
+        }
         }
     }
 
