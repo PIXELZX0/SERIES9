@@ -290,6 +290,13 @@
   },
   {
     "type": "function",
+    "name": "requestUpgrade",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setFeeBps",
     "inputs": [
       {

@@ -217,6 +217,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error NotInitialized();
     error MonadEpochReadFailed();
     error InvalidUnstakeDelayEpochs();
+    error InvalidFeeRecipientTarget();
+    error InsufficientCreationFees(uint256 requested, uint256 available);
+    error InvalidSweepRecipient();
+    error InvalidUndelegateTicket();
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -281,6 +285,15 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event MonadRebalanced(uint256 totalMonadStaked, uint256 totalDelegatedMonad, uint256 totalPendingUndelegateMonad);
     event MonadDelegateFailed(uint64 indexed validatorId, uint256 amount, bytes reason);
     event MonadClaimRewardsFailed(uint64 indexed validatorId, bytes reason);
+    event CreationFeesSwept(address indexed to, uint256 amount);
+    event MonadUndelegateTicketForceReleased(uint64 indexed validatorId, uint8 indexed withdrawId, uint256 amount);
+    /// @dev Emitted when a matured `withdraw` returns less MON than the booked undelegation
+    /// principal — the on-chain signal that Monad has begun slashing delegated/unbonding stake.
+    /// Currently never fires: Monad has no automated in-protocol slashing (confirmed 2026-05,
+    /// docs.monad.xyz/developer-essentials/staking/staking-behavior). See `monadSlashingDeficit`.
+    event MonadWithdrawShortfall(
+        uint64 indexed validatorId, uint8 indexed withdrawId, uint256 expected, uint256 received, uint256 shortfall
+    );
 
     modifier updateReward(address account) {
         _updateReward(account);
@@ -365,14 +378,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         if (monadRewardRatePerBlock == 0) {
             monadRewardRatePerBlock = rewardRatePerBlock / 8;
         }
-
-        if (cachedMonadDelegatedShareBps == 0) {
-            cachedMonadDelegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
-        }
     }
 
     function initializeV3() external reinitializer(3) {
-        cachedMonadDelegatedShareBps = BPS_DENOMINATOR;
+        // No-op retained to preserve the reinitializer version sequence on the live proxy.
     }
 
     function setRewardRatePerBlock(uint256 newRewardRatePerBlock) external onlyOwner updateReward(address(0)) {
@@ -389,6 +398,30 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     function setMonadRebalanceKeeper(address keeper, bool allowed) external onlyOwner {
         monadRebalanceKeepers[keeper] = allowed;
         emit MonadRebalanceKeeperUpdated(keeper, allowed);
+    }
+
+    /// @notice Owner escape hatch to release a Monad undelegate ticket whose `withdraw` is
+    ///         permanently failing (e.g. already settled by the precompile via another path),
+    ///         freeing its per-validator withdrawId slot so the ticket can be compacted out.
+    /// @dev WARNING: only call when the underlying MON is confirmed unrecoverable or already
+    ///      returned; releasing a ticket whose withdraw is still pending strands that MON at the
+    ///      precompile. User claims remain balance-gated, so this can never cause overpayment.
+    function forceReleaseUndelegateTicket(uint256 ticketIndex) external onlyOwner {
+        if (ticketIndex >= pendingUndelegateTickets.length) {
+            revert InvalidUndelegateTicket();
+        }
+
+        PendingUndelegateTicket storage ticket = pendingUndelegateTickets[ticketIndex];
+        if (ticket.withdrawn) {
+            revert InvalidUndelegateTicket();
+        }
+
+        ticket.withdrawn = true;
+        validatorPendingUndelegateAmount[ticket.validatorId] -= ticket.amount;
+        totalPendingUndelegateMonad -= ticket.amount;
+        _withdrawIdInUse[ticket.validatorId][ticket.withdrawId] = false;
+
+        emit MonadUndelegateTicketForceReleased(ticket.validatorId, ticket.withdrawId, ticket.amount);
     }
 
     /// @notice Configure the epoch delay applied to Monad unstake coverage and undelegation tickets.
@@ -420,6 +453,23 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 previousFee = tokenCreationFee;
         tokenCreationFee = newFee;
         emit TokenCreationFeeUpdated(previousFee, newFee);
+    }
+
+    /// @notice Withdraw SER9 collected as token-creation fees.
+    /// @dev Only fees tracked since the upgrade that introduced `accruedCreationFees` are
+    ///      withdrawable. The counter only ever grows from collected creation fees, so staked
+    ///      principal and pending-unstake balances can never be swept.
+    function sweepCreationFees(address to, uint256 amount) external onlyOwner {
+        if (to == address(0)) {
+            revert InvalidSweepRecipient();
+        }
+        uint256 accrued = accruedCreationFees;
+        if (amount == 0 || amount > accrued) {
+            revert InsufficientCreationFees(amount, accrued);
+        }
+        accruedCreationFees = accrued - amount;
+        IERC20(address(ser9)).safeTransfer(to, amount);
+        emit CreationFeesSwept(to, amount);
     }
 
     function setPermit2(address newPermit2) external onlyOwner {
@@ -479,6 +529,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 fee = tokenCreationFee;
         if (fee > 0) {
+            accruedCreationFees += fee;
             IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
         }
     }
@@ -496,6 +547,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 fee = tokenCreationFee;
         if (fee > 0) {
+            accruedCreationFees += fee;
             _transferFromWithPermit2(address(ser9), fee, permitSingle, permitSignature);
         }
     }
@@ -516,6 +568,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 fee = tokenCreationFee;
         if (fee > 0) {
+            accruedCreationFees += fee;
             IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
         }
     }
@@ -538,6 +591,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 fee = tokenCreationFee;
         if (fee > 0) {
+            accruedCreationFees += fee;
             _transferFromWithPermit2(address(ser9), fee, permitSingle, permitSignature);
         }
     }
@@ -597,6 +651,11 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function setTokenFeeRecipient(address token, address newFeeRecipient) external onlyOwner {
         _requireManagedToken(token);
+        // Fees must accrue to this contract so fee-token stakers receive them; redirecting the
+        // recipient elsewhere would silently break fee-reward distribution.
+        if (newFeeRecipient != address(this)) {
+            revert InvalidFeeRecipientTarget();
+        }
         Series9ManagedToken(token).setFeeRecipient(newFeeRecipient);
     }
 
@@ -647,7 +706,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit Staked(msg.sender, amount);
     }
 
-    function unstake(uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
+    function unstake(uint256 amount) external whenInitialized whenNotPaused nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
@@ -1477,8 +1536,15 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         uint256 newlyReceived = rewardBalance - pool.rewardBalance;
         uint256 distributable = pool.undistributedRewards + newlyReceived;
         if (distributable > 0) {
-            pool.accFeePerShare += Math.mulDiv(distributable, PRECISION, pool.totalStaked);
-            pool.undistributedRewards = 0;
+            uint256 accDelta = Math.mulDiv(distributable, PRECISION, pool.totalStaked);
+            if (accDelta > 0) {
+                pool.accFeePerShare += accDelta;
+                // Carry the sub-share remainder so dust is not lost when totalStaked is large.
+                uint256 consumed = Math.mulDiv(accDelta, pool.totalStaked, PRECISION);
+                pool.undistributedRewards = distributable - consumed;
+            } else {
+                pool.undistributedRewards = distributable;
+            }
         }
 
         pool.rewardBalance = rewardBalance;
@@ -2018,7 +2084,26 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 continue;
             }
 
-            _accruePrecompileYield(ticket.validatorId, balanceBefore, 0, ticket.amount);
+            // Measure what the precompile actually returned for this withdrawal. Under normal
+            // operation `received >= ticket.amount` (full principal, possibly plus auto-paid
+            // rewards). A `received < ticket.amount` result means delegated/unbonding stake was
+            // slashed: book the surplus as yield, or record the shortfall as a solvency deficit so
+            // off-chain monitoring is alerted and the owner can backfill / pause before claims drain.
+            uint256 balanceAfter = address(this).balance;
+            uint256 received = balanceAfter > balanceBefore ? balanceAfter - balanceBefore : 0;
+            if (received >= ticket.amount) {
+                uint256 surplus = received - ticket.amount;
+                if (surplus > 0) {
+                    protocolMonadYieldAccrued += surplus;
+                    emit MonadYieldAccrued(ticket.validatorId, surplus);
+                }
+            } else {
+                uint256 shortfall = ticket.amount - received;
+                monadSlashingDeficit += shortfall;
+                emit MonadWithdrawShortfall(
+                    ticket.validatorId, ticket.withdrawId, ticket.amount, received, shortfall
+                );
+            }
 
             ticket.withdrawn = true;
             validatorPendingUndelegateAmount[ticket.validatorId] -= ticket.amount;
@@ -2058,6 +2143,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 uint256 accRewardPerToken;
                 uint256 commission;
 
+                // NOTE: the 2nd return value (`uint64 flags`) encodes validator state. We do NOT
+                // filter on it (e.g. to skip jailed validators) because Monad does not publish the
+                // flag bit layout, and Monad has no automated slashing today
+                // (docs.monad.xyz/developer-essentials/staking/staking-behavior, confirmed 2026-05),
+                // so a jailed/slashed bit is not yet actionable. Guessing a bitmask risks wrongly
+                // excluding healthy validators. Revisit once Monad documents flag bits / enables
+                // slashing; until then `MonadWithdrawShortfall` is the slashing tripwire.
                 try _monadStaking().getValidator(validatorId) returns (
                     address,
                     uint64,
@@ -2426,8 +2518,20 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     }
 
     uint256 public cachedMonadObservedApy;
+    /// @dev Deprecated: retained for storage-layout and ABI stability. Set once at initialization
+    /// to BPS_DENOMINATOR; no longer drives any delegation logic.
     uint256 public cachedMonadDelegatedShareBps;
     uint64 public monadUnstakeDelayEpochs;
 
-    uint256[12] private _gap;
+    uint256 public accruedCreationFees;
+
+    /// @notice Cumulative MON shortfall observed when matured Monad `withdraw` calls returned less
+    /// than the booked undelegation principal (i.e. delegated stake was slashed).
+    /// @dev Pure observability counter — it does NOT alter user claim amounts. Stays 0 while Monad
+    /// has no slashing. If it ever rises, the contract is under-collateralized for Monad unstake
+    /// claims and the owner must backfill MON (via `receive()`) or pause; reassess the claim path
+    /// for proportional loss-socialization before relying on this contract under active slashing.
+    uint256 public monadSlashingDeficit;
+
+    uint256[10] private _gap;
 }

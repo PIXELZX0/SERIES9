@@ -114,6 +114,7 @@ contract MonadStakingMock is IMonadStaking {
     bool internal currentInDelayPeriod;
     bool internal revertEpochRead;
     uint64[] internal executionValset;
+    uint16 internal withdrawSlashBps;
 
     mapping(uint64 => ValidatorInfo) internal validatorInfo;
     mapping(uint64 => mapping(address => DelegatorInfo)) internal delegatorInfo;
@@ -127,6 +128,12 @@ contract MonadStakingMock is IMonadStaking {
 
     function setEpochReadFailure(bool shouldFail) external {
         revertEpochRead = shouldFail;
+    }
+
+    /// @notice Simulate Monad slashing delegated/unbonding stake: withdraw returns only
+    ///         (10000 - bps)/10000 of the requested amount; the remainder stays in the mock.
+    function setWithdrawSlashBps(uint16 bps) external {
+        withdrawSlashBps = bps;
     }
 
     function setExecutionValidatorSet(uint64[] calldata validatorIds) external {
@@ -176,7 +183,8 @@ contract MonadStakingMock is IMonadStaking {
         info.amount = 0;
         info.claimableEpoch = 0;
 
-        (bool ok,) = msg.sender.call{value: amount}("");
+        uint256 payout = amount - (amount * withdrawSlashBps) / 10_000;
+        (bool ok,) = msg.sender.call{value: payout}("");
         require(ok, "mock: transfer failed");
         return true;
     }
@@ -1473,11 +1481,18 @@ contract Series9StakingTest is Test {
 
     function testOwnerCanSetTokenFeeRecipient() public {
         address token = _createToken(alice, "FEERCPT", "FRC", 1 ether, true, 300);
-        address newRecipient = makeAddr("newRecipient");
 
-        staking.setTokenFeeRecipient(token, newRecipient);
-        assertEq(Series9ManagedToken(token).feeRecipient(), newRecipient);
-        assertTrue(Series9ManagedToken(token).isFeeExempt(newRecipient));
+        // Recipient is constrained to the staking contract so fee distribution keeps working.
+        staking.setTokenFeeRecipient(token, address(staking));
+        assertEq(Series9ManagedToken(token).feeRecipient(), address(staking));
+        assertTrue(Series9ManagedToken(token).isFeeExempt(address(staking)));
+    }
+
+    function testSetTokenFeeRecipientRejectsNonStaking() public {
+        address token = _createToken(alice, "FEERCPT4", "FR4", 1 ether, true, 300);
+
+        vm.expectRevert(Series9Staking.InvalidFeeRecipientTarget.selector);
+        staking.setTokenFeeRecipient(token, makeAddr("newRecipient"));
     }
 
     function testNonOwnerCannotSetTokenFeeRecipient() public {
@@ -1491,8 +1506,58 @@ contract Series9StakingTest is Test {
     function testCannotSetFeeRecipientToZeroAddress() public {
         address token = _createToken(alice, "FEERCPT3", "FR3", 1 ether, true, 300);
 
-        vm.expectRevert(Series9ManagedToken.InvalidFeeRecipient.selector);
+        vm.expectRevert(Series9Staking.InvalidFeeRecipientTarget.selector);
         staking.setTokenFeeRecipient(token, address(0));
+    }
+
+    function testSweepCreationFeesWithdrawsAccruedFees() public {
+        _createToken(alice, "SWEEP", "SWP", 1 ether, false, 0);
+        uint256 accrued = staking.accruedCreationFees();
+        assertGt(accrued, 0);
+
+        address recipient = makeAddr("feeSink");
+        uint256 balBefore = ser9.balanceOf(recipient);
+
+        staking.sweepCreationFees(recipient, accrued);
+
+        assertEq(ser9.balanceOf(recipient), balBefore + accrued);
+        assertEq(staking.accruedCreationFees(), 0);
+    }
+
+    function testSweepCreationFeesRejectsExcess() public {
+        _createToken(alice, "SWEEP2", "SWP2", 1 ether, false, 0);
+        uint256 accrued = staking.accruedCreationFees();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Series9Staking.InsufficientCreationFees.selector, accrued + 1, accrued)
+        );
+        staking.sweepCreationFees(makeAddr("feeSink"), accrued + 1);
+    }
+
+    function testSweepCreationFeesRejectsZeroAmount() public {
+        _createToken(alice, "SWEEP3", "SWP3", 1 ether, false, 0);
+        uint256 accrued = staking.accruedCreationFees();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Series9Staking.InsufficientCreationFees.selector, uint256(0), accrued)
+        );
+        staking.sweepCreationFees(makeAddr("feeSink"), 0);
+    }
+
+    function testSweepCreationFeesRejectsZeroRecipient() public {
+        _createToken(alice, "SWEEP4", "SWP4", 1 ether, false, 0);
+
+        vm.expectRevert(Series9Staking.InvalidSweepRecipient.selector);
+        staking.sweepCreationFees(address(0), 1);
+    }
+
+    function testSweepCreationFeesOnlyOwner() public {
+        _createToken(alice, "SWEEP5", "SWP5", 1 ether, false, 0);
+        uint256 accrued = staking.accruedCreationFees();
+
+        vm.expectRevert();
+        vm.prank(alice);
+        staking.sweepCreationFees(alice, accrued);
     }
 
     function testInitializeV2SetsDefaultMonadRewardRate() public {
@@ -1810,6 +1875,57 @@ contract Series9StakingTest is Test {
         staking.claimUnstakedMonad(requestId);
 
         assertEq(alice.balance, aliceBefore + 2 ether);
+    }
+
+    function testMonadWithdrawShortfallRecordsDeficitOnSlash() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 1);
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+
+        assertTrue(staking.exposeDelegateMonadAmountToValidator(1, 10 ether));
+
+        vm.prank(alice);
+        staking.requestUnstakeMonad(4 ether);
+
+        // Simulate Monad slashing 25% of the unbonding stake during the withdrawal delay.
+        monadStakingMock.setWithdrawSlashBps(2500);
+        monadStakingMock.setEpoch(6, false);
+
+        vm.expectEmit(true, true, false, true, address(staking));
+        emit Series9Staking.MonadWithdrawShortfall(1, 0, 4 ether, 3 ether, 1 ether);
+
+        uint256 processed = staking.processMaturedMonadUndelegations(0);
+        assertEq(processed, 1);
+
+        // 25% of 4 MON = 1 MON shortfall recorded; principal bookkeeping still cleared.
+        assertEq(staking.monadSlashingDeficit(), 1 ether);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+    }
+
+    function testMonadWithdrawNoShortfallWhenFullReturn() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorsRange(1, 1);
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+
+        assertTrue(staking.exposeDelegateMonadAmountToValidator(1, 10 ether));
+
+        vm.prank(alice);
+        staking.requestUnstakeMonad(4 ether);
+
+        monadStakingMock.setEpoch(6, false);
+        uint256 processed = staking.processMaturedMonadUndelegations(0);
+
+        assertEq(processed, 1);
+        assertEq(staking.monadSlashingDeficit(), 0);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
     }
 
     function testPausedMaturedMonadClaimStillNeedsExternalMaturedProcessor() public {
