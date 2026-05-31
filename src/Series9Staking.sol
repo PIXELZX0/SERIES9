@@ -808,6 +808,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
     }
 
+    function delegateUnstakedMonad() external whenNotPaused nonReentrant onlyOwner {
+        _autoDelegateMonadStake();
+    }
+
     function transferExcessMonadYield(address payable recipient, uint256 amount)
         external
         whenNotPaused

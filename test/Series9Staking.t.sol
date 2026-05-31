@@ -1676,6 +1676,34 @@ contract Series9StakingTest is Test {
         staking.claimMonadValidatorReward(1);
     }
 
+    function testOwnerCanDelegateUnstakedMonad() public {
+        staking.initializeV2();
+        staking.initializeV3();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 20 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 10 ether}();
+
+        // Before rebalance, targets are not set so auto-delegate does nothing.
+        assertEq(staking.totalDelegatedMonad(), 0);
+
+        // Rebalance sets targets and delegates the staked MONAD.
+        staking.rebalanceMonadDelegations();
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+
+        // Calling delegateUnstakedMonad as owner is a no-op when everything is already delegated.
+        staking.delegateUnstakedMonad();
+        assertEq(staking.totalDelegatedMonad(), 10 ether);
+    }
+
+    function testNonOwnerCannotDelegateUnstakedMonad() public {
+        vm.expectRevert();
+        vm.prank(alice);
+        staking.delegateUnstakedMonad();
+    }
+
     function testHarvestClaimsAllFiveDelegatedValidatorsViaDirectCall() public {
         staking.initializeV2();
         staking.initializeV3();
