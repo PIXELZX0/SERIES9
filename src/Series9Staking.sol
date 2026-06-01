@@ -955,6 +955,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         processed = _processMaturedUndelegations(currentEpoch, _resolveBatchLimit(maxTickets, MONAD_TICKET_BATCH_LIMIT));
     }
 
+    function updateMonadTargets() external whenNotPaused nonReentrant onlyMonadRebalanceOperator {
+        _updateMonadTargets();
+    }
+
     function rebalanceMonadDelegations() external whenNotPaused nonReentrant onlyMonadRebalanceOperator {
         rewardPerTokenStored = rewardPerToken();
         lastUpdateBlock = block.number;
@@ -965,7 +969,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         (uint64 currentEpoch,) = _getEpoch();
         _processMaturedUndelegations(currentEpoch, MONAD_TICKET_BATCH_LIMIT);
         _queuePendingMonadUnstakeCoverage(currentEpoch, MONAD_VALIDATOR_BATCH_LIMIT);
-        _updateMonadTargets();
         _rebalanceToMonadTargets(currentEpoch, MONAD_VALIDATOR_BATCH_LIMIT);
 
         emit MonadRebalanced(totalMonadStaked, totalDelegatedMonad, totalPendingUndelegateMonad);

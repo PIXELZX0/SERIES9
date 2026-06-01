@@ -1596,6 +1596,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
 
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.cachedMonadObservedApy(), 0);
@@ -1614,6 +1615,7 @@ contract Series9StakingTest is Test {
         vm.deal(alice, 20 ether);
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.totalDelegatedMonad(), 10 ether);
@@ -1637,6 +1639,7 @@ contract Series9StakingTest is Test {
         vm.deal(alice, 20 ether);
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         monadStakingMock.setDelegatorRewards(1, address(staking), 1 ether);
@@ -1689,7 +1692,8 @@ contract Series9StakingTest is Test {
         // Before rebalance, targets are not set so auto-delegate does nothing.
         assertEq(staking.totalDelegatedMonad(), 0);
 
-        // Rebalance sets targets and delegates the staked MONAD.
+        // Update targets and rebalance to delegate the staked MONAD.
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
         assertEq(staking.totalDelegatedMonad(), 10 ether);
 
@@ -1713,6 +1717,7 @@ contract Series9StakingTest is Test {
         vm.deal(alice, 20 ether);
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         // All five targets carry stake after a rebalance with equal scores.
@@ -1736,6 +1741,7 @@ contract Series9StakingTest is Test {
         vm.deal(alice, 20 ether);
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         // Fully exit every validator: active delegation and pending both drop to zero.
@@ -1765,6 +1771,7 @@ contract Series9StakingTest is Test {
         vm.deal(alice, 20 ether);
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         monadStakingMock.setDelegatorRewards(1, address(staking), 2 ether);
@@ -1776,6 +1783,7 @@ contract Series9StakingTest is Test {
         uint256 requestId = staking.requestUnstakeMonad(4 ether);
 
         monadStakingMock.setEpoch(6, false);
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         uint256 bobBefore = bob.balance;
@@ -1849,6 +1857,8 @@ contract Series9StakingTest is Test {
         staking.setMonadRebalanceKeeper(bob, true);
 
         vm.prank(bob);
+        staking.updateMonadTargets();
+        vm.prank(bob);
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.targetValidatorCount(), 5);
@@ -1861,6 +1871,8 @@ contract Series9StakingTest is Test {
         monadStakingMock.bumpValidatorAccRewardPerToken(1, 100 ether);
         monadStakingMock.setDelegatorRewards(1, address(staking), 1 ether);
 
+        vm.prank(bob);
+        staking.updateMonadTargets();
         vm.prank(bob);
         staking.rebalanceMonadDelegations();
 
@@ -2184,6 +2196,7 @@ contract Series9StakingTest is Test {
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
 
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         vm.roll(block.number + 10);
@@ -2191,6 +2204,7 @@ contract Series9StakingTest is Test {
             monadStakingMock.bumpValidatorAccRewardPerToken(validatorId, 5_000 ether);
         }
 
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         for (uint256 i = 0; i < 5; ++i) {
@@ -2206,6 +2220,7 @@ contract Series9StakingTest is Test {
         vm.deal(alice, 20 ether);
         vm.prank(alice);
         staking.stakeMonad{value: 10 ether}();
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
 
         assertEq(staking.trackedValidatorsLength(), 5);
@@ -2463,6 +2478,7 @@ contract Series9StakingTest is Test {
             monadStakingMock.bumpValidatorAccRewardPerToken(validatorId, deltaAcc);
         }
 
+        staking.updateMonadTargets();
         staking.rebalanceMonadDelegations();
     }
 
