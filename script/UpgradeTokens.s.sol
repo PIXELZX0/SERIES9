@@ -4,23 +4,8 @@ pragma solidity ^0.8.22;
 import {Script, console} from "forge-std/Script.sol";
 
 import {SER9Token} from "../src/SER9Token.sol";
-import {Series9ManagedToken} from "../src/Series9ManagedToken.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
 
-/// @notice Deploys new implementation contracts and outputs the Safe TX Builder JSON
-///         for upgrading via the Safe multisig.
-///
-/// Flow:
-///   1. Deployer EOA deploys new implementation contracts (just code, no privileges)
-///   2. Script outputs a Safe TX Builder JSON for the explicit SER9 upgrade and
-///      managed-token implementation update calls
-///   3. Managed tokens can then be upgraded individually via owner bootstrap
-///      calls or token-triggered upgrade requests
-///   4. Import JSON into Safe{Wallet} → multisig signs → executes upgrade
-///
-/// Usage:
-///   PRIVATE_KEY=0x... STAKING_PROXY=0x... forge script script/UpgradeTokens.s.sol \
-///     --rpc-url $MONAD_RPC_URL --broadcast --ffi --profile deploy
 contract UpgradeTokens is Script {
     string constant SOURCIFY_VERIFIER_URL = "https://sourcify-api-monad.blockvision.org";
     string constant SOCIALSCAN_VERIFIER_URL = "https://api.socialscan.io/monad/v1/explorer/command_api/contract";
@@ -34,49 +19,36 @@ contract UpgradeTokens is Script {
         string memory ser9DataHex = vm.envOr("SER9_UPGRADE_DATA", string(""));
         bytes memory ser9Data = bytes(ser9DataHex).length == 0 ? bytes("") : vm.parseBytes(ser9DataHex);
 
-        // --- Phase 1: Deploy new implementations (deployer EOA, no privileges) ---
         vm.startBroadcast(deployerPrivateKey);
 
         address newSer9Implementation = address(new SER9Token());
-        address newManagedImplementation = address(new Series9ManagedToken());
 
         vm.stopBroadcast();
 
         console.log("=== New Implementations Deployed ===");
         console.log("New SER9 Implementation:", newSer9Implementation);
-        console.log("New Managed Implementation:", newManagedImplementation);
         console.log("Staking Proxy:", stakingProxy);
 
-        // --- Phase 2: Verify new implementations (optional) ---
         if (skipVerify) {
             console.log("\n=== Skipping Verification (SKIP_VERIFY=true) ===");
         } else {
             console.log("\n=== Verifying New Implementations ===");
             _verify(newSer9Implementation, "src/SER9Token.sol:SER9Token");
-            _verify(newManagedImplementation, "src/Series9ManagedToken.sol:Series9ManagedToken");
         }
 
-        // --- Phase 3: Generate Safe TX Builder JSON ---
         bytes memory upgradeSer9Calldata = abi.encodeCall(Series9Staking.upgradeSer9, (newSer9Implementation, ser9Data));
-        bytes memory setManagedImplCalldata =
-            abi.encodeCall(Series9Staking.setManagedTokenImplementation, (newManagedImplementation));
 
         string memory json = string.concat(
             '{"version":"1.0","chainId":"',
             CHAIN_ID,
-            '","meta":{"name":"Series9 Upgrade","description":"Upgrade SER9 and set the latest managed token implementation for individual token upgrades"},"transactions":[{"to":"',
+            '","meta":{"name":"Series9 Upgrade","description":"Upgrade SER9 implementation"},"transactions":[{"to":"',
             vm.toString(stakingProxy),
             '","value":"0","data":"',
             vm.toString(upgradeSer9Calldata),
-            '"},{"to":"',
-            vm.toString(stakingProxy),
-            '","value":"0","data":"',
-            vm.toString(setManagedImplCalldata),
             '"}]}'
         );
 
         string memory outputPath = "safe-tx-upgrade-tokens.json";
-        // forge-lint: disable-next-line(unsafe-cheatcode)
         vm.writeFile(outputPath, json);
 
         console.log("\n=== Safe Transaction Builder ===");
@@ -86,7 +58,6 @@ contract UpgradeTokens is Script {
     }
 
     function _verify(address contractAddr, string memory contractName) internal {
-        // 1. Sourcify (Blockvision)
         string[] memory sourcifyCmd = new string[](12);
         sourcifyCmd[0] = "forge";
         sourcifyCmd[1] = "verify-contract";
@@ -102,14 +73,12 @@ contract UpgradeTokens is Script {
         sourcifyCmd[11] = SOURCIFY_VERIFIER_URL;
 
         console.log("Verifying:", contractName, "at", contractAddr);
-        // forge-lint: disable-next-line(unsafe-cheatcode)
         try vm.ffi(sourcifyCmd) returns (bytes memory result) {
             console.log("  [Sourcify] ", string(result));
         } catch {
             console.log("  [WARN] Sourcify verification failed");
         }
 
-        // 2. SocialScan (Blockscout)
         string[] memory socialscanCmd = new string[](12);
         socialscanCmd[0] = "forge";
         socialscanCmd[1] = "verify-contract";
@@ -124,7 +93,6 @@ contract UpgradeTokens is Script {
         socialscanCmd[10] = "--verifier-url";
         socialscanCmd[11] = SOCIALSCAN_VERIFIER_URL;
 
-        // forge-lint: disable-next-line(unsafe-cheatcode)
         try vm.ffi(socialscanCmd) returns (bytes memory result2) {
             console.log("  [SocialScan] ", string(result2));
         } catch {

@@ -9,7 +9,6 @@ import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeCast} from "openzeppelin-contracts/contracts/utils/math/SafeCast.sol";
 
 import {SER9Token} from "../src/SER9Token.sol";
-import {Series9ManagedToken} from "../src/Series9ManagedToken.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
 import {IPermit2} from "../src/interfaces/IPermit2.sol";
 import {IMonadStaking} from "../src/interfaces/IMonadStaking.sol";
@@ -20,17 +19,7 @@ contract SER9TokenV2 is SER9Token {
     }
 }
 
-contract Series9ManagedTokenV2 is Series9ManagedToken {
-    function version() external pure returns (uint256) {
-        return 2;
-    }
-}
 
-contract Series9ManagedTokenV3 is Series9ManagedToken {
-    function version() external pure returns (uint256) {
-        return 3;
-    }
-}
 
 contract NonUUPSImplementation {}
 
@@ -300,7 +289,6 @@ contract Series9StakingTest is Test {
 
     function setUp() public {
         SER9Token ser9Implementation = new SER9Token();
-        Series9ManagedToken managedTokenImplementation = new Series9ManagedToken();
         Series9StakingHarness stakingImplementation = new Series9StakingHarness();
 
         ser9 = SER9Token(
@@ -313,7 +301,7 @@ contract Series9StakingTest is Test {
                     address(stakingImplementation),
                     abi.encodeCall(
                         Series9Staking.initialize,
-                        (address(ser9), REWARD_PER_BLOCK, address(this), address(managedTokenImplementation), CREATION_FEE)
+                        (address(ser9), REWARD_PER_BLOCK, address(this), CREATION_FEE)
                     )
                 )
             )
@@ -420,88 +408,11 @@ contract Series9StakingTest is Test {
         assertEq(ser9.balanceOf(alice), 9_900 ether);
     }
 
-    function testCreateManagedTokenWithPermit2() public {
-        vm.startPrank(alice);
-        ser9.approve(address(permit2), type(uint256).max);
 
-        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
-            details: IPermit2.PermitDetails({
-                token: address(ser9),
-                // forge-lint: disable-next-line(unsafe-typecast)
-                amount: uint160(CREATION_FEE),
-                expiration: uint48(block.timestamp + 1 days),
-                nonce: 0
-            }),
-            spender: address(staking),
-            sigDeadline: block.timestamp + 1 days
-        });
 
-        uint256 aliceBefore = ser9.balanceOf(alice);
-        address token =
-            staking.createManagedTokenWithPermit2("PERMIT", "PRM", 1 ether, false, 0, permitSingle, hex"01");
-        vm.stopPrank();
-
-        (bool exists, address creator,,) = staking.tokenConfigs(token);
-        assertTrue(exists);
-        assertEq(creator, alice);
-        assertEq(ser9.balanceOf(alice), aliceBefore - CREATION_FEE);
-    }
-
-    function testCreateManagedTokenWithPermit2WithPolicy() public {
-        vm.startPrank(alice);
-        ser9.approve(address(permit2), type(uint256).max);
-
-        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
-            details: IPermit2.PermitDetails({
-                token: address(ser9),
-                // forge-lint: disable-next-line(unsafe-typecast)
-                amount: uint160(CREATION_FEE),
-                expiration: uint48(block.timestamp + 1 days),
-                nonce: 0
-            }),
-            spender: address(staking),
-            sigDeadline: block.timestamp + 1 days
-        });
-
-        address token = staking.createManagedTokenWithPermit2WithPolicy(
-            "PERMIT-POLICY", "PPL", 1 ether, false, 0, 1_000 ether, 30_000, 7_000, permitSingle, hex"01"
-        );
-        vm.stopPrank();
-
-        (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps) = staking.tokenMintPolicies(token);
-        assertEq(maxSupply, 1_000 ether);
-        assertEq(maxMultiplierBps, 30_000);
-        assertEq(rampStartBps, 7_000);
-    }
-
-    function testStakeFeeTokenWithPermit2() public {
-        _stake(alice, 500 ether);
-        address token = _createToken(alice, "FEEPERMIT", "FPM", 1 ether, true, 200);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 200 ether);
-        Series9ManagedToken(token).approve(address(permit2), type(uint256).max);
-
-        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
-            details: IPermit2.PermitDetails({
-                token: token,
-                amount: uint160(100 ether),
-                expiration: uint48(block.timestamp + 1 days),
-                nonce: 0
-            }),
-            spender: address(staking),
-            sigDeadline: block.timestamp + 1 days
-        });
-
-        staking.stakeFeeTokenWithPermit2(token, 100 ether, permitSingle, hex"01");
-        vm.stopPrank();
-
-        assertEq(staking.feeStakeBalance(token, alice), 100 ether);
-    }
 
     function testPermit2PathRevertsWhenPermit2NotConfigured() public {
         // Re-deploy staking without Permit2 setup to verify guard behavior.
-        Series9ManagedToken managedTokenImplementation = new Series9ManagedToken();
         Series9Staking stakingImplementation = new Series9Staking();
         Series9Staking stakingWithoutPermit2 = Series9Staking(
             payable(
@@ -509,7 +420,7 @@ contract Series9StakingTest is Test {
                     address(stakingImplementation),
                     abi.encodeCall(
                         Series9Staking.initialize,
-                        (address(ser9), REWARD_PER_BLOCK, address(this), address(managedTokenImplementation), CREATION_FEE)
+                        (address(ser9), REWARD_PER_BLOCK, address(this), CREATION_FEE)
                     )
                 )
             )
@@ -559,558 +470,41 @@ contract Series9StakingTest is Test {
         staking.setRewardRatePerBlock(2 ether);
     }
 
-    function testAutoLockedStakeGetsHalfRewardVsUnlockedStake() public {
-        vm.startPrank(alice);
-        ser9.approve(address(staking), type(uint256).max);
-        staking.stake(100 ether);
-        vm.stopPrank();
-
-        address token = _createToken(alice, "LOCKTEST", "LCK", 1 ether, false, 0);
-        vm.prank(alice);
-        staking.mintManagedToken(token, 100 ether);
-
-        vm.startPrank(bob);
-        ser9.approve(address(staking), type(uint256).max);
-        staking.stake(100 ether);
-        vm.stopPrank();
-
-        vm.roll(block.number + 3);
-
-        vm.startPrank(alice);
-        uint256 aliceBefore = ser9.balanceOf(alice);
-        staking.claimRewards();
-        uint256 aliceReward = ser9.balanceOf(alice) - aliceBefore;
-        vm.stopPrank();
-
-        vm.startPrank(bob);
-        uint256 bobBefore = ser9.balanceOf(bob);
-        staking.claimRewards();
-        uint256 bobReward = ser9.balanceOf(bob) - bobBefore;
-        vm.stopPrank();
-
-        assertEq(aliceReward, 1 ether);
-        assertEq(bobReward, 2 ether);
-    }
-
-    function testManualLockIsDisabled() public {
-        _stake(alice, 100 ether);
-
-        vm.startPrank(alice);
-        vm.expectRevert(Series9Staking.ManualLockDisabled.selector);
-        staking.lock(1 ether);
-        vm.stopPrank();
-    }
-
-    function testAnyoneCanCreateTokenByPayingFee() public {
-        uint256 aliceBefore = ser9.balanceOf(alice);
-        address token = _createToken(alice, "INFINITY9", "INF9", 1 ether, false, 0);
-
-        (bool exists, address creator,,) = staking.tokenConfigs(token);
-        assertTrue(exists);
-        assertEq(creator, alice);
-        assertEq(ser9.balanceOf(alice), aliceBefore - CREATION_FEE);
-    }
-
-    function testCreateManagedTokenWithPolicyStoresMintPolicy() public {
-        address token = _createTokenWithPolicy(alice, "CAPPED", "CAP", 1 ether, false, 0, 1_000 ether, 30_000, 7_000);
-
-        (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps) = staking.tokenMintPolicies(token);
-        assertEq(maxSupply, 1_000 ether);
-        assertEq(maxMultiplierBps, 30_000);
-        assertEq(rampStartBps, 7_000);
-    }
-
-    function testLegacyCreateManagedTokenUsesUnlimitedPolicyDefaults() public {
-        address token = _createToken(alice, "LEGACY", "LEG", 1 ether, false, 0);
-        (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps) = staking.tokenMintPolicies(token);
-
-        assertEq(maxSupply, 0);
-        assertEq(maxMultiplierBps, 10_000);
-        assertEq(rampStartBps, 0);
-    }
-
-    function testCreateManagedTokenWithPolicyRejectsInvalidMultiplier() public {
-        vm.startPrank(alice);
-        ser9.approve(address(staking), type(uint256).max);
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidMaxMultiplierBps.selector, 9_999));
-        staking.createManagedTokenWithPolicy("BADMULT", "BM", 1 ether, false, 0, 1_000 ether, 9_999, 0);
-        vm.stopPrank();
-    }
-
-    function testCreateManagedTokenWithPolicyRejectsInvalidRampStart() public {
-        vm.startPrank(alice);
-        ser9.approve(address(staking), type(uint256).max);
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidRampStartBps.selector, 10_000));
-        staking.createManagedTokenWithPolicy("BADRAMP", "BR", 1 ether, false, 0, 1_000 ether, 20_000, 10_000);
-        vm.stopPrank();
-    }
-
-    function testCannotCreateTokenWithoutSufficientBalance() public {
-        address poor = makeAddr("poor");
-
-        vm.startPrank(poor);
-        ser9.approve(address(staking), type(uint256).max);
-        vm.expectRevert();
-        staking.createManagedToken("FAIL", "FAIL", 1 ether, false, 0);
-        vm.stopPrank();
-    }
-
-    function testOwnerCanUpdateCreationFee() public {
-        staking.setTokenCreationFee(5 ether);
-        assertEq(staking.tokenCreationFee(), 5 ether);
-
-        uint256 aliceBefore = ser9.balanceOf(alice);
-        _createToken(alice, "EXPENSIVE", "EXP", 1 ether, false, 0);
-        assertEq(ser9.balanceOf(alice), aliceBefore - 5 ether);
-    }
 
-    function testZeroCreationFeeAllowsFreeCreation() public {
-        staking.setTokenCreationFee(0);
 
-        uint256 aliceBefore = ser9.balanceOf(alice);
-        _createToken(alice, "FREE", "FRE", 1 ether, false, 0);
-        assertEq(ser9.balanceOf(alice), aliceBefore);
-    }
 
-    function testCreatorCanUpdateFee() public {
-        address token = _createToken(alice, "INFINITY9", "INF9", 1 ether, true, 300);
 
-        (bool exists, address creator, uint256 mintRate, bool feeEnabled) = staking.tokenConfigs(token);
-        assertTrue(exists);
-        assertEq(creator, alice);
-        assertEq(mintRate, 1 ether);
-        assertTrue(feeEnabled);
 
-        vm.prank(alice);
-        staking.setTokenFeeBps(token, 500);
-        assertEq(Series9ManagedToken(token).feeBps(), 500);
 
-        vm.expectRevert(Series9Staking.UnauthorizedTokenCreator.selector);
-        vm.prank(bob);
-        staking.setTokenFeeBps(token, 700);
-    }
 
-    function testOnlyProtocolOwnerCanManageFeeExempt() public {
-        address token = _createToken(alice, "FEE", "FEE", 1 ether, true, 200);
 
-        vm.expectRevert();
-        vm.prank(alice);
-        staking.setFeeExempt(token, bob, true);
 
-        staking.setFeeExempt(token, bob, true);
-        assertTrue(Series9ManagedToken(token).isFeeExempt(bob));
 
-        vm.expectRevert(Series9Staking.CannotDisableStakingExemption.selector);
-        staking.setFeeExempt(token, address(staking), false);
-    }
 
-    function testMintManagedTokensUsesAggregateLockedCollateral() public {
-        _stake(alice, 100 ether);
 
-        address tokenA = _createToken(alice, "TOKENA", "TKA", 1 ether, false, 0);
-        address tokenB = _createToken(alice, "TOKENB", "TKB", 2 ether, false, 0);
 
-        vm.startPrank(alice);
-        staking.mintManagedToken(tokenA, 60 ether);
-        staking.mintManagedToken(tokenB, 20 ether);
 
-        assertEq(staking.usedLockedSer9(alice), 100 ether);
-        assertEq(staking.userTokenDebt(alice, tokenA), 60 ether);
-        assertEq(staking.userTokenDebt(alice, tokenB), 20 ether);
 
-        vm.expectRevert(Series9Staking.ExceedsMintLimit.selector);
-        staking.mintManagedToken(tokenA, 1 ether);
-        vm.stopPrank();
-    }
 
-    function testMintManagedTokenRevertsWhenExceedsMaxSupply() public {
-        _stake(alice, 300 ether);
-        address token = _createTokenWithPolicy(alice, "MAX", "MAX", 1 ether, false, 0, 100 ether, 20_000, 0);
 
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 100 ether);
 
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.ExceedsMaxSupply.selector, 101 ether, 100 ether));
-        staking.mintManagedToken(token, 1 ether);
-        vm.stopPrank();
-    }
 
-    function testEffectiveMintRateIncreasesAsSupplyApproachesCap() public {
-        _stake(alice, 5_000 ether);
-        address token = _createTokenWithPolicy(alice, "DYN", "DYN", 1 ether, false, 0, 1_000 ether, 30_000, 0);
 
-        uint256 rateAtZero = staking.effectiveMintRate(token);
 
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 400 ether);
-        vm.stopPrank();
 
-        uint256 rateAfter400 = staking.effectiveMintRate(token);
-        assertGt(rateAfter400, rateAtZero);
 
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 500 ether);
-        vm.stopPrank();
 
-        uint256 rateAfter900 = staking.effectiveMintRate(token);
-        assertGt(rateAfter900, rateAfter400);
-    }
 
-    function testRampStartDelaysMintRateIncrease() public {
-        _stake(alice, 5_000 ether);
-        address token = _createTokenWithPolicy(alice, "RAMP", "RMP", 1 ether, false, 0, 1_000 ether, 30_000, 7_000);
 
-        assertEq(staking.effectiveMintRate(token), 1 ether);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 600 ether);
-        vm.stopPrank();
 
-        // 60% < ramp start 70%: no increase yet.
-        assertEq(staking.effectiveMintRate(token), 1 ether);
 
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 200 ether);
-        vm.stopPrank();
 
-        assertGt(staking.effectiveMintRate(token), 1 ether);
-    }
 
-    function testMaxMultiplier10000KeepsFixedMintRate() public {
-        _stake(alice, 5_000 ether);
-        address token = _createTokenWithPolicy(alice, "FIXED", "FIX", 2 ether, false, 0, 1_000 ether, 10_000, 5_000);
 
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 800 ether);
-        vm.stopPrank();
 
-        assertEq(staking.effectiveMintRate(token), 2 ether);
-    }
 
-    function testBurnLowersEffectiveMintRate() public {
-        _stake(alice, 5_000 ether);
-        address token = _createTokenWithPolicy(alice, "BURN", "BRN", 1 ether, false, 0, 1_000 ether, 40_000, 0);
 
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 800 ether);
-        uint256 highRate = staking.effectiveMintRate(token);
 
-        staking.burnAndUnlock(token, 400 ether);
-        uint256 lowerRate = staking.effectiveMintRate(token);
-        vm.stopPrank();
-
-        assertLt(lowerRate, highRate);
-    }
-
-    function testHighUtilMintCostsMoreThanLowUtilMintForSameAmount() public {
-        _stake(alice, 5_000 ether);
-        address token = _createTokenWithPolicy(alice, "COST", "CST", 1 ether, false, 0, 1_000 ether, 40_000, 0);
-
-        uint256 lowUtilCost = staking.previewMintCollateral(token, 50 ether);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 800 ether);
-        vm.stopPrank();
-
-        uint256 highUtilCost = staking.previewMintCollateral(token, 50 ether);
-        assertGt(highUtilCost, lowUtilCost);
-    }
-
-    function testMaxMintableDynamicPolicyIsExact() public {
-        _stake(alice, 500 ether);
-        address token = _createTokenWithPolicy(alice, "MXM", "MXM", 1 ether, false, 0, 1_000 ether, 30_000, 0);
-
-        uint256 maxMintableAmount = staking.maxMintable(alice, token);
-        assertGt(maxMintableAmount, 0);
-
-        uint256 available = staking.availableMintCollateral(alice);
-        uint256 costAtMax = staking.previewMintCollateral(token, maxMintableAmount);
-        assertLe(costAtMax, available);
-
-        (uint256 maxSupply,,) = staking.tokenMintPolicies(token);
-        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
-        uint256 remainingSupply = maxSupply - currentSupply;
-
-        if (maxMintableAmount < remainingSupply) {
-            uint256 costAtNext = staking.previewMintCollateral(token, maxMintableAmount + 1);
-            assertGt(costAtNext, available);
-        } else {
-            vm.expectRevert(
-                abi.encodeWithSelector(
-                    Series9Staking.ExceedsMaxSupply.selector, currentSupply + maxMintableAmount + 1, maxSupply
-                )
-            );
-            staking.previewMintCollateral(token, maxMintableAmount + 1);
-        }
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, maxMintableAmount);
-        vm.expectRevert();
-        staking.mintManagedToken(token, 1);
-        vm.stopPrank();
-    }
-
-    function testMaxMintableIsZeroWhenNoUnusedLockedCollateral() public {
-        _stake(alice, 100 ether);
-        address token = _createTokenWithPolicy(alice, "ZERO", "ZER", 1 ether, false, 0, 1_000 ether, 10_000, 0);
-
-        vm.prank(alice);
-        staking.mintManagedToken(token, 100 ether);
-
-        assertEq(staking.availableUnusedLocked(alice), 0);
-        assertEq(staking.availableMintCollateral(alice), 0);
-        assertEq(staking.maxMintable(alice, token), 0);
-    }
-
-    function testAvailableUnusedLockedReflectsLegacyResidualLocksOnly() public {
-        _stake(alice, 100 ether);
-
-        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(60 ether);
-        stdstore.target(address(staking)).sig("usedLockedSer9(address)").with_key(alice).checked_write(40 ether);
-
-        assertEq(staking.availableUnusedLocked(alice), 20 ether);
-        assertEq(staking.availableMintCollateral(alice), 60 ether);
-    }
-
-    function testBurnAndUnlockAutoUnlocksLegacyUnusedLockedBalance() public {
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "AUTOBURN", "ABR", 2 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 30 ether);
-        vm.stopPrank();
-
-        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(80 ether);
-
-        vm.prank(alice);
-        staking.burnAndUnlock(token, 10 ether);
-
-        assertEq(staking.userTokenDebt(alice, token), 20 ether);
-        assertEq(staking.usedLockedSer9(alice), 40 ether);
-        assertEq(staking.lockedBalance(alice), 40 ether);
-        assertEq(staking.availableUnusedLocked(alice), 0);
-    }
-
-    function testUnstakeAutoUnlocksLegacyUnusedLockedBalance() public {
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "AUTOUNSTAKE", "AUS", 2 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 20 ether);
-        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(60 ether);
-        staking.unstake(60 ether);
-        vm.stopPrank();
-
-        assertEq(staking.lockedBalance(alice), 40 ether);
-        assertEq(staking.usedLockedSer9(alice), 40 ether);
-        assertEq(staking.stakedBalance(alice), 40 ether);
-        assertEq(staking.availableUnusedLocked(alice), 0);
-    }
-
-    function testMintManagedTokenAutoUnlocksLegacyUnusedLockedBalance() public {
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "AUTOMINT", "AMT", 2 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 20 ether);
-        vm.stopPrank();
-
-        stdstore.target(address(staking)).sig("lockedBalance(address)").with_key(alice).checked_write(60 ether);
-
-        vm.prank(alice);
-        staking.mintManagedToken(token, 10 ether);
-
-        assertEq(staking.userTokenDebt(alice, token), 30 ether);
-        assertEq(staking.usedLockedSer9(alice), 60 ether);
-        assertEq(staking.lockedBalance(alice), 60 ether);
-        assertEq(staking.availableUnusedLocked(alice), 0);
-    }
-
-    function testMaxMintableHandlesOneWeiBoundary() public {
-        _stake(alice, 1);
-        address token = _createTokenWithPolicy(alice, "ONEWEI", "OWI", 1 ether, false, 0, 1_000 ether, 20_000, 0);
-
-        assertEq(staking.maxMintable(alice, token), 1);
-        assertEq(staking.previewMintCollateral(token, 1), 1);
-
-        vm.prank(alice);
-        staking.mintManagedToken(token, 1);
-
-        assertEq(staking.maxMintable(alice, token), 0);
-    }
-
-    function testMaxMintableIsZeroAtMaxSupply() public {
-        _stake(alice, 500 ether);
-        address token = _createTokenWithPolicy(alice, "FULL", "FUL", 1 ether, false, 0, 100 ether, 30_000, 0);
-
-        vm.prank(alice);
-        staking.mintManagedToken(token, 100 ether);
-
-        assertEq(staking.maxMintable(alice, token), 0);
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.ExceedsMaxSupply.selector, 100 ether + 1, 100 ether));
-        staking.previewMintCollateral(token, 1);
-    }
-
-    function testBurnAndUnlockOnlyUnlocksBurnEquivalent() public {
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "DUAL", "DUL", 2 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 30 ether);
-
-        assertEq(staking.lockedBalance(alice), 60 ether);
-        assertEq(staking.usedLockedSer9(alice), 60 ether);
-
-        staking.burnAndUnlock(token, 10 ether);
-        vm.stopPrank();
-
-        assertEq(staking.userTokenDebt(alice, token), 20 ether);
-        assertEq(staking.lockedBalance(alice), 40 ether);
-        assertEq(staking.usedLockedSer9(alice), 40 ether);
-        assertEq(Series9ManagedToken(token).balanceOf(alice), 20 ether);
-    }
-
-    function testPartialDustBurnDoesNotUnlockAllCollateral() public {
-        _stake(alice, 1 ether);
-        address token = _createToken(alice, "DUST", "DST", 1, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 1 ether);
-        assertEq(staking.usedLockedSer9(alice), 1);
-
-        staking.burnAndUnlock(token, 1);
-
-        assertEq(staking.userTokenDebt(alice, token), 1 ether - 1);
-        assertEq(staking.usedLockedSer9(alice), 1);
-
-        vm.expectRevert(Series9Staking.InsufficientUnusedLockedBalance.selector);
-        staking.unlockUnused(1 ether);
-        vm.stopPrank();
-    }
-
-    function testUnlockUnusedRevertsWithoutUnusedCollateral() public {
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "UNLOCK", "ULK", 2 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 10 ether);
-        vm.expectRevert(Series9Staking.InsufficientUnusedLockedBalance.selector);
-        staking.unlockUnused(1 ether);
-
-        staking.burnAndUnlock(token, 10 ether);
-        staking.unstake(100 ether);
-        vm.stopPrank();
-
-        assertEq(staking.lockedBalance(alice), 0);
-        assertEq(staking.usedLockedSer9(alice), 0);
-    }
-
-    function testFeeDisabledTokenCannotBeFeeStaked() public {
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "NOFEE", "NFE", 1 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 50 ether);
-        Series9ManagedToken(token).approve(address(staking), type(uint256).max);
-
-        vm.expectRevert(Series9Staking.FeeDisabled.selector);
-        staking.stakeFeeToken(token, 10 ether);
-        vm.stopPrank();
-    }
-
-    function testFeeTokenStakingDistributesTransferFeeProRata() public {
-        _stake(alice, 2_000 ether);
-
-        address token = _createToken(alice, "FEECOIN", "FEE", 1 ether, true, 500);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 2_000 ether);
-        assertTrue(Series9ManagedToken(token).transfer(bob, 1_200 ether));
-        vm.stopPrank();
-
-        vm.startPrank(alice);
-        Series9ManagedToken(token).approve(address(staking), type(uint256).max);
-        staking.stakeFeeToken(token, 500 ether);
-        vm.stopPrank();
-
-        vm.startPrank(bob);
-        Series9ManagedToken(token).approve(address(staking), type(uint256).max);
-        staking.stakeFeeToken(token, 500 ether);
-        assertTrue(Series9ManagedToken(token).transfer(charlie, 200 ether));
-        vm.stopPrank();
-
-        assertEq(staking.pendingFeeRewards(token, alice), 65 ether);
-        assertEq(staking.pendingFeeRewards(token, bob), 5 ether);
-
-        vm.startPrank(alice);
-        uint256 aliceBefore = Series9ManagedToken(token).balanceOf(alice);
-        staking.claimFeeRewards(token);
-        uint256 aliceClaimed = Series9ManagedToken(token).balanceOf(alice) - aliceBefore;
-        vm.stopPrank();
-
-        vm.startPrank(bob);
-        uint256 bobBefore = Series9ManagedToken(token).balanceOf(bob);
-        staking.claimFeeRewards(token);
-        uint256 bobClaimed = Series9ManagedToken(token).balanceOf(bob) - bobBefore;
-        vm.stopPrank();
-
-        assertEq(aliceClaimed, 65 ether);
-        assertEq(bobClaimed, 5 ether);
-    }
-
-    function testFeeAccumulatedWithoutStakersIsDistributedWhenFirstStakerJoins() public {
-        _stake(alice, 2_000 ether);
-        address token = _createToken(alice, "LATEFEE", "LFE", 1 ether, true, 500);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 1_000 ether);
-        assertTrue(Series9ManagedToken(token).transfer(bob, 1_000 ether));
-        vm.stopPrank();
-
-        vm.startPrank(bob);
-        Series9ManagedToken(token).approve(address(staking), type(uint256).max);
-        staking.stakeFeeToken(token, 950 ether);
-        assertEq(staking.pendingFeeRewards(token, bob), 50 ether - 50);
-
-        uint256 bobBefore = Series9ManagedToken(token).balanceOf(bob);
-        staking.claimFeeRewards(token);
-        uint256 bobClaimed = Series9ManagedToken(token).balanceOf(bob) - bobBefore;
-        vm.stopPrank();
-
-        assertEq(bobClaimed, 50 ether - 50);
-    }
-
-    function testStakingTransfersAreFeeExempt() public {
-        _stake(alice, 200 ether);
-        address token = _createToken(alice, "EXEMPT", "XEM", 1 ether, true, 500);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 100 ether);
-        Series9ManagedToken(token).approve(address(staking), type(uint256).max);
-
-        staking.stakeFeeToken(token, 80 ether);
-        staking.unstakeFeeToken(token, 80 ether);
-        vm.stopPrank();
-
-        assertEq(Series9ManagedToken(token).balanceOf(alice), 100 ether);
-        assertEq(Series9ManagedToken(token).balanceOf(address(staking)), 0);
-    }
-
-    function testSetManagedTokenImplementationAffectsFutureDeployments() public {
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.setManagedTokenImplementation(address(managedV2));
-
-        address token = _createToken(alice, "UPGRADE", "UPG", 1 ether, false, 0);
-        assertEq(Series9ManagedTokenV2(token).version(), 2);
-    }
-
-    function testOnlyOwnerCanSetManagedTokenImplementation() public {
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-
-        vm.expectRevert();
-        vm.prank(alice);
-        staking.setManagedTokenImplementation(address(managedV2));
-    }
 
     function testUpgradeSer9UsesExplicitPath() public {
         SER9TokenV2 ser9V2 = new SER9TokenV2();
@@ -1133,149 +527,15 @@ contract Series9StakingTest is Test {
         staking.upgradeSer9(address(0), bytes(""));
     }
 
-    function testOwnerCanUpgradeManagedTokenIndividually() public {
-        address tokenA = _createToken(alice, "A", "A", 1 ether, false, 0);
-        address tokenB = _createToken(alice, "B", "B", 2 ether, true, 300);
 
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.setManagedTokenImplementation(address(managedV2));
-        staking.upgradeManagedToken(tokenA, bytes(""));
 
-        assertEq(Series9ManagedTokenV2(tokenA).version(), 2);
-        (bool tokenBHasVersion,) = address(tokenB).staticcall(abi.encodeWithSelector(Series9ManagedTokenV2.version.selector));
-        assertFalse(tokenBHasVersion);
-        assertEq(staking.managedTokenImplementation(), address(managedV2));
-    }
 
-    function testOnlyOwnerCanUpgradeManagedToken() public {
-        address token = _createToken(alice, "A", "A", 1 ether, false, 0);
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.setManagedTokenImplementation(address(managedV2));
 
-        vm.expectRevert();
-        vm.prank(alice);
-        staking.upgradeManagedToken(token, bytes(""));
-    }
 
-    function testSetManagedTokenImplementationRevertsOnZeroAddressImplementation() public {
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidImplementation.selector, address(0)));
-        staking.setManagedTokenImplementation(address(0));
-    }
 
-    function testSetManagedTokenImplementationRevertsOnEOAImplementation() public {
-        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidImplementation.selector, alice));
-        staking.setManagedTokenImplementation(alice);
-    }
 
-    function testSetManagedTokenImplementationRevertsOnNonUUPSImplementation() public {
-        NonUUPSImplementation badManagedImpl = new NonUUPSImplementation();
 
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Series9Staking.ImplementationNotUUPSCompatible.selector, address(badManagedImpl)
-            )
-        );
-        staking.setManagedTokenImplementation(address(badManagedImpl));
-    }
 
-    function testSetManagedTokenImplementationRevertsOnWrongUUIDImplementation() public {
-        WrongUUIDImplementation badManagedImpl = new WrongUUIDImplementation();
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Series9Staking.UnsupportedProxiableUUID.selector, address(badManagedImpl), bytes32(uint256(123))
-            )
-        );
-        staking.setManagedTokenImplementation(address(badManagedImpl));
-    }
-
-    function testManagedTokenCanRequestItsOwnUpgradeFromStaking() public {
-        address token = _createToken(alice, "PRE", "PRE", 1 ether, false, 0);
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        Series9ManagedTokenV3 managedV3 = new Series9ManagedTokenV3();
-
-        staking.setManagedTokenImplementation(address(managedV2));
-        staking.upgradeManagedToken(token, bytes(""));
-        assertEq(Series9ManagedTokenV2(token).version(), 2);
-
-        staking.setManagedTokenImplementation(address(managedV3));
-        Series9ManagedToken(token).requestUpgrade();
-        assertEq(Series9ManagedTokenV3(token).version(), 3);
-    }
-
-    function testManagedTokenAutoRequestsUpgradeOnTransfer() public {
-        _stake(alice, 200 ether);
-        address token = _createToken(alice, "AUTO", "AUT", 1 ether, false, 0);
-
-        vm.prank(alice);
-        staking.mintManagedToken(token, 20 ether);
-
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.setManagedTokenImplementation(address(managedV2));
-
-        vm.prank(alice);
-        assertTrue(Series9ManagedToken(token).transfer(bob, 5 ether));
-
-        assertEq(Series9ManagedTokenV2(token).version(), 2);
-        assertEq(Series9ManagedToken(token).balanceOf(bob), 5 ether);
-    }
-
-    function testManagedTokenUpgradePreservesStateAndCreatorPrivileges() public {
-        _stake(alice, 200 ether);
-        address token = _createToken(alice, "STATE", "STA", 2 ether, true, 300);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 30 ether);
-        vm.stopPrank();
-
-        uint256 stakedBefore = staking.stakedBalance(alice);
-        uint256 lockedBefore = staking.lockedBalance(alice);
-        uint256 usedBefore = staking.usedLockedSer9(alice);
-        uint256 debtBefore = staking.userTokenDebt(alice, token);
-        uint256 feeBpsBefore = Series9ManagedToken(token).feeBps();
-
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.setManagedTokenImplementation(address(managedV2));
-        staking.upgradeManagedToken(token, bytes(""));
-
-        assertEq(staking.stakedBalance(alice), stakedBefore);
-        assertEq(staking.lockedBalance(alice), lockedBefore);
-        assertEq(staking.usedLockedSer9(alice), usedBefore);
-        assertEq(staking.userTokenDebt(alice, token), debtBefore);
-        assertEq(Series9ManagedToken(token).feeBps(), feeBpsBefore);
-
-        vm.prank(alice);
-        staking.setTokenFeeBps(token, 400);
-        assertEq(Series9ManagedToken(token).feeBps(), 400);
-    }
-
-    function testManagedTokensUpgradeIndividuallyWithoutBatchSemantics() public {
-        address[] memory tokens = new address[](8);
-        for (uint256 i = 0; i < tokens.length; ++i) {
-            string memory suffix = vm.toString(i);
-            tokens[i] = _createToken(
-                alice, string.concat("TOKEN", suffix), string.concat("TK", suffix), 1 ether + i, false, 0
-            );
-        }
-
-        Series9ManagedTokenV2 managedV2 = new Series9ManagedTokenV2();
-        staking.setManagedTokenImplementation(address(managedV2));
-
-        staking.upgradeManagedToken(tokens[0], bytes(""));
-        staking.upgradeManagedToken(tokens[3], bytes(""));
-        staking.upgradeManagedToken(tokens[7], bytes(""));
-
-        assertEq(Series9ManagedTokenV2(tokens[0]).version(), 2);
-        assertEq(Series9ManagedTokenV2(tokens[3]).version(), 2);
-        assertEq(Series9ManagedTokenV2(tokens[7]).version(), 2);
-
-        (bool tokenOneHasVersion,) =
-            address(tokens[1]).staticcall(abi.encodeWithSelector(Series9ManagedTokenV2.version.selector));
-        (bool tokenTwoHasVersion,) =
-            address(tokens[2]).staticcall(abi.encodeWithSelector(Series9ManagedTokenV2.version.selector));
-        assertFalse(tokenOneHasVersion);
-        assertFalse(tokenTwoHasVersion);
-    }
 
     function testPauseBlocksUserActions() public {
         vm.startPrank(alice);
@@ -1372,21 +632,6 @@ contract Series9StakingTest is Test {
         vm.stopPrank();
     }
 
-    function testFuzzMintBurnCollateralAccounting(uint256 mintAmount) public {
-        mintAmount = bound(mintAmount, 1, 99 ether);
-
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "FUZZ", "FZZ", 1 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, mintAmount);
-        staking.burnAndUnlock(token, mintAmount);
-        vm.stopPrank();
-
-        assertEq(staking.userTokenDebt(alice, token), 0);
-        assertEq(staking.usedLockedSer9(alice), 0);
-        assertEq(staking.lockedBalance(alice), 0);
-    }
 
     function testFuzzMultiStakerRewardProportionality(uint256 aliceAmount, uint256 bobAmount) public {
         aliceAmount = bound(aliceAmount, 1 ether, 5_000 ether);
@@ -1465,100 +710,17 @@ contract Series9StakingTest is Test {
         assertEq(staking.totalStaked(), 0);
     }
 
-    function testSer9UnstakeRequestRespectsUnlockedBalance() public {
-        _stake(alice, 100 ether);
-        address token = _createToken(alice, "LOCK", "LCK", 2 ether, false, 0);
-
-        vm.startPrank(alice);
-        staking.mintManagedToken(token, 20 ether);
-        vm.expectRevert(Series9Staking.InsufficientUnlockedBalance.selector);
-        staking.unstake(61 ether);
-
-        vm.stopPrank();
-    }
 
     // --- fee recipient tests ---
 
-    function testOwnerCanSetTokenFeeRecipient() public {
-        address token = _createToken(alice, "FEERCPT", "FRC", 1 ether, true, 300);
 
-        // Recipient is constrained to the staking contract so fee distribution keeps working.
-        staking.setTokenFeeRecipient(token, address(staking));
-        assertEq(Series9ManagedToken(token).feeRecipient(), address(staking));
-        assertTrue(Series9ManagedToken(token).isFeeExempt(address(staking)));
-    }
 
-    function testSetTokenFeeRecipientRejectsNonStaking() public {
-        address token = _createToken(alice, "FEERCPT4", "FR4", 1 ether, true, 300);
 
-        vm.expectRevert(Series9Staking.InvalidFeeRecipientTarget.selector);
-        staking.setTokenFeeRecipient(token, makeAddr("newRecipient"));
-    }
 
-    function testNonOwnerCannotSetTokenFeeRecipient() public {
-        address token = _createToken(alice, "FEERCPT2", "FR2", 1 ether, true, 300);
 
-        vm.expectRevert();
-        vm.prank(alice);
-        staking.setTokenFeeRecipient(token, makeAddr("newRecipient"));
-    }
 
-    function testCannotSetFeeRecipientToZeroAddress() public {
-        address token = _createToken(alice, "FEERCPT3", "FR3", 1 ether, true, 300);
 
-        vm.expectRevert(Series9Staking.InvalidFeeRecipientTarget.selector);
-        staking.setTokenFeeRecipient(token, address(0));
-    }
 
-    function testSweepCreationFeesWithdrawsAccruedFees() public {
-        _createToken(alice, "SWEEP", "SWP", 1 ether, false, 0);
-        uint256 accrued = staking.accruedCreationFees();
-        assertGt(accrued, 0);
-
-        address recipient = makeAddr("feeSink");
-        uint256 balBefore = ser9.balanceOf(recipient);
-
-        staking.sweepCreationFees(recipient, accrued);
-
-        assertEq(ser9.balanceOf(recipient), balBefore + accrued);
-        assertEq(staking.accruedCreationFees(), 0);
-    }
-
-    function testSweepCreationFeesRejectsExcess() public {
-        _createToken(alice, "SWEEP2", "SWP2", 1 ether, false, 0);
-        uint256 accrued = staking.accruedCreationFees();
-
-        vm.expectRevert(
-            abi.encodeWithSelector(Series9Staking.InsufficientCreationFees.selector, accrued + 1, accrued)
-        );
-        staking.sweepCreationFees(makeAddr("feeSink"), accrued + 1);
-    }
-
-    function testSweepCreationFeesRejectsZeroAmount() public {
-        _createToken(alice, "SWEEP3", "SWP3", 1 ether, false, 0);
-        uint256 accrued = staking.accruedCreationFees();
-
-        vm.expectRevert(
-            abi.encodeWithSelector(Series9Staking.InsufficientCreationFees.selector, uint256(0), accrued)
-        );
-        staking.sweepCreationFees(makeAddr("feeSink"), 0);
-    }
-
-    function testSweepCreationFeesRejectsZeroRecipient() public {
-        _createToken(alice, "SWEEP4", "SWP4", 1 ether, false, 0);
-
-        vm.expectRevert(Series9Staking.InvalidSweepRecipient.selector);
-        staking.sweepCreationFees(address(0), 1);
-    }
-
-    function testSweepCreationFeesOnlyOwner() public {
-        _createToken(alice, "SWEEP5", "SWP5", 1 ether, false, 0);
-        uint256 accrued = staking.accruedCreationFees();
-
-        vm.expectRevert();
-        vm.prank(alice);
-        staking.sweepCreationFees(alice, accrued);
-    }
 
     function testInitializeV2SetsDefaultMonadRewardRate() public {
         staking.setMonadRewardRatePerBlock(3 ether);
@@ -2486,39 +1648,6 @@ contract Series9StakingTest is Test {
         vm.startPrank(user);
         ser9.approve(address(staking), type(uint256).max);
         staking.stake(stakeAmount);
-        vm.stopPrank();
-    }
-
-    function _createToken(
-        address creator,
-        string memory name,
-        string memory symbol,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps
-    ) internal returns (address token) {
-        vm.startPrank(creator);
-        ser9.approve(address(staking), type(uint256).max);
-        token = staking.createManagedToken(name, symbol, mintRate, feeEnabled, feeBps);
-        vm.stopPrank();
-    }
-
-    function _createTokenWithPolicy(
-        address creator,
-        string memory name,
-        string memory symbol,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps,
-        uint256 maxSupply,
-        uint256 maxMultiplierBps,
-        uint16 rampStartBps
-    ) internal returns (address token) {
-        vm.startPrank(creator);
-        ser9.approve(address(staking), type(uint256).max);
-        token = staking.createManagedTokenWithPolicy(
-            name, symbol, mintRate, feeEnabled, feeBps, maxSupply, maxMultiplierBps, rampStartBps
-        );
         vm.stopPrank();
     }
 }

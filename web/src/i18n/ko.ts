@@ -57,7 +57,6 @@ export const ko = {
   totalRewardWeight: '전체 보상 가중치',
   rewardRatePerBlock: '블록당 보상',
   tokenCreationFee: '토큰 생성 수수료',
-  managedTokenCount: '관리 토큰 개수',
   ser9Balance: '내 SER9 잔액',
   stakedBalance: '내 스테이킹 SER9',
   lockedBalance: '내 락업 SER9',

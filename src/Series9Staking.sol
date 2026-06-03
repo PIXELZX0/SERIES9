@@ -3,7 +3,6 @@ pragma solidity ^0.8.22;
 
 import {Initializable} from "openzeppelin-contracts/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "openzeppelin-contracts/contracts/proxy/utils/UUPSUpgradeable.sol";
-import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC1822Proxiable} from "openzeppelin-contracts/contracts/interfaces/draft-IERC1822.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -14,7 +13,6 @@ import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/a
 import {PausableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/utils/PausableUpgradeable.sol";
 
 import {SER9Token} from "./SER9Token.sol";
-import {Series9ManagedToken} from "./Series9ManagedToken.sol";
 import {IPermit2} from "./interfaces/IPermit2.sol";
 import {IMonadStaking} from "./interfaces/IMonadStaking.sol";
 
@@ -34,26 +32,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint64 private constant MONAD_MAX_UNSTAKE_DELAY_EPOCHS = 30;
     uint64 private constant MONAD_PRECOMPILE_ADDRESS = 0x1000;
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
-
-    struct TokenConfig {
-        bool exists;
-        address creator;
-        uint256 mintRate;
-        bool feeEnabled;
-    }
-
-    struct FeePool {
-        uint256 totalStaked;
-        uint256 accFeePerShare;
-        uint256 rewardBalance;
-        uint256 undistributedRewards;
-    }
-
-    struct TokenMintPolicy {
-        uint256 maxSupply;
-        uint256 maxMultiplierBps;
-        uint16 rampStartBps;
-    }
 
     struct ValidatorSample {
         uint256 accRewardPerToken;
@@ -104,7 +82,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     SER9Token public ser9;
     IPermit2 public permit2;
-    address public managedTokenImplementation;
     uint256 public tokenCreationFee;
 
     uint256 public rewardRatePerBlock;
@@ -112,27 +89,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 public lastUpdateBlock;
 
     uint256 public totalStaked;
-    uint256 public totalRewardWeight;
 
     mapping(address => uint256) public stakedBalance;
-    mapping(address => uint256) public lockedBalance;
-    mapping(address => uint256) public rewardWeightBalance;
-
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public rewards;
-
-    mapping(address => TokenConfig) public tokenConfigs;
-    mapping(address => TokenMintPolicy) private _tokenMintPolicies;
-    address[] public managedTokens;
-
-    mapping(address => mapping(address => uint256)) public userTokenDebt;
-    mapping(address => mapping(address => uint256)) public userTokenCollateralUsed;
-    mapping(address => uint256) public usedLockedSer9;
-
-    mapping(address => FeePool) public feePools;
-    mapping(address => mapping(address => uint256)) public feeStakeBalance;
-    mapping(address => mapping(address => uint256)) public feeRewardDebt;
-    mapping(address => mapping(address => uint256)) public feePendingRewards;
 
     uint256 public monadRewardRatePerBlock;
     uint256 public monadRewardPerTokenStored;
@@ -179,34 +139,17 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     error ZeroAmount();
     error InvalidTokenAddress();
-    error MintRateZero();
-    error InvalidFeeConfiguration();
-    error InvalidManagedToken();
-    error FeeDisabled();
-    error UnauthorizedTokenCreator();
     error InsufficientStakedBalance();
-    error InsufficientUnlockedBalance();
-    error InsufficientLockedBalance();
-    error InsufficientUnusedLockedBalance();
-    error ExceedsMintLimit();
-    error ManualLockDisabled();
-    error InsufficientTokenDebt();
     error NoRewards();
-    error NoFeeRewards();
-    error CannotDisableStakingExemption();
     error InvalidImplementation(address implementation);
     error ImplementationNotUUPSCompatible(address implementation);
     error UnsupportedProxiableUUID(address implementation, bytes32 uuid);
     error UnauthorizedTokenOwner(address token, address ownerAddress);
-    error InsufficientCreationFee();
     error InvalidPermit2Address();
     error Permit2NotConfigured();
     error InvalidPermit2Token(address expectedToken, address permitToken);
     error InvalidPermit2Spender(address expectedSpender, address permitSpender);
     error Permit2AmountTooLow(uint256 requiredAmount, uint256 permitAmount);
-    error InvalidMaxMultiplierBps(uint256 maxMultiplierBps);
-    error InvalidRampStartBps(uint16 rampStartBps);
-    error ExceedsMaxSupply(uint256 requestedSupply, uint256 maxSupply);
     error UnauthorizedRebalanceOperator();
     error InsufficientMonadStakedBalance();
     error InvalidUnstakeRequest();
@@ -217,54 +160,20 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error NotInitialized();
     error MonadEpochReadFailed();
     error InvalidUnstakeDelayEpochs();
-    error InvalidFeeRecipientTarget();
-    error InsufficientCreationFees(uint256 requested, uint256 available);
     error InvalidSweepRecipient();
     error InvalidUndelegateTicket();
+    error InsufficientCreationFees(uint256 requested, uint256 available);
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
     event RewardClaimed(address indexed user, uint256 rewardAmount);
     event RewardRateUpdated(uint256 newRewardRatePerBlock);
-    event Locked(address indexed user, uint256 amount, uint256 totalLocked);
 
-    event ManagedTokenCreated(
-        address indexed token,
-        address indexed creator,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps,
-        string name,
-        string symbol
-    );
-    event ManagedTokenMinted(
-        address indexed user, address indexed token, uint256 amount, uint256 collateralCost, uint256 usedLockedAfter
-    );
-    event ManagedTokenBurnedAndUnlocked(
-        address indexed user,
-        address indexed token,
-        uint256 burnAmount,
-        uint256 unlockedAmount,
-        uint256 usedLockedAfter,
-        uint256 lockedAfter
-    );
-    event UnusedLockedUnlocked(address indexed user, uint256 amount, uint256 lockedAfter);
     event Ser9Upgraded(address indexed ser9Proxy, address indexed newImplementation);
-    event ManagedTokenImplementationUpdated(address previousImpl, address newImpl);
-    event ManagedTokenUpgraded(address indexed token, address indexed newImplementation);
-
-    event TokenFeeBpsUpdated(address indexed token, uint16 feeBps);
-    event TokenFeeExemptUpdated(address indexed token, address indexed account, bool isExempt);
-    event TokenMintPolicyConfigured(
-        address indexed token, uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps
-    );
 
     event TokenCreationFeeUpdated(uint256 previousFee, uint256 newFee);
     event Permit2Updated(address indexed previousPermit2, address indexed newPermit2);
 
-    event FeeTokenStaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
-    event FeeTokenUnstaked(address indexed user, address indexed token, uint256 amount, uint256 userStakeAfter);
-    event FeeRewardsClaimed(address indexed user, address indexed token, uint256 rewardAmount);
     event MonadRewardRateUpdated(uint256 previousRate, uint256 newRate);
     event MonadRebalanceKeeperUpdated(address indexed keeper, bool allowed);
     event MonadUnstakeDelayEpochsUpdated(uint64 previousEpochs, uint64 newEpochs);
@@ -287,10 +196,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event MonadClaimRewardsFailed(uint64 indexed validatorId, bytes reason);
     event CreationFeesSwept(address indexed to, uint256 amount);
     event MonadUndelegateTicketForceReleased(uint64 indexed validatorId, uint8 indexed withdrawId, uint256 amount);
-    /// @dev Emitted when a matured `withdraw` returns less MON than the booked undelegation
-    /// principal — the on-chain signal that Monad has begun slashing delegated/unbonding stake.
-    /// Currently never fires: Monad has no automated in-protocol slashing (confirmed 2026-05,
-    /// docs.monad.xyz/developer-essentials/staking/staking-behavior). See `monadSlashingDeficit`.
     event MonadWithdrawShortfall(
         uint64 indexed validatorId, uint8 indexed withdrawId, uint256 expected, uint256 received, uint256 shortfall
     );
@@ -312,7 +217,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             monadRewards[account] = _earnedMonad(account);
             userMonadRewardPerTokenPaid[account] = monadRewardPerTokenStored;
         }
-
     }
 
     modifier onlyMonadRebalanceOperator() {
@@ -337,7 +241,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
     }
 
-    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
@@ -348,14 +251,11 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         address ser9Token,
         uint256 rewardPerBlock,
         address initialOwner,
-        address managedTokenImplementation_,
         uint256 initialCreationFee
     ) external initializer {
         if (ser9Token == address(0) || ser9Token.code.length == 0) {
             revert InvalidTokenAddress();
         }
-
-        _validateImplementation(managedTokenImplementation_);
 
         __Ownable_init(initialOwner);
         __Pausable_init();
@@ -366,7 +266,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         tokenCreationFee = initialCreationFee;
         lastUpdateBlock = block.number;
         monadLastUpdateBlock = block.number;
-        managedTokenImplementation = managedTokenImplementation_;
         cachedMonadDelegatedShareBps = MONAD_DELEGATED_SHARE_FLOOR_BPS;
     }
 
@@ -380,9 +279,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
     }
 
-    function initializeV3() external reinitializer(3) {
-        // No-op retained to preserve the reinitializer version sequence on the live proxy.
-    }
+    function initializeV3() external reinitializer(3) {}
 
     function setRewardRatePerBlock(uint256 newRewardRatePerBlock) external onlyOwner updateReward(address(0)) {
         rewardRatePerBlock = newRewardRatePerBlock;
@@ -400,12 +297,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit MonadRebalanceKeeperUpdated(keeper, allowed);
     }
 
-    /// @notice Owner escape hatch to release a Monad undelegate ticket whose `withdraw` is
-    ///         permanently failing (e.g. already settled by the precompile via another path),
-    ///         freeing its per-validator withdrawId slot so the ticket can be compacted out.
-    /// @dev WARNING: only call when the underlying MON is confirmed unrecoverable or already
-    ///      returned; releasing a ticket whose withdraw is still pending strands that MON at the
-    ///      precompile. User claims remain balance-gated, so this can never cause overpayment.
     function forceReleaseUndelegateTicket(uint256 ticketIndex) external onlyOwner {
         if (ticketIndex >= pendingUndelegateTickets.length) {
             revert InvalidUndelegateTicket();
@@ -424,9 +315,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit MonadUndelegateTicketForceReleased(ticket.validatorId, ticket.withdrawId, ticket.amount);
     }
 
-    /// @notice Configure the epoch delay applied to Monad unstake coverage and undelegation tickets.
-    /// @dev Must track the Monad protocol's actual withdrawal/unbonding period. A value of 0 in storage
-    ///      falls back to UNSTAKE_DELAY_EPOCHS; the setter rejects 0 so the fallback stays internal.
     function setMonadUnstakeDelayEpochs(uint64 newDelayEpochs) external onlyOwner {
         if (newDelayEpochs == 0 || newDelayEpochs > MONAD_MAX_UNSTAKE_DELAY_EPOCHS) {
             revert InvalidUnstakeDelayEpochs();
@@ -455,10 +343,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit TokenCreationFeeUpdated(previousFee, newFee);
     }
 
-    /// @notice Withdraw SER9 collected as token-creation fees.
-    /// @dev Only fees tracked since the upgrade that introduced `accruedCreationFees` are
-    ///      withdrawable. The counter only ever grows from collected creation fees, so staked
-    ///      principal and pending-unstake balances can never be swept.
     function sweepCreationFees(address to, uint256 amount) external onlyOwner {
         if (to == address(0)) {
             revert InvalidSweepRecipient();
@@ -482,17 +366,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit Permit2Updated(previousPermit2, newPermit2);
     }
 
-    function managedTokensLength() external view returns (uint256) {
-        return managedTokens.length;
-    }
-
-    function setManagedTokenImplementation(address newImplementation) external onlyOwner {
-        _validateImplementation(newImplementation);
-        address previousImpl = managedTokenImplementation;
-        managedTokenImplementation = newImplementation;
-        emit ManagedTokenImplementationUpdated(previousImpl, newImplementation);
-    }
-
     function upgradeSer9(address newSer9Impl, bytes calldata ser9Data) external onlyOwner {
         _validateImplementation(newSer9Impl);
 
@@ -510,168 +383,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit Ser9Upgraded(ser9Proxy, newSer9Impl);
     }
 
-    function upgradeManagedToken(address token, bytes calldata data) external onlyOwner {
-        _upgradeManagedToken(token, managedTokenImplementation, data);
-    }
-
-    function requestManagedTokenUpgrade() external {
-        _upgradeManagedToken(msg.sender, managedTokenImplementation, bytes(""));
-    }
-
-    function createManagedToken(
-        string calldata name,
-        string calldata symbol,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps
-    ) external whenNotPaused returns (address token) {
-        token = _createManagedToken(name, symbol, mintRate, feeEnabled, feeBps, 0, BPS_DENOMINATOR, 0);
-
-        uint256 fee = tokenCreationFee;
-        if (fee > 0) {
-            accruedCreationFees += fee;
-            IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
-        }
-    }
-
-    function createManagedTokenWithPermit2(
-        string calldata name,
-        string calldata symbol,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps,
-        IPermit2.PermitSingle calldata permitSingle,
-        bytes calldata permitSignature
-    ) external whenNotPaused returns (address token) {
-        token = _createManagedToken(name, symbol, mintRate, feeEnabled, feeBps, 0, BPS_DENOMINATOR, 0);
-
-        uint256 fee = tokenCreationFee;
-        if (fee > 0) {
-            accruedCreationFees += fee;
-            _transferFromWithPermit2(address(ser9), fee, permitSingle, permitSignature);
-        }
-    }
-
-    function createManagedTokenWithPolicy(
-        string calldata name,
-        string calldata symbol,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps,
-        uint256 maxSupply,
-        uint256 maxMultiplierBps,
-        uint16 rampStartBps
-    ) external whenNotPaused returns (address token) {
-        token = _createManagedToken(
-            name, symbol, mintRate, feeEnabled, feeBps, maxSupply, maxMultiplierBps, rampStartBps
-        );
-
-        uint256 fee = tokenCreationFee;
-        if (fee > 0) {
-            accruedCreationFees += fee;
-            IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), fee);
-        }
-    }
-
-    function createManagedTokenWithPermit2WithPolicy(
-        string calldata name,
-        string calldata symbol,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps,
-        uint256 maxSupply,
-        uint256 maxMultiplierBps,
-        uint16 rampStartBps,
-        IPermit2.PermitSingle calldata permitSingle,
-        bytes calldata permitSignature
-    ) external whenNotPaused returns (address token) {
-        token = _createManagedToken(
-            name, symbol, mintRate, feeEnabled, feeBps, maxSupply, maxMultiplierBps, rampStartBps
-        );
-
-        uint256 fee = tokenCreationFee;
-        if (fee > 0) {
-            accruedCreationFees += fee;
-            _transferFromWithPermit2(address(ser9), fee, permitSingle, permitSignature);
-        }
-    }
-
-    function _createManagedToken(
-        string calldata name,
-        string calldata symbol,
-        uint256 mintRate,
-        bool feeEnabled,
-        uint16 feeBps,
-        uint256 maxSupply,
-        uint256 maxMultiplierBps,
-        uint16 rampStartBps
-    ) internal returns (address token) {
-        if (mintRate == 0) {
-            revert MintRateZero();
-        }
-
-        if (!feeEnabled && feeBps != 0) {
-            revert InvalidFeeConfiguration();
-        }
-        _validateMintPolicy(maxSupply, maxMultiplierBps, rampStartBps);
-
-        {
-            bytes memory initData = abi.encodeCall(
-                Series9ManagedToken.initialize, (name, symbol, address(this), feeEnabled, feeBps, address(this))
-            );
-            token = address(new ERC1967Proxy(managedTokenImplementation, initData));
-        }
-
-        address creator = msg.sender;
-        tokenConfigs[token] =
-            TokenConfig({exists: true, creator: creator, mintRate: mintRate, feeEnabled: feeEnabled});
-        _tokenMintPolicies[token] = TokenMintPolicy({
-            maxSupply: maxSupply,
-            maxMultiplierBps: maxMultiplierBps,
-            rampStartBps: maxSupply == 0 ? 0 : rampStartBps
-        });
-        managedTokens.push(token);
-
-        emit ManagedTokenCreated(token, creator, mintRate, feeEnabled, feeBps, name, symbol);
-        emit TokenMintPolicyConfigured(token, maxSupply, maxMultiplierBps, maxSupply == 0 ? 0 : rampStartBps);
-    }
-
-    function setTokenFeeBps(address token, uint16 newFeeBps) external {
-        TokenConfig storage config = _requireManagedToken(token);
-        if (!config.feeEnabled) {
-            revert FeeDisabled();
-        }
-        if (msg.sender != config.creator) {
-            revert UnauthorizedTokenCreator();
-        }
-
-        Series9ManagedToken(token).setFeeBps(newFeeBps);
-        emit TokenFeeBpsUpdated(token, newFeeBps);
-    }
-
-    function setTokenFeeRecipient(address token, address newFeeRecipient) external onlyOwner {
-        _requireManagedToken(token);
-        // Fees must accrue to this contract so fee-token stakers receive them; redirecting the
-        // recipient elsewhere would silently break fee-reward distribution.
-        if (newFeeRecipient != address(this)) {
-            revert InvalidFeeRecipientTarget();
-        }
-        Series9ManagedToken(token).setFeeRecipient(newFeeRecipient);
-    }
-
-    function setFeeExempt(address token, address account, bool isExempt) external onlyOwner {
-        TokenConfig storage config = _requireManagedToken(token);
-        if (!config.feeEnabled) {
-            revert FeeDisabled();
-        }
-        if (account == address(this) && !isExempt) {
-            revert CannotDisableStakingExemption();
-        }
-
-        Series9ManagedToken(token).setFeeExempt(account, isExempt);
-        emit TokenFeeExemptUpdated(token, account, isExempt);
-    }
-
     function stake(uint256 amount) external whenInitialized whenNotPaused nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
@@ -679,7 +390,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         totalStaked += amount;
         stakedBalance[msg.sender] += amount;
-        _syncRewardWeight(msg.sender);
 
         IERC20(address(ser9)).safeTransferFrom(msg.sender, address(this), amount);
 
@@ -699,7 +409,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         totalStaked += amount;
         stakedBalance[msg.sender] += amount;
-        _syncRewardWeight(msg.sender);
 
         _transferFromWithPermit2(address(ser9), amount, permitSingle, permitSignature);
 
@@ -711,21 +420,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             revert ZeroAmount();
         }
 
-        _autoUnlockUnusedLocked(msg.sender);
-
         uint256 userStaked = stakedBalance[msg.sender];
         if (amount > userStaked) {
             revert InsufficientStakedBalance();
         }
 
-        uint256 userLocked = lockedBalance[msg.sender];
-        if (amount > userStaked - userLocked) {
-            revert InsufficientUnlockedBalance();
-        }
-
         stakedBalance[msg.sender] = userStaked - amount;
         totalStaked -= amount;
-        _syncRewardWeight(msg.sender);
 
         (uint64 epoch,) = _getEpoch();
         uint64 minClaimEpoch = epoch + UNSTAKE_DELAY_EPOCHS;
@@ -784,9 +485,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         _harvestMonadValidatorRewards(trackedValidators.length);
     }
 
-    /// @notice Owner-only escape hatch to claim MONAD rewards from a specific validator.
-    /// @dev This allows the owner to directly claim rewards from a single validator without
-    ///      going through the full rebalance/harvest cycle.
     function claimMonadValidatorReward(uint64 validatorId)
         external
         whenNotPaused
@@ -1013,304 +711,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit RewardClaimed(msg.sender, reward);
     }
 
-    function lock(uint256) external pure {
-        revert ManualLockDisabled();
-    }
-
-    function mintManagedToken(address token, uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
-        if (amount == 0) {
-            revert ZeroAmount();
-        }
-
-        _autoUnlockUnusedLocked(msg.sender);
-
-        TokenConfig storage config = _requireManagedToken(token);
-        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
-        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
-        uint256 collateralCost = _previewCollateralForMint(config.mintRate, policy, currentSupply, amount);
-
-        uint256 userLocked = lockedBalance[msg.sender];
-        uint256 userUsed = usedLockedSer9[msg.sender];
-        uint256 unusedLocked = userLocked - userUsed;
-        uint256 additionalLockRequired = collateralCost > unusedLocked ? collateralCost - unusedLocked : 0;
-
-        if (additionalLockRequired > stakedBalance[msg.sender] - userLocked) {
-            revert ExceedsMintLimit();
-        }
-
-        uint256 usedAfter = userUsed + collateralCost;
-        uint256 lockedAfter = userLocked + additionalLockRequired;
-
-        lockedBalance[msg.sender] = lockedAfter;
-        usedLockedSer9[msg.sender] = usedAfter;
-        userTokenDebt[msg.sender][token] += amount;
-        userTokenCollateralUsed[msg.sender][token] += collateralCost;
-        _syncRewardWeight(msg.sender);
-
-        Series9ManagedToken(token).mint(msg.sender, amount);
-
-        if (additionalLockRequired > 0) {
-            emit Locked(msg.sender, additionalLockRequired, lockedAfter);
-        }
-        emit ManagedTokenMinted(msg.sender, token, amount, collateralCost, usedAfter);
-    }
-
-    function burnAndUnlock(address token, uint256 burnAmount) external whenNotPaused nonReentrant updateReward(msg.sender) {
-        if (burnAmount == 0) {
-            revert ZeroAmount();
-        }
-
-        _requireManagedToken(token);
-
-        uint256 debtBefore = userTokenDebt[msg.sender][token];
-        if (burnAmount > debtBefore) {
-            revert InsufficientTokenDebt();
-        }
-
-        uint256 collateralUsedBefore = userTokenCollateralUsed[msg.sender][token];
-        uint256 collateralRelease;
-        if (burnAmount == debtBefore) {
-            collateralRelease = collateralUsedBefore;
-        } else {
-            // Partial burns unlock collateral proportionally to outstanding debt.
-            collateralRelease = Math.mulDiv(collateralUsedBefore, burnAmount, debtBefore);
-        }
-
-        uint256 userLocked = lockedBalance[msg.sender];
-        if (collateralRelease > userLocked) {
-            revert InsufficientLockedBalance();
-        }
-
-        usedLockedSer9[msg.sender] -= collateralRelease;
-        userTokenDebt[msg.sender][token] = debtBefore - burnAmount;
-        userTokenCollateralUsed[msg.sender][token] = collateralUsedBefore - collateralRelease;
-
-        lockedBalance[msg.sender] = userLocked - collateralRelease;
-        _autoUnlockUnusedLocked(msg.sender);
-        _syncRewardWeight(msg.sender);
-
-        Series9ManagedToken(token).burnFromAccount(msg.sender, burnAmount);
-
-        emit ManagedTokenBurnedAndUnlocked(
-            msg.sender, token, burnAmount, collateralRelease, usedLockedSer9[msg.sender], lockedBalance[msg.sender]
-        );
-    }
-
-    function unlockUnused(uint256 amount) external whenNotPaused nonReentrant updateReward(msg.sender) {
-        if (amount == 0) {
-            revert ZeroAmount();
-        }
-
-        uint256 userLocked = lockedBalance[msg.sender];
-        uint256 unusedLocked = userLocked - usedLockedSer9[msg.sender];
-        if (amount > unusedLocked) {
-            revert InsufficientUnusedLockedBalance();
-        }
-
-        lockedBalance[msg.sender] = userLocked - amount;
-        _syncRewardWeight(msg.sender);
-
-        emit UnusedLockedUnlocked(msg.sender, amount, lockedBalance[msg.sender]);
-    }
-
-    function maxMintable(address user, address token) external view returns (uint256) {
-        TokenConfig storage config = tokenConfigs[token];
-        if (!config.exists) {
-            return 0;
-        }
-
-        uint256 availableCollateral = stakedBalance[user] - usedLockedSer9[user];
-        if (availableCollateral == 0) {
-            return 0;
-        }
-
-        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
-        if (policy.maxSupply == 0) {
-            return Math.mulDiv(availableCollateral, PRECISION, config.mintRate);
-        }
-
-        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
-        if (currentSupply >= policy.maxSupply) {
-            return 0;
-        }
-
-        uint256 low = 0;
-        uint256 high = policy.maxSupply - currentSupply;
-
-        while (low < high) {
-            uint256 mid = (low + high + 1) / 2;
-            uint256 collateral = _previewCollateralForMint(config.mintRate, policy, currentSupply, mid);
-            if (collateral <= availableCollateral) {
-                low = mid;
-            } else {
-                high = mid - 1;
-            }
-        }
-
-        return low;
-    }
-
-    function availableMintCollateral(address user) external view returns (uint256) {
-        return stakedBalance[user] - usedLockedSer9[user];
-    }
-
-    function availableUnusedLocked(address user) external view returns (uint256) {
-        return lockedBalance[user] - usedLockedSer9[user];
-    }
-
-    function tokenMintPolicies(address token)
-        external
-        view
-        returns (uint256 maxSupply, uint256 maxMultiplierBps, uint16 rampStartBps)
-    {
-        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
-        return (policy.maxSupply, policy.maxMultiplierBps, policy.rampStartBps);
-    }
-
-    function effectiveMintRate(address token) public view returns (uint256) {
-        TokenConfig storage config = tokenConfigs[token];
-        if (!config.exists) {
-            return 0;
-        }
-
-        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
-        if (policy.maxSupply == 0) {
-            return config.mintRate;
-        }
-
-        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
-        return _effectiveMintRateAtSupply(config.mintRate, policy, currentSupply);
-    }
-
-    function previewMintCollateral(address token, uint256 amount) external view returns (uint256) {
-        if (amount == 0) {
-            return 0;
-        }
-
-        TokenConfig storage config = _requireManagedToken(token);
-        TokenMintPolicy memory policy = _resolveTokenMintPolicy(token);
-        uint256 currentSupply = Series9ManagedToken(token).totalSupply();
-        return _previewCollateralForMint(config.mintRate, policy, currentSupply, amount);
-    }
-
-    function stakeFeeToken(address token, uint256 amount) external whenInitialized whenNotPaused nonReentrant {
-        if (amount == 0) {
-            revert ZeroAmount();
-        }
-
-        TokenConfig storage config = _requireManagedToken(token);
-        _requireFeeEnabled(config);
-
-        _accrueFeeRewards(token, msg.sender);
-
-        feePools[token].totalStaked += amount;
-        feeStakeBalance[token][msg.sender] += amount;
-        feeRewardDebt[token][msg.sender] =
-            Math.mulDiv(feeStakeBalance[token][msg.sender], feePools[token].accFeePerShare, PRECISION);
-
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-
-        emit FeeTokenStaked(msg.sender, token, amount, feeStakeBalance[token][msg.sender]);
-    }
-
-    function stakeFeeTokenWithPermit2(
-        address token,
-        uint256 amount,
-        IPermit2.PermitSingle calldata permitSingle,
-        bytes calldata permitSignature
-    ) external whenInitialized whenNotPaused nonReentrant {
-        if (amount == 0) {
-            revert ZeroAmount();
-        }
-
-        TokenConfig storage config = _requireManagedToken(token);
-        _requireFeeEnabled(config);
-
-        _accrueFeeRewards(token, msg.sender);
-
-        feePools[token].totalStaked += amount;
-        feeStakeBalance[token][msg.sender] += amount;
-        feeRewardDebt[token][msg.sender] =
-            Math.mulDiv(feeStakeBalance[token][msg.sender], feePools[token].accFeePerShare, PRECISION);
-
-        _transferFromWithPermit2(token, amount, permitSingle, permitSignature);
-
-        emit FeeTokenStaked(msg.sender, token, amount, feeStakeBalance[token][msg.sender]);
-    }
-
-    function unstakeFeeToken(address token, uint256 amount) external whenNotPaused nonReentrant {
-        if (amount == 0) {
-            revert ZeroAmount();
-        }
-
-        TokenConfig storage config = _requireManagedToken(token);
-        _requireFeeEnabled(config);
-
-        uint256 userStake = feeStakeBalance[token][msg.sender];
-        if (amount > userStake) {
-            revert InsufficientStakedBalance();
-        }
-
-        _accrueFeeRewards(token, msg.sender);
-
-        feeStakeBalance[token][msg.sender] = userStake - amount;
-        feePools[token].totalStaked -= amount;
-        feeRewardDebt[token][msg.sender] =
-            Math.mulDiv(feeStakeBalance[token][msg.sender], feePools[token].accFeePerShare, PRECISION);
-
-        IERC20(token).safeTransfer(msg.sender, amount);
-
-        emit FeeTokenUnstaked(msg.sender, token, amount, feeStakeBalance[token][msg.sender]);
-    }
-
-    function claimFeeRewards(address token) external whenNotPaused nonReentrant {
-        TokenConfig storage config = _requireManagedToken(token);
-        _requireFeeEnabled(config);
-
-        _accrueFeeRewards(token, msg.sender);
-
-        uint256 pending = feePendingRewards[token][msg.sender];
-        if (pending == 0) {
-            revert NoFeeRewards();
-        }
-
-        feePendingRewards[token][msg.sender] = 0;
-        feePools[token].rewardBalance -= pending;
-
-        IERC20(token).safeTransfer(msg.sender, pending);
-
-        emit FeeRewardsClaimed(msg.sender, token, pending);
-    }
-
-    function pendingFeeRewards(address token, address user) external view returns (uint256) {
-        TokenConfig storage config = tokenConfigs[token];
-        if (!config.exists || !config.feeEnabled) {
-            return 0;
-        }
-
-        uint256 acc = _previewAccFeePerShare(token);
-        uint256 amount = feeStakeBalance[token][user];
-        uint256 accumulated = Math.mulDiv(amount, acc, PRECISION);
-        uint256 debt = feeRewardDebt[token][user];
-
-        if (accumulated > debt) {
-            return feePendingRewards[token][user] + (accumulated - debt);
-        }
-
-        return feePendingRewards[token][user];
-    }
-
-    function unlockedStake(address user) public view returns (uint256) {
-        return stakedBalance[user] - lockedBalance[user];
-    }
-
     function rewardPerToken() public view returns (uint256) {
-        if (totalRewardWeight == 0) {
+        if (totalStaked == 0) {
             return rewardPerTokenStored;
         }
 
         uint256 blockDelta = block.number - lastUpdateBlock;
-        uint256 rewardDelta = Math.mulDiv(blockDelta * rewardRatePerBlock, PRECISION, totalRewardWeight);
+        uint256 rewardDelta = Math.mulDiv(blockDelta * rewardRatePerBlock, PRECISION, totalStaked);
         return rewardPerTokenStored + rewardDelta;
     }
 
@@ -1334,7 +741,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     function _earnedSer9(address account) internal view returns (uint256) {
         uint256 rewardDelta = rewardPerToken() - userRewardPerTokenPaid[account];
-        uint256 accrued = Math.mulDiv(rewardWeightBalance[account], rewardDelta, PRECISION);
+        uint256 accrued = Math.mulDiv(stakedBalance[account], rewardDelta, PRECISION);
         return rewards[account] + accrued;
     }
 
@@ -1344,255 +751,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return monadRewards[account] + accrued;
     }
 
-    function _requireManagedToken(address token) internal view returns (TokenConfig storage config) {
-        config = tokenConfigs[token];
-        if (!config.exists) {
-            revert InvalidManagedToken();
-        }
-    }
-
-    function _validateMintPolicy(uint256, uint256 maxMultiplierBps, uint16 rampStartBps) internal pure {
-        if (maxMultiplierBps < BPS_DENOMINATOR) {
-            revert InvalidMaxMultiplierBps(maxMultiplierBps);
-        }
-        if (rampStartBps > BPS_DENOMINATOR - 1) {
-            revert InvalidRampStartBps(rampStartBps);
-        }
-    }
-
-    function _resolveTokenMintPolicy(address token) internal view returns (TokenMintPolicy memory policy) {
-        policy = _tokenMintPolicies[token];
-        if (policy.maxSupply == 0) {
-            return TokenMintPolicy({maxSupply: 0, maxMultiplierBps: BPS_DENOMINATOR, rampStartBps: 0});
-        }
-    }
-
-    function _effectiveMintRateAtSupply(uint256 baseRate, TokenMintPolicy memory policy, uint256 supply)
-        internal
-        pure
-        returns (uint256)
-    {
-        if (policy.maxSupply == 0) {
-            return baseRate;
-        }
-
-        uint256 multiplierBps = _multiplierBpsAtSupply(policy, supply);
-        return Math.mulDiv(baseRate, multiplierBps, BPS_DENOMINATOR);
-    }
-
-    function _previewCollateralForMint(
-        uint256 baseRate,
-        TokenMintPolicy memory policy,
-        uint256 currentSupply,
-        uint256 amount
-    ) internal pure returns (uint256) {
-        if (amount == 0) {
-            return 0;
-        }
-
-        if (policy.maxSupply == 0) {
-            return _collateralForAmount(amount, baseRate);
-        }
-
-        uint256 requestedSupply = currentSupply + amount;
-        if (requestedSupply > policy.maxSupply) {
-            revert ExceedsMaxSupply(requestedSupply, policy.maxSupply);
-        }
-
-        if (policy.maxMultiplierBps == BPS_DENOMINATOR) {
-            return _collateralForAmount(amount, baseRate);
-        }
-
-        uint256 startSupply = _rampStartSupply(policy);
-        uint256 collateral;
-
-        if (currentSupply < startSupply) {
-            uint256 preRampEnd = requestedSupply < startSupply ? requestedSupply : startSupply;
-            uint256 preRampAmount = preRampEnd - currentSupply;
-            if (preRampAmount > 0) {
-                collateral += _collateralForAmount(preRampAmount, baseRate);
-            }
-        }
-
-        uint256 rampStartSupply = currentSupply > startSupply ? currentSupply : startSupply;
-        if (requestedSupply > rampStartSupply) {
-            uint256 rampAmount = requestedSupply - rampStartSupply;
-            uint256 startBps = _multiplierBpsAtSupply(policy, rampStartSupply);
-            uint256 endBps = _multiplierBpsAtSupply(policy, requestedSupply);
-            uint256 bpsSum = startBps + endBps;
-            uint256 baseRampCollateral = _collateralForAmount(rampAmount, baseRate);
-            collateral += Math.mulDiv(baseRampCollateral, bpsSum, 2 * BPS_DENOMINATOR, Math.Rounding.Ceil);
-        }
-
-        return collateral;
-    }
-
-    function _rampStartSupply(TokenMintPolicy memory policy) internal pure returns (uint256) {
-        return Math.mulDiv(policy.maxSupply, policy.rampStartBps, BPS_DENOMINATOR);
-    }
-
-    function _multiplierBpsAtSupply(TokenMintPolicy memory policy, uint256 supply) internal pure returns (uint256) {
-        if (policy.maxSupply == 0) {
-            return BPS_DENOMINATOR;
-        }
-
-        if (supply >= policy.maxSupply) {
-            return policy.maxMultiplierBps;
-        }
-
-        uint256 startSupply = _rampStartSupply(policy);
-        if (supply <= startSupply) {
-            return BPS_DENOMINATOR;
-        }
-
-        uint256 rampRange = policy.maxSupply - startSupply;
-        uint256 rampProgress = supply - startSupply;
-        uint256 extraBps = Math.mulDiv(policy.maxMultiplierBps - BPS_DENOMINATOR, rampProgress, rampRange);
-        return BPS_DENOMINATOR + extraBps;
-    }
-
-    function _transferFromWithPermit2(
-        address token,
-        uint256 amount,
-        IPermit2.PermitSingle calldata permitSingle,
-        bytes calldata permitSignature
-    ) internal {
-        IPermit2 permit2Contract = permit2;
-        if (address(permit2Contract) == address(0)) {
-            revert Permit2NotConfigured();
-        }
-
-        if (permitSingle.details.token != token) {
-            revert InvalidPermit2Token(token, permitSingle.details.token);
-        }
-        if (permitSingle.spender != address(this)) {
-            revert InvalidPermit2Spender(address(this), permitSingle.spender);
-        }
-        if (uint256(permitSingle.details.amount) < amount) {
-            revert Permit2AmountTooLow(amount, uint256(permitSingle.details.amount));
-        }
-
-        permit2Contract.permit(msg.sender, permitSingle, permitSignature);
-        permit2Contract.transferFrom(msg.sender, address(this), SafeCast.toUint160(amount), token);
-    }
-
-    function _requireFeeEnabled(TokenConfig storage config) internal view {
-        if (!config.feeEnabled) {
-            revert FeeDisabled();
-        }
-    }
-
-    function _autoUnlockUnusedLocked(address account) internal {
-        uint256 userLocked = lockedBalance[account];
-        uint256 userUsed = usedLockedSer9[account];
-        if (userLocked <= userUsed) {
-            return;
-        }
-
-        lockedBalance[account] = userUsed;
-        emit UnusedLockedUnlocked(account, userLocked - userUsed, userUsed);
-    }
-
-    function _syncRewardWeight(address account) internal {
-        uint256 oldWeight = rewardWeightBalance[account];
-        uint256 newWeight = _rewardWeightFrom(stakedBalance[account], lockedBalance[account]);
-
-        rewardWeightBalance[account] = newWeight;
-
-        if (newWeight > oldWeight) {
-            totalRewardWeight += newWeight - oldWeight;
-        } else if (oldWeight > newWeight) {
-            totalRewardWeight -= oldWeight - newWeight;
-        }
-    }
-
-    function _rewardWeightFrom(uint256 staked, uint256 locked) internal pure returns (uint256) {
-        uint256 unlocked = staked - locked;
-        return (unlocked * 2) + locked;
-    }
-
-    function _collateralForAmount(uint256 amount, uint256 mintRate) internal pure returns (uint256) {
-        return Math.mulDiv(amount, mintRate, PRECISION, Math.Rounding.Ceil);
-    }
-
-    function _previewAccFeePerShare(address token) internal view returns (uint256) {
-        FeePool storage pool = feePools[token];
-        if (pool.totalStaked == 0) {
-            return pool.accFeePerShare;
-        }
-
-        uint256 tokenBalance = IERC20(token).balanceOf(address(this));
-        if (tokenBalance < pool.totalStaked) {
-            return pool.accFeePerShare;
-        }
-
-        uint256 rewardBalance = tokenBalance - pool.totalStaked;
-        if (rewardBalance < pool.rewardBalance) {
-            return pool.accFeePerShare;
-        }
-
-        uint256 newlyReceived = rewardBalance - pool.rewardBalance;
-        uint256 distributable = pool.undistributedRewards + newlyReceived;
-        if (distributable == 0) {
-            return pool.accFeePerShare;
-        }
-
-        return pool.accFeePerShare + Math.mulDiv(distributable, PRECISION, pool.totalStaked);
-    }
-
-    function _updateFeePool(address token) internal {
-        FeePool storage pool = feePools[token];
-
-        uint256 tokenBalance = IERC20(token).balanceOf(address(this));
-        if (tokenBalance < pool.totalStaked) {
-            pool.rewardBalance = 0;
-            pool.undistributedRewards = 0;
-            return;
-        }
-
-        uint256 rewardBalance = tokenBalance - pool.totalStaked;
-        if (pool.totalStaked == 0) {
-            if (rewardBalance > pool.rewardBalance) {
-                pool.undistributedRewards += rewardBalance - pool.rewardBalance;
-            }
-            pool.rewardBalance = rewardBalance;
-            return;
-        }
-
-        if (rewardBalance < pool.rewardBalance) {
-            pool.rewardBalance = rewardBalance;
-            return;
-        }
-
-        uint256 newlyReceived = rewardBalance - pool.rewardBalance;
-        uint256 distributable = pool.undistributedRewards + newlyReceived;
-        if (distributable > 0) {
-            uint256 accDelta = Math.mulDiv(distributable, PRECISION, pool.totalStaked);
-            if (accDelta > 0) {
-                pool.accFeePerShare += accDelta;
-                // Carry the sub-share remainder so dust is not lost when totalStaked is large.
-                uint256 consumed = Math.mulDiv(accDelta, pool.totalStaked, PRECISION);
-                pool.undistributedRewards = distributable - consumed;
-            } else {
-                pool.undistributedRewards = distributable;
-            }
-        }
-
-        pool.rewardBalance = rewardBalance;
-    }
-
-    function _accrueFeeRewards(address token, address user) internal {
-        _updateFeePool(token);
-
-        uint256 amount = feeStakeBalance[token][user];
-        uint256 accumulated = Math.mulDiv(amount, feePools[token].accFeePerShare, PRECISION);
-        uint256 debt = feeRewardDebt[token][user];
-
-        if (accumulated > debt) {
-            feePendingRewards[token][user] += accumulated - debt;
-        }
-
-        feeRewardDebt[token][user] = accumulated;
+    function unlockedStake(address user) public view returns (uint256) {
+        return stakedBalance[user];
     }
 
     function _monadStaking() internal pure returns (IMonadStaking) {
@@ -1612,11 +772,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         return configured == 0 ? UNSTAKE_DELAY_EPOCHS : configured;
     }
 
-    /// @dev Credit any unexpected balance increase from a Monad precompile call to protocol yield.
-    ///      Some Monad staking precompile operations (delegate/undelegate/withdraw) may auto-pay
-    ///      accrued validator rewards alongside the requested action. Without this, that MON would be
-    ///      misclassified as principal and become unsweepable. `expectedOutflow`/`expectedInflow` are
-    ///      the principal movements the caller already accounts for; only the surplus is treated as yield.
     function _accruePrecompileYield(
         uint64 validatorId,
         uint256 balanceBefore,
@@ -2029,9 +1184,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         while (scanned < trackedLength && scanned < maxValidators) {
             uint64 validatorId = trackedValidators[cursor];
 
-            // Claim from every validator the contract has staked to (all tracked validators),
-            // including ones whose active delegation is currently zero — they may still hold
-            // unclaimed rewards that would otherwise be stranded when the validator is compacted out.
             uint256 beforeBalance = address(this).balance;
             try _monadStaking().claimRewards(validatorId) {} catch (bytes memory reason) {
                 emit MonadClaimRewardsFailed(validatorId, reason);
@@ -2115,11 +1267,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 continue;
             }
 
-            // Measure what the precompile actually returned for this withdrawal. Under normal
-            // operation `received >= ticket.amount` (full principal, possibly plus auto-paid
-            // rewards). A `received < ticket.amount` result means delegated/unbonding stake was
-            // slashed: book the surplus as yield, or record the shortfall as a solvency deficit so
-            // off-chain monitoring is alerted and the owner can backfill / pause before claims drain.
             uint256 balanceAfter = address(this).balance;
             uint256 received = balanceAfter > balanceBefore ? balanceAfter - balanceBefore : 0;
             if (received >= ticket.amount) {
@@ -2174,13 +1321,6 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
                 uint256 accRewardPerToken;
                 uint256 commission;
 
-                // NOTE: the 2nd return value (`uint64 flags`) encodes validator state. We do NOT
-                // filter on it (e.g. to skip jailed validators) because Monad does not publish the
-                // flag bit layout, and Monad has no automated slashing today
-                // (docs.monad.xyz/developer-essentials/staking/staking-behavior, confirmed 2026-05),
-                // so a jailed/slashed bit is not yet actionable. Guessing a bitmask risks wrongly
-                // excluding healthy validators. Revisit once Monad documents flag bits / enables
-                // slashing; until then `MonadWithdrawShortfall` is the slashing tripwire.
                 try _monadStaking().getValidator(validatorId) returns (
                     address,
                     uint64,
@@ -2525,43 +1665,43 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         }
     }
 
-    function _upgradeManagedToken(address token, address newImplementation, bytes memory data) internal {
-        _requireManagedToken(token);
-        _validateImplementation(newImplementation);
-
-        if (token.code.length == 0) {
-            revert InvalidManagedToken();
-        }
-
-        address tokenOwner = Series9ManagedToken(token).owner();
-        if (tokenOwner != address(this)) {
-            revert UnauthorizedTokenOwner(token, tokenOwner);
-        }
-
-        Series9ManagedToken(token).upgradeToAndCall(newImplementation, data);
-        emit ManagedTokenUpgraded(token, newImplementation);
-    }
-
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
     function _resolveBatchLimit(uint256 requestedLimit, uint256 defaultLimit) internal pure returns (uint256) {
         return requestedLimit == 0 ? defaultLimit : requestedLimit;
     }
 
+    function _transferFromWithPermit2(
+        address token,
+        uint256 amount,
+        IPermit2.PermitSingle calldata permitSingle,
+        bytes calldata permitSignature
+    ) internal {
+        IPermit2 permit2Contract = permit2;
+        if (address(permit2Contract) == address(0)) {
+            revert Permit2NotConfigured();
+        }
+
+        if (permitSingle.details.token != token) {
+            revert InvalidPermit2Token(token, permitSingle.details.token);
+        }
+        if (permitSingle.spender != address(this)) {
+            revert InvalidPermit2Spender(address(this), permitSingle.spender);
+        }
+        if (uint256(permitSingle.details.amount) < amount) {
+            revert Permit2AmountTooLow(amount, uint256(permitSingle.details.amount));
+        }
+
+        permit2Contract.permit(msg.sender, permitSingle, permitSignature);
+        permit2Contract.transferFrom(msg.sender, address(this), SafeCast.toUint160(amount), token);
+    }
+
     uint256 public cachedMonadObservedApy;
-    /// @dev Deprecated: retained for storage-layout and ABI stability. Set once at initialization
-    /// to BPS_DENOMINATOR; no longer drives any delegation logic.
     uint256 public cachedMonadDelegatedShareBps;
     uint64 public monadUnstakeDelayEpochs;
 
     uint256 public accruedCreationFees;
 
-    /// @notice Cumulative MON shortfall observed when matured Monad `withdraw` calls returned less
-    /// than the booked undelegation principal (i.e. delegated stake was slashed).
-    /// @dev Pure observability counter — it does NOT alter user claim amounts. Stays 0 while Monad
-    /// has no slashing. If it ever rises, the contract is under-collateralized for Monad unstake
-    /// claims and the owner must backfill MON (via `receive()`) or pause; reassess the claim path
-    /// for proportional loss-socialization before relying on this contract under active slashing.
     uint256 public monadSlashingDeficit;
 
     uint256[10] private _gap;

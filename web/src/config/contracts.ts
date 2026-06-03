@@ -6,7 +6,6 @@ const FALLBACK_CONTRACTS = {
   identityProxy: '0xEBa0Fd485ADe50AE5182EbB4ff98fCC5613572e9',
   permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
   ser9Implementation: '0x25144ac0787a2AE5E963D309e43f3251f80Fad87',
-  managedTokenImplementation: '0x7Fb4D4d14FF5c3e03A8227cC7182CF4284ceeaE8',
   stakingImplementation: '0xBfBc7Dab0d72f1DBe61ab157C20A3B6eB3E34672',
 } as const;
 
@@ -28,10 +27,6 @@ export const contracts = {
   ser9Implementation: readAddressFromEnv(
     'VITE_SER9_IMPLEMENTATION',
     FALLBACK_CONTRACTS.ser9Implementation,
-  ),
-  managedTokenImplementation: readAddressFromEnv(
-    'VITE_MANAGED_IMPLEMENTATION',
-    FALLBACK_CONTRACTS.managedTokenImplementation,
   ),
   stakingImplementation: readAddressFromEnv(
     'VITE_STAKING_IMPLEMENTATION',
@@ -64,11 +59,6 @@ export const contractEntries = [
     key: 'ser9Implementation',
     title: 'SER9 Implementation',
     address: contracts.ser9Implementation,
-  },
-  {
-    key: 'managedTokenImplementation',
-    title: 'ManagedToken Implementation',
-    address: contracts.managedTokenImplementation,
   },
   {
     key: 'stakingImplementation',

@@ -5,7 +5,6 @@ import {Script, console} from "forge-std/Script.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {SER9Token} from "../src/SER9Token.sol";
-import {Series9ManagedToken} from "../src/Series9ManagedToken.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
 
 /// @notice Deploys Series9 contracts with a Safe multisig as the final owner.
@@ -41,7 +40,6 @@ contract DeploySeries9 is Script {
 
         // --- Deploy implementations ---
         SER9Token ser9Implementation = new SER9Token();
-        Series9ManagedToken managedTokenImplementation = new Series9ManagedToken();
         Series9Staking stakingImplementation = new Series9Staking();
 
         // --- Deploy SER9 proxy (deployer as temporary owner for setup) ---
@@ -60,7 +58,7 @@ contract DeploySeries9 is Script {
                     address(stakingImplementation),
                     abi.encodeCall(
                         Series9Staking.initialize,
-                        (address(ser9), rewardPerBlock, safeAddress, address(managedTokenImplementation), 1 ether)
+                        (address(ser9), rewardPerBlock, safeAddress, 1 ether)
                     )
                 )
             )
@@ -80,7 +78,6 @@ contract DeploySeries9 is Script {
         console.log("\n=== Deployed Addresses ===");
         console.log("SER9 Implementation:", address(ser9Implementation));
         console.log("SER9 Proxy:", address(ser9));
-        console.log("ManagedToken Implementation:", address(managedTokenImplementation));
         console.log("Staking Implementation:", address(stakingImplementation));
         console.log("Staking Proxy:", address(staking));
         console.log("Permit2:", permit2Address == address(0) ? "not-set" : vm.toString(permit2Address));
@@ -93,7 +90,6 @@ contract DeploySeries9 is Script {
         // --- Auto-verify ---
         console.log("\n=== Verifying Contracts ===");
         _verify(address(ser9Implementation), "src/SER9Token.sol:SER9Token", "");
-        _verify(address(managedTokenImplementation), "src/Series9ManagedToken.sol:Series9ManagedToken", "");
         _verify(address(stakingImplementation), "src/Series9Staking.sol:Series9Staking", "");
         _verify(
             address(ser9),
@@ -110,7 +106,7 @@ contract DeploySeries9 is Script {
                     address(stakingImplementation),
                     abi.encodeCall(
                         Series9Staking.initialize,
-                        (address(ser9), rewardPerBlock, safeAddress, address(managedTokenImplementation), 1 ether)
+                        (address(ser9), rewardPerBlock, safeAddress, 1 ether)
                     )
                 )
             )

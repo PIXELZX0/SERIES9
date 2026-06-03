@@ -57,7 +57,6 @@ export const en = {
   totalRewardWeight: 'Total Reward Weight',
   rewardRatePerBlock: 'Reward / Block',
   tokenCreationFee: 'Token Creation Fee',
-  managedTokenCount: 'Managed Token Count',
   ser9Balance: 'Your SER9 Balance',
   stakedBalance: 'Your Staked SER9',
   lockedBalance: 'Your Locked SER9',

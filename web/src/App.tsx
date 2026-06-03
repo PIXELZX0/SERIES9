@@ -17,7 +17,7 @@ import { encodeFunctionData, getAddress, isAddress, isHex, maxUint256, zeroAddre
 
 import { explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
-import { identityAbi, managedTokenAbi, ser9Abi, stakingAbi } from './contracts/abi';
+import { identityAbi, ser9Abi, stakingAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
 import { type MessageKey } from './i18n';
 import { useI18n } from './i18n/useI18n';
@@ -52,18 +52,7 @@ type IdentityTokenMetadata = {
   image_data?: string;
 };
 
-type TokenConfigValue = {
-  exists: boolean;
-  creator: Address;
-  mintRate: bigint;
-  feeEnabled: boolean;
-};
 
-type TokenMintPolicyValue = {
-  maxSupply: bigint;
-  maxMultiplierBps: bigint;
-  rampStartBps: number;
-};
 
 type UnstakeRequestValue = {
   amount: bigint;
@@ -217,91 +206,7 @@ function formatApproxRemainingEpochTime(locale: string, remainingEpochs: number)
   return `~${segments.join(' ')}`;
 }
 
-function parseTokenConfig(raw: unknown): TokenConfigValue | null {
-  if (!raw) {
-    return null;
-  }
 
-  if (Array.isArray(raw)) {
-    const [exists, creator, mintRate, feeEnabled] = raw;
-    if (typeof exists === 'boolean' && typeof creator === 'string' && typeof mintRate === 'bigint') {
-      return {
-        exists,
-        creator: getAddress(creator),
-        mintRate,
-        feeEnabled: Boolean(feeEnabled),
-      };
-    }
-  }
-
-  if (typeof raw === 'object') {
-    const value = raw as {
-      exists?: unknown;
-      creator?: unknown;
-      mintRate?: unknown;
-      feeEnabled?: unknown;
-    };
-
-    if (
-      typeof value.exists === 'boolean' &&
-      typeof value.creator === 'string' &&
-      typeof value.mintRate === 'bigint' &&
-      typeof value.feeEnabled === 'boolean'
-    ) {
-      return {
-        exists: value.exists,
-        creator: getAddress(value.creator),
-        mintRate: value.mintRate,
-        feeEnabled: value.feeEnabled,
-      };
-    }
-  }
-
-  return null;
-}
-
-function parseTokenMintPolicy(raw: unknown): TokenMintPolicyValue | null {
-  if (!raw) {
-    return null;
-  }
-
-  if (Array.isArray(raw)) {
-    const [maxSupply, maxMultiplierBps, rampStartBps] = raw;
-    if (
-      typeof maxSupply === 'bigint' &&
-      typeof maxMultiplierBps === 'bigint' &&
-      (typeof rampStartBps === 'number' || typeof rampStartBps === 'bigint')
-    ) {
-      return {
-        maxSupply,
-        maxMultiplierBps,
-        rampStartBps: Number(rampStartBps),
-      };
-    }
-  }
-
-  if (typeof raw === 'object') {
-    const value = raw as {
-      maxSupply?: unknown;
-      maxMultiplierBps?: unknown;
-      rampStartBps?: unknown;
-    };
-
-    if (
-      typeof value.maxSupply === 'bigint' &&
-      typeof value.maxMultiplierBps === 'bigint' &&
-      (typeof value.rampStartBps === 'number' || typeof value.rampStartBps === 'bigint')
-    ) {
-      return {
-        maxSupply: value.maxSupply,
-        maxMultiplierBps: value.maxMultiplierBps,
-        rampStartBps: Number(value.rampStartBps),
-      };
-    }
-  }
-
-  return null;
-}
 
 function parseUnstakeRequest(raw: unknown): UnstakeRequestValue | null {
   if (!raw) {
@@ -501,135 +406,6 @@ function MetricCard({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function ManagedTokenCard({ token }: { token: Address }) {
-  const { t } = useI18n();
-
-  const tokenConfigRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'tokenConfigs',
-    args: [token],
-  });
-
-  const tokenMintPolicyRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'tokenMintPolicies',
-    args: [token],
-  });
-
-  const nameRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'name',
-  });
-
-  const symbolRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'symbol',
-  });
-
-  const feeEnabledRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'feeEnabled',
-  });
-
-  const feeBpsRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'feeBps',
-  });
-
-  const feeRecipientRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'feeRecipient',
-  });
-
-  const totalSupplyRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'totalSupply',
-  });
-
-  const decimalsRead = useReadContract({
-    address: token,
-    abi: managedTokenAbi,
-    functionName: 'decimals',
-  });
-
-  const effectiveMintRateRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'effectiveMintRate',
-    args: [token],
-  });
-
-  const tokenConfig = parseTokenConfig(tokenConfigRead.data);
-  const tokenMintPolicy = parseTokenMintPolicy(tokenMintPolicyRead.data);
-  const symbol = symbolRead.data ?? '-';
-
-  return (
-    <article className="token-card">
-      <div className="token-card-head">
-        <h4>{nameRead.data ?? symbol}</h4>
-        <span className="pill">{symbol}</span>
-      </div>
-
-      <div className="token-grid">
-        <div>
-          <span>{t('tokenAddress')}</span>
-          <strong>{shortenAddress(token)}</strong>
-        </div>
-        <div>
-          <span>{t('mintRate')}</span>
-          <strong>{formatTokenAmount(tokenConfig?.mintRate)}</strong>
-        </div>
-        <div>
-          <span>{t('effectiveMintRate')}</span>
-          <strong>{formatTokenAmount(effectiveMintRateRead.data)}</strong>
-        </div>
-        <div>
-          <span>{t('maxSupply')}</span>
-          <strong>
-            {tokenMintPolicy?.maxSupply === 0n ? t('unlimited') : formatTokenAmount(tokenMintPolicy?.maxSupply)}
-          </strong>
-        </div>
-        <div>
-          <span>{t('maxMultiplierBps')}</span>
-          <strong>{tokenMintPolicy?.maxMultiplierBps?.toString() ?? '10000'}</strong>
-        </div>
-        <div>
-          <span>{t('rampStartBps')}</span>
-          <strong>{tokenMintPolicy?.rampStartBps?.toString() ?? '0'}</strong>
-        </div>
-        <div>
-          <span>{t('feeEnabled')}</span>
-          <strong>{feeEnabledRead.data ? t('yes') : t('no')}</strong>
-        </div>
-        <div>
-          <span>{t('feeBps')}</span>
-          <strong>{feeBpsRead.data ? feeBpsRead.data.toString() : '0'}</strong>
-        </div>
-        <div>
-          <span>{t('feeRecipient')}</span>
-          <strong>{shortenAddress(feeRecipientRead.data)}</strong>
-        </div>
-        <div>
-          <span>{t('totalSupply')}</span>
-          <strong>{formatTokenAmount(totalSupplyRead.data)}</strong>
-        </div>
-        <div>
-          <span>{t('decimals')}</span>
-          <strong>{decimalsRead.data?.toString() ?? '18'}</strong>
-        </div>
-      </div>
-    </article>
-  );
-}
-
 export default function App() {
   const { t, locale, setLocale } = useI18n();
   const queryClient = useQueryClient();
@@ -730,17 +506,7 @@ export default function App() {
     functionName: 'totalStaked',
   });
 
-  const totalRewardWeightRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'totalRewardWeight',
-  });
 
-  const managedTokenCountRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'managedTokensLength',
-  });
 
   const latestBlockNumber = useBlockNumber({
     watch: true,
@@ -779,15 +545,6 @@ export default function App() {
     },
   });
 
-  const userLockedRead = useReadContract({
-    address: contracts.stakingProxy,
-    abi: stakingAbi,
-    functionName: 'lockedBalance',
-    args: [addressForReads],
-    query: {
-      enabled: Boolean(normalizedConnectedAddress),
-    },
-  });
 
   const userEarnedRead = useReadContract({
     address: contracts.stakingProxy,
@@ -946,7 +703,7 @@ export default function App() {
 
   const directPaymentAllowanceRead = useReadContract({
     address: normalizedPaymentTokenAddress ?? contracts.ser9Proxy,
-    abi: managedTokenAbi,
+    abi: ser9Abi,
     functionName: 'allowance',
     args: [addressForReads, contracts.identityProxy],
     query: {
@@ -956,7 +713,7 @@ export default function App() {
 
   const requestPaymentAllowanceRead = useReadContract({
     address: normalizedRequestTokenAddress ?? contracts.ser9Proxy,
-    abi: managedTokenAbi,
+    abi: ser9Abi,
     functionName: 'allowance',
     args: [addressForReads, contracts.identityProxy],
     query: {
@@ -1121,16 +878,8 @@ export default function App() {
     },
   });
 
-  const managedTokenCount = Number(managedTokenCountRead.data ?? 0n);
   const monadUnstakeRequestCount = Number(monadUnstakeRequestCountRead.data ?? 0n);
   const ser9UnstakeRequestCount = Number(ser9UnstakeRequestCountRead.data ?? 0n);
-
-  const userUnlockedBalance = useMemo(() => {
-    const stakedBalance = userStakedRead.data ?? 0n;
-    const lockedBalance = userLockedRead.data ?? 0n;
-
-    return stakedBalance > lockedBalance ? stakedBalance - lockedBalance : 0n;
-  }, [userLockedRead.data, userStakedRead.data]);
 
   const monadUnstakeRequestContracts = useMemo(
     () =>
@@ -1168,39 +917,6 @@ export default function App() {
     },
   });
 
-  const managedTokenReadContracts = useMemo(
-    () =>
-      Array.from({ length: managedTokenCount }, (_, index) => ({
-        address: contracts.stakingProxy,
-        abi: stakingAbi,
-        functionName: 'managedTokens' as const,
-        args: [BigInt(index)] as const,
-      })),
-    [managedTokenCount],
-  );
-
-  const managedTokenListRead = useReadContracts({
-    contracts: managedTokenReadContracts,
-    query: {
-      enabled: managedTokenReadContracts.length > 0,
-    },
-  });
-
-  const managedTokens = useMemo(() => {
-    const items: Address[] = [];
-
-    for (const result of managedTokenListRead.data ?? []) {
-      if (result.status !== 'success') {
-        continue;
-      }
-
-      if (typeof result.result === 'string' && isAddress(result.result)) {
-        items.push(getAddress(result.result));
-      }
-    }
-
-    return items;
-  }, [managedTokenListRead.data]);
 
   const paymentRequests = useMemo(() => {
     const parsed: PaymentRequestValue[] = [];
@@ -2112,7 +1828,7 @@ export default function App() {
 
     const approveHash = await tx.execute(t('paymentApproveAsset'), {
       address: tokenAddress,
-      abi: managedTokenAbi,
+      abi: ser9Abi,
       functionName: 'approve',
       args: [contracts.identityProxy, maxUint256],
     });
@@ -2199,7 +1915,7 @@ export default function App() {
       if (request.token !== zeroAddress) {
         const allowance = await publicClient?.readContract({
           address: request.token,
-          abi: managedTokenAbi,
+          abi: ser9Abi,
           functionName: 'allowance',
           args: [addressForReads, contracts.identityProxy],
         });
@@ -2345,7 +2061,7 @@ export default function App() {
       if (request.token !== zeroAddress) {
         const allowance = await publicClient?.readContract({
           address: request.token,
-          abi: managedTokenAbi,
+          abi: ser9Abi,
           functionName: 'allowance',
           args: [addressForReads, contracts.identityProxy],
         });
@@ -2464,7 +2180,6 @@ export default function App() {
           <input value={unstakeAmount} onChange={(event) => setUnstakeAmount(event.target.value)} placeholder={t('amount')} />
           {isConnected ? (
             <p className="muted">
-              {t('unlockedBalance')}: {formatTokenAmount(userUnlockedBalance)}
             </p>
           ) : (
             <p className="muted">{t('connectHint')}</p>
@@ -2623,9 +2338,6 @@ export default function App() {
           <div className="hero-badges">
             <span className="hero-badge">
               {t('targetChain')}: {networkConfig.chainId}
-            </span>
-            <span className="hero-badge">
-              {t('managedTokenCount')}: {String(managedTokenCount)}
             </span>
             <span className={`hero-badge ${pausedRead.data ? 'is-paused' : 'is-live'}`}>
               {t('paused')}: {pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
@@ -3200,15 +2912,6 @@ export default function App() {
 
       {isTokensListPage && (
         <>
-          <section className="card">
-            <div className="section-head section-head-highlight">
-              <div>
-                <div className="section-title section-title-inline">{t('sectionManagedTokens')}</div>
-                <h2>{t('tokensPageTitle')}</h2>
-              </div>
-            </div>
-            <p className="muted">{t('tokensPageHint')}</p>
-          </section>
 
           <section className="card">
             <div className="section-head section-head-highlight">
@@ -3224,10 +2927,8 @@ export default function App() {
                 value={pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
               />
               <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
-              <MetricCard label={t('totalRewardWeight')} value={formatTokenAmount(totalRewardWeightRead.data)} />
               <MetricCard label={t('rewardRatePerBlock')} value={formatTokenAmount(rewardRateRead.data)} />
               <MetricCard label={t('tokenCreationFee')} value={formatTokenAmount(creationFeeRead.data)} />
-              <MetricCard label={t('managedTokenCount')} value={String(managedTokenCount)} />
             </div>
           </section>
 
@@ -3269,7 +2970,6 @@ export default function App() {
               <div className="metric-grid">
                 <MetricCard label={t('totalStaked')} value={formatTokenAmount(totalStakedRead.data)} />
                 <MetricCard label={t('stakedBalance')} value={formatTokenAmount(userStakedRead.data)} />
-                <MetricCard label={t('lockedBalance')} value={formatTokenAmount(userLockedRead.data)} />
                 <MetricCard label={t('ser9UnstakingAmount')} value={formatTokenAmount(pendingSer9UnstakeSummary?.totalAmount)} />
                 {pendingSer9UnstakeRemainingTime && (
                   <MetricCard label={t('unstakeRemainingTime')} value={pendingSer9UnstakeRemainingTime} />
@@ -3386,25 +3086,6 @@ export default function App() {
         </>
       )}
 
-      {isTokensListPage && (
-        <section className="card">
-          <div className="section-head section-head-highlight">
-            <div>
-              <div className="section-title section-title-inline">{t('sectionManagedTokens')}</div>
-              <h2>{t('sectionManagedTokens')}</h2>
-            </div>
-          </div>
-          {managedTokens.length === 0 ? (
-            <p className="muted">{t('noManagedTokens')}</p>
-          ) : (
-            <div className="token-list">
-              {managedTokens.map((token) => (
-                <ManagedTokenCard key={token} token={token} />
-              ))}
-            </div>
-          )}
-        </section>
-      )}
 
       {activeActionModal && (
         <div className="modal-backdrop">

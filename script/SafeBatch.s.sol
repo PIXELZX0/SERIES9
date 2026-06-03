@@ -100,24 +100,20 @@ contract SafeUnpause is SafeBatchBase {
     }
 }
 
-/// @notice Upgrade SER9 and update the managed token implementation in one Safe batch
+/// @notice Upgrade SER9 implementation via Safe batch
 /// Usage:
 ///   STAKING_PROXY=0x... forge script script/SafeBatch.s.sol:SafeUpgradeTokens \
-///     --sig "run(address,address)" <newSer9Impl> <newManagedImpl>
+///     --sig "run(address)" <newSer9Impl>
 contract SafeUpgradeTokens is SafeBatchBase {
-    function run(address newSer9Impl, address newManagedImpl) external {
+    function run(address newSer9Impl) external {
         address staking = _staking();
         console.log("Staking:", staking);
         console.log("New SER9 impl:", newSer9Impl);
-        console.log("New Managed impl:", newManagedImpl);
 
-        string memory txs = string.concat(
-            _tx(staking, abi.encodeCall(Series9Staking.upgradeSer9, (newSer9Impl, bytes("")))),
-            ",",
-            _tx(staking, abi.encodeCall(Series9Staking.setManagedTokenImplementation, (newManagedImpl)))
+        _writeBatch(
+            "upgrade-tokens",
+            _tx(staking, abi.encodeCall(Series9Staking.upgradeSer9, (newSer9Impl, bytes(""))))
         );
-
-        _writeBatch("upgrade-tokens", txs);
     }
 }
 

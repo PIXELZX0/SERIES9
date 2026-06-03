@@ -69,7 +69,6 @@ jobs:
 
           jq '.abi' out/Series9Staking.sol/Series9Staking.json > "$ABI_DIR/Series9Staking.abi.json"
           jq '.abi' out/SER9Token.sol/SER9Token.json > "$ABI_DIR/SER9Token.abi.json"
-          jq '.abi' out/Series9ManagedToken.sol/Series9ManagedToken.json > "$ABI_DIR/Series9ManagedToken.abi.json"
           jq '.abi' out/Series9Identity.sol/Series9Identity.json > "$ABI_DIR/Series9Identity.abi.json"
 
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
@@ -127,8 +126,6 @@ jobs:
           SER9_CURRENT_IMPL="$(read_impl_address "$SER9_PROXY")"
           DEPLOY_SER9="$(decide_deploy "$SER9_CURRENT_IMPL" out/SER9Token.sol/SER9Token.json)"
 
-          MANAGED_CURRENT_IMPL="$(cast call "$STAKING_PROXY" "managedTokenImplementation()(address)" --rpc-url "$MONAD_RPC_URL")"
-          DEPLOY_MANAGED="$(decide_deploy "$MANAGED_CURRENT_IMPL" out/Series9ManagedToken.sol/Series9ManagedToken.json)"
 
           DEPLOY_IDENTITY=false
           IDENTITY_CURRENT_IMPL=""
@@ -140,12 +137,10 @@ jobs:
           {
             echo "deploy_staking=$DEPLOY_STAKING"
             echo "deploy_ser9=$DEPLOY_SER9"
-            echo "deploy_managed=$DEPLOY_MANAGED"
             echo "deploy_identity=$DEPLOY_IDENTITY"
             echo "staking_current_impl=$STAKING_CURRENT_IMPL"
             echo "ser9_proxy=$SER9_PROXY"
             echo "ser9_current_impl=$SER9_CURRENT_IMPL"
-            echo "managed_current_impl=$MANAGED_CURRENT_IMPL"
             echo "identity_current_impl=$IDENTITY_CURRENT_IMPL"
           } >> "$GITHUB_OUTPUT"
 
@@ -153,7 +148,6 @@ jobs:
             echo "## Contract change detection"
             echo "- Staking: deploy=\`$DEPLOY_STAKING\` (current=\`$STAKING_CURRENT_IMPL\`)"
             echo "- SER9: deploy=\`$DEPLOY_SER9\` (current=\`$SER9_CURRENT_IMPL\`)"
-            echo "- ManagedToken: deploy=\`$DEPLOY_MANAGED\` (current=\`$MANAGED_CURRENT_IMPL\`)"
             if [[ -n "${IDENTITY_PROXY:-}" ]]; then
               echo "- Identity: deploy=\`$DEPLOY_IDENTITY\` (current=\`$IDENTITY_CURRENT_IMPL\`)"
             fi
@@ -168,7 +162,6 @@ jobs:
           SOCIALSCAN_VERIFIER_URL: https://api.socialscan.io/monad/v1/explorer/command_api/contract
           DEPLOY_STAKING: ${{ steps.detect.outputs.deploy_staking }}
           DEPLOY_SER9: ${{ steps.detect.outputs.deploy_ser9 }}
-          DEPLOY_MANAGED: ${{ steps.detect.outputs.deploy_managed }}
           DEPLOY_IDENTITY: ${{ steps.detect.outputs.deploy_identity }}
         run: |
           set -euo pipefail
@@ -207,8 +200,6 @@ jobs:
           STAKING_TX_HASH=""
           SER9_IMPL=""
           SER9_TX_HASH=""
-          MANAGED_IMPL=""
-          MANAGED_TX_HASH=""
           IDENTITY_IMPL=""
           IDENTITY_TX_HASH=""
 
@@ -250,19 +241,7 @@ jobs:
             echo "SER9 implementation matches on-chain bytecode; skipping deploy."
           fi
 
-          if [[ "$DEPLOY_MANAGED" == "true" ]]; then
-            echo "Deploying ManagedToken implementation..."
-            MANAGED_DEPLOY_JSON="$(forge create src/Series9ManagedToken.sol:Series9ManagedToken \
-              --rpc-url "$MONAD_RPC_URL" \
-              --broadcast \
-              --private-key "$PRIVATE_KEY" \
-              --json)"
-            MANAGED_IMPL="$(parse_deploy_address ManagedToken "$MANAGED_DEPLOY_JSON")"
-            MANAGED_TX_HASH="$(echo "$MANAGED_DEPLOY_JSON" | jq -r '.transactionHash')"
-          else
-            echo "ManagedToken implementation matches on-chain bytecode; skipping deploy."
-          fi
-
+          
           if [[ -n "${IDENTITY_PROXY:-}" && "$DEPLOY_IDENTITY" == "true" ]]; then
             echo "Deploying Identity implementation..."
             IDENTITY_DEPLOY_JSON="$(forge create src/Series9Identity.sol:Series9Identity \
@@ -345,11 +324,7 @@ jobs:
               VERIFIED_ANY=true
               verify_contract_dual "$SER9_IMPL" src/SER9Token.sol:SER9Token "SER9Token"
             fi
-            if [[ -n "$MANAGED_IMPL" ]]; then
-              VERIFIED_ANY=true
-              verify_contract_dual "$MANAGED_IMPL" src/Series9ManagedToken.sol:Series9ManagedToken "Series9ManagedToken"
-            fi
-            if [[ -n "$IDENTITY_IMPL" ]]; then
+                        if [[ -n "$IDENTITY_IMPL" ]]; then
               VERIFIED_ANY=true
               verify_contract_dual "$IDENTITY_IMPL" src/Series9Identity.sol:Series9Identity "Series9Identity"
             fi
@@ -402,17 +377,7 @@ jobs:
             append_description "SER9"
           fi
 
-          if [[ -n "$MANAGED_IMPL" ]]; then
-            SET_MANAGED_IMPL_CALLDATA="$(cast calldata \
-              "setManagedTokenImplementation(address)" \
-              "$MANAGED_IMPL")"
-            TX_ARRAY="$(echo "$TX_ARRAY" | jq \
-              --arg to "$STAKING_PROXY" \
-              --arg data "$SET_MANAGED_IMPL_CALLDATA" \
-              '. + [{"to": $to, "value": "0", "data": $data}]')"
-            append_description "ManagedToken"
-          fi
-
+          
           if [[ -n "$IDENTITY_IMPL" ]]; then
             IDENTITY_UPGRADE_CALLDATA="$(cast calldata \
               "upgradeToAndCall(address,bytes)" \
@@ -455,15 +420,12 @@ jobs:
             --arg identityProxy "${IDENTITY_PROXY:-}" \
             --arg stakingImpl "$STAKING_IMPL" \
             --arg ser9Impl "$SER9_IMPL" \
-            --arg managedImpl "$MANAGED_IMPL" \
             --arg identityImpl "$IDENTITY_IMPL" \
             --arg stakingTxHash "$STAKING_TX_HASH" \
             --arg ser9TxHash "$SER9_TX_HASH" \
-            --arg managedTxHash "$MANAGED_TX_HASH" \
             --arg identityTxHash "$IDENTITY_TX_HASH" \
             --arg deployStaking "$DEPLOY_STAKING" \
             --arg deploySer9 "$DEPLOY_SER9" \
-            --arg deployManaged "$DEPLOY_MANAGED" \
             --arg deployIdentity "$DEPLOY_IDENTITY" \
             --arg safeJson "$SAFE_JSON_OUT" \
             --arg skipVerify "$SKIP_VERIFY" \
@@ -482,12 +444,7 @@ jobs:
                 "txHash": $ser9TxHash,
                 "deployed": ($deploySer9 == "true")
               },
-              "managedToken": {
-                "address": $managedImpl,
-                "txHash": $managedTxHash,
-                "deployed": ($deployManaged == "true")
-              },
-              "identity": {
+                            "identity": {
                 "address": $identityImpl,
                 "txHash": $identityTxHash,
                 "deployed": ($deployIdentity == "true")
@@ -514,7 +471,6 @@ jobs:
           echo "safe_json=$SAFE_JSON_OUT" >> "$GITHUB_OUTPUT"
           echo "staking_impl=$STAKING_IMPL" >> "$GITHUB_OUTPUT"
           echo "ser9_impl=$SER9_IMPL" >> "$GITHUB_OUTPUT"
-          echo "managed_impl=$MANAGED_IMPL" >> "$GITHUB_OUTPUT"
           echo "identity_impl=$IDENTITY_IMPL" >> "$GITHUB_OUTPUT"
           echo "tx_count=$TX_COUNT" >> "$GITHUB_OUTPUT"
           echo "verification_status=$VERIFICATION_STATUS" >> "$GITHUB_OUTPUT"
@@ -556,12 +512,7 @@ jobs:
             else
               echo "- SER9 implementation unchanged (current: \`${{ steps.detect.outputs.ser9_current_impl }}\`)"
             fi
-            if [[ "${{ steps.detect.outputs.deploy_managed }}" == "true" ]]; then
-              echo "- New ManagedToken implementation: \`${{ steps.deploy.outputs.managed_impl }}\`"
-            else
-              echo "- ManagedToken implementation unchanged (current: \`${{ steps.detect.outputs.managed_current_impl }}\`)"
-            fi
-            if [[ -n "${IDENTITY_PROXY:-}" ]]; then
+                        if [[ -n "${IDENTITY_PROXY:-}" ]]; then
               echo "- Identity Proxy: \`${IDENTITY_PROXY}\`"
               if [[ "${{ steps.detect.outputs.deploy_identity }}" == "true" ]]; then
                 echo "- New Identity implementation: \`${{ steps.deploy.outputs.identity_impl }}\`"
