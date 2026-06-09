@@ -371,8 +371,7 @@ contract Series9IdentityTest is Test {
         _fundIdentityRewards(9 ether);
         identity.collectStakingRewards();
 
-        vm.prank(alice);
-        identity.transferFrom(alice, bob, tid);
+        _escrowTransfer(alice, bob, tid);
 
         assertEq(identity.ownerTokenId(alice), 0);
         assertEq(identity.ownerTokenId(bob), tid);
@@ -472,14 +471,15 @@ contract Series9IdentityTest is Test {
 
     function test_transferToExistingIdentityHolderReverts() public {
         vm.prank(alice);
-        uint256 tid = identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
+        identity.mintIdentity("Alice", "", Series9Identity.EntityType.Human, 100, 200);
 
         vm.prank(bob);
         identity.mintIdentity("Bob", "", Series9Identity.EntityType.Human, 100, 200);
 
+        // Cannot initiate a transfer to an address that already holds an identity.
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Series9Identity.AlreadyHasIdentity.selector, bob));
-        identity.transferFrom(alice, bob, tid);
+        identity.initiateIdentityTransfer(bob);
     }
 
     function test_newMinterCannotClaimPastNftRewards() public {
@@ -611,8 +611,7 @@ contract Series9IdentityTest is Test {
     function test_transferredIdentityCannotSpendPreviousOwnerAllowance() public {
         (uint256 aliceTokenId,) = _mintAliceAndBobWithHandles();
 
-        vm.prank(alice);
-        identity.transferFrom(alice, charlie, aliceTokenId);
+        _escrowTransfer(alice, charlie, aliceTokenId);
 
         uint256 aliceBefore = ser9.balanceOf(alice);
         vm.prank(charlie);
@@ -911,6 +910,17 @@ contract Series9IdentityTest is Test {
         MockStaking ms = MockStaking(identity.stakingContract());
         ser9.approve(address(ms), amount);
         ms.fundRewards(address(identity), amount);
+    }
+
+    /// @dev Move an identity through the escrow flow (initiate → accept → 6h delay → finalize),
+    ///      since direct ERC721 transfers are disabled.
+    function _escrowTransfer(address from, address to, uint256 tid) internal {
+        vm.prank(from);
+        identity.initiateIdentityTransfer(to);
+        vm.prank(to);
+        identity.acceptIdentityTransfer(tid);
+        vm.warp(block.timestamp + identity.IDENTITY_TRANSFER_DELAY());
+        identity.finalizeIdentityTransfer(tid);
     }
 
     function _mintAliceAndBobWithHandles() internal returns (uint256 aliceTokenId, uint256 bobTokenId) {

@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |------|----|
 | 파일 | [`src/Series9Identity.sol`](../src/Series9Identity.sol) |
-| 라인 수 | 1,151 |
+| 라인 수 | 1,380 |
 | 상속 | `Initializable`, `ERC721Upgradeable`, `OwnableUpgradeable`, `PausableUpgradeable`, `ReentrancyGuard`, `UUPSUpgradeable`, [`Series9IdentityRenderer`](./Series9IdentityRenderer.md) |
 | 이름 / 심볼 | `Series9 Identity` / `S9ID` |
 | 업그레이드 | UUPS, `_authorizeUpgrade` = `onlyOwner` |
@@ -97,8 +97,13 @@ struct AvatarConfig {
 - `mapping(uint256 => uint256[]) private _payerPaymentRequestIds / _payeePaymentRequestIds`
 - `mapping(address => uint256) public paymentNonces` — EIP-712 서명 nonce
 
+### 지갑 + 에스크로 (slot 25~29)
+- `address public walletImplementation`, `mapping(uint256=>address) public walletOf`, `mapping(address=>uint256) public walletImplVersion`
+- `mapping(uint256=>IdentityTransfer) private _identityTransfers`, `bool private _escrowTransferInProgress`
+- 위 [가상 지갑 + 정체성 전송](#가상-지갑-smart-account-wallet--정체성-전송-escrow) 섹션 참조
+
 ### Storage gap
-- `uint256[35] private __gap`
+- `uint256[30] private __gap` (기존 `[35]`에서 신규 5슬롯 소비)
 
 ## Initialize
 
@@ -230,6 +235,7 @@ handle 정규화 규칙(`_legacyHandleSlug`):
 
 ### 1 주소 1 NFT 강제 (`_update`)
 - 전송/발행 모두 `_update`를 거침.
+- **직접 전송 차단**: `currentOwner != 0 && to != 0 && !_escrowTransferInProgress`이면 `TransferRestricted`. owner→owner 일반 ERC721 전송은 막히고, 에스크로 `finalizeIdentityTransfer`(플래그 set) 또는 mint/burn만 통과.
 - `from != 0 && ownerTokenId[from] == tokenId`이면 from의 보상 정산 후 `ownerTokenId[from]` 삭제.
 - `to != 0`에 이미 다른 `tokenId`가 매핑되어 있으면 `AlreadyHasIdentity`로 revert (전송 차단).
 - `totalReputationScore`가 0이고 발행 이력이 있으면 `_computeTotalReputationScore()`로 재산정 (마이그레이션 안전망).
@@ -283,6 +289,69 @@ IdentityPaymentSent
 PaymentRequestCreated, PaymentRequestPaid, PaymentRequestPaidWithSig, PaymentRequestCancelled
 ```
 
+## 가상 지갑 (Smart-Account Wallet) + 정체성 전송 (Escrow)
+
+각 identity는 **하나의 실제 EVM 스마트 어카운트 지갑**을 가집니다. 지갑은 자체 주소로 MON·ERC20·NFT를 보유하고, 임의 호출(`execute`)과 컨트랙트 배포(CREATE/CREATE2)가 가능합니다. 지갑의 **모든 권한은 EOA가 아니라 identity NFT에 귀속**되어, NFT가 이전되면 새 보유자가 지갑 통제권과 잔액을 자동 승계하고 구 보유자는 즉시 권한을 잃습니다. 지갑 컨트랙트 자체는 [`Series9IdentityWallet`](./Series9IdentityWallet.md) 참조.
+
+정체성 전송은 **수신자 수락 + 6시간 지연 + finalize**의 에스크로 흐름을 거치며, 직접 ERC721 `transferFrom`은 차단됩니다.
+
+### 상수 / 데이터 구조
+
+```solidity
+uint64 public constant IDENTITY_TRANSFER_DELAY = 6 hours;
+enum TransferStatus { None, Pending, Accepted, Completed, Cancelled }
+struct IdentityTransfer { address from; address to; uint64 acceptedAt; TransferStatus status; }
+```
+
+### 스토리지 (slot 25~29, `__gap` 35→30)
+
+- `address public walletImplementation` — 고정 bootstrap 지갑 impl (프록시 birth 로직). 한 번 설정 후 불변 → CREATE2 주소 결정론 보장. setter 없음
+- `mapping(uint256 => address) public walletOf` — identity별 배포된 지갑 (0 = 미생성)
+- `mapping(address => uint256) public walletImplVersion` — 허용된 지갑 impl과 버전 (0 = 미승인)
+- `mapping(uint256 => IdentityTransfer) private _identityTransfers` — identity별 활성 전송
+- `bool private _escrowTransferInProgress` — finalize 내부에서만 set, `_update` 게이트 통과용
+
+### `initializeWalletFactory(bootstrapImpl) reinitializer(3) onlyOwner`
+
+업그레이드 후 1회 호출. `walletImplementation`을 bootstrapImpl로 **고정**하고 version 1로 허용목록 등록.
+
+### 지갑 팩토리 / 레지스트리
+
+| 함수 | 보호 | 동작 |
+|------|------|------|
+| `createWallet(tokenId)` | permissionless | 결정론 주소(CREATE2 salt=tokenId)에 지갑 프록시 배포·초기화. mint 시 자동 호출되며, 업그레이드 이전 identity는 직접 호출해 지연 생성. 이미 있으면 `WalletAlreadyCreated`, 미존재 토큰 `NonexistentToken`, 팩토리 미설정 `WalletNotConfigured` |
+| `predictWalletAddress(tokenId)` view | — | 생성 전에도 지갑 주소 예측 |
+| `setWalletImplApproved(impl, version)` | onlyOwner | 지갑 impl 허용목록 등록/해제(version 0=해제). 버전이 높을수록 최신 — 다운그레이드 금지의 기준 |
+
+### 지갑 권한 훅 (지갑이 호출)
+
+| 함수 | 동작 |
+|------|------|
+| `authorizeWalletCall(tokenId, operator)` view | `ownerOf(tokenId) == operator` 아니면 `NotTokenOwner`; 전송 freeze(Pending/Accepted) 중이면 `WalletFrozenDuringTransfer`. execute/deploy 게이트 |
+| `authorizeWalletUpgrade(tokenId, operator, currentImpl, newImpl)` view | 위 소유자/freeze 검사 + `walletImplVersion[newImpl] > 0`(`WalletImplNotApproved`) + `> walletImplVersion[currentImpl]`(`WalletDowngradeNotAllowed`). UUPS 업글 게이트 |
+
+### 에스크로 전송 (Model A: accept가 6h 타이머 시작)
+
+| 함수 | 보호 | 동작 |
+|------|------|------|
+| `initiateIdentityTransfer(to)` | whenNotPaused | 보유자가 전송 시작. `to`가 0/본인/기 보유자면 revert(`InvalidTransferRecipient`/`AlreadyHasIdentity`). 즉시 Pending → 지갑 freeze |
+| `acceptIdentityTransfer(tokenId)` | whenNotPaused | 수신자만. Pending→Accepted, `acceptedAt=now`, 6시간 타이머 시작 |
+| `cancelIdentityTransfer(tokenId)` | (paused 무관) | 송신·수신 누구나, 완료 전 언제든 취소. Pending/Accepted→Cancelled |
+| `finalizeIdentityTransfer(tokenId)` | whenNotPaused, nonReentrant | permissionless. Accepted + `now >= acceptedAt+6h` 필요(아니면 `TransferDelayNotElapsed(readyAt)`). `_escrowTransferInProgress` 플래그 하에 `_safeTransfer`로 NFT 이전 → 지갑 통제권·잔액이 새 owner로 이동, freeze 해제 |
+| `identityTransferOf(tokenId)` view | — | `(from, to, acceptedAt, status)` |
+
+### 직접 전송 차단 (`_update`)
+
+`_update` 진입 시 `currentOwner != 0 && to != 0 && !_escrowTransferInProgress`이면 `TransferRestricted`. 즉 mint(0→x)·burn(x→0)은 허용, owner→owner 일반 전송은 차단되고 오직 finalize 경로(플래그 set)만 통과합니다.
+
+### 새 Errors
+
+`NoIdentity`, `WalletAlreadyCreated`, `WalletNotConfigured`, `WalletImplNotApproved`, `WalletDowngradeNotAllowed`, `WalletFrozenDuringTransfer`, `InvalidTransferRecipient`, `TransferAlreadyActive`, `TransferNotPending`, `TransferNotAccepted`, `NoActiveTransfer`, `UnauthorizedTransferActor`, `TransferDelayNotElapsed(readyAt)`, `TransferRestricted`
+
+### 새 Events
+
+`WalletCreated`, `WalletImplApprovalSet`, `IdentityTransferInitiated`, `IdentityTransferAccepted`, `IdentityTransferCancelled`, `IdentityTransferCompleted`
+
 ## 구현 상태
 
 | 기능 | 상태 | 비고 |
@@ -314,11 +383,11 @@ PaymentRequestCreated, PaymentRequestPaid, PaymentRequestPaidWithSig, PaymentReq
 
 ## Storage gap
 
-`uint256[35] private __gap`. 새 상태변수 추가 시 같은 양만큼 감소하여 업그레이드 호환성 유지.
+`uint256[30] private __gap` (기존 `[35]`). 지갑/에스크로용 5개 상태변수(slot 25~29)를 append하며 같은 양만큼 감소 — 기존 슬롯 0~24 불변으로 업그레이드 호환성 유지.
 
 ## 운영 노트
 
-1. **결제 흐름은 paused 상태에서 차단됨** — 사용자 자산이 결제 컨트랙트 안에 잠기지 않도록 `whenNotPaused`를 강제. 단 NFT의 ERC721 전송 자체는 OZ 기본 정책을 따름.
+1. **결제 흐름은 paused 상태에서 차단됨** — 사용자 자산이 결제 컨트랙트 안에 잠기지 않도록 `whenNotPaused`를 강제. NFT 직접 ERC721 전송은 항상 차단되며 오직 에스크로(`initiate`→`accept`→6h→`finalize`) 흐름으로만 이전됨. 단 `cancelIdentityTransfer`는 paused 중에도 호출 가능해 사용자가 전송을 되돌릴 수 있음.
 2. **수수료 변경 시점**: `setAIMintFee` / `setHumanMintFee`는 이후 mint에만 영향, 과거 mint한 NFT의 보상 비율과는 무관.
 3. **Reputation 변경**: 사용자가 보상 청구를 미루더라도 변경 직전까지의 보상이 자동 정산되므로 불공정 분배 없음.
 4. **Legacy handle 클레임 기간 (30일)**: 기존 profile name이 정확히 슬러그 규칙에 맞아야 자동 reservation 부여. 다른 사용자는 deadline 이전이라도 `LegacyHandleReservationsNotFinalized`를 만나며, seed 완료 후 reservation 없는 handle은 정상 등록 가능.

@@ -9,7 +9,8 @@
 |----------|------|--------:|------|
 | `SER9Token` | [`src/SER9Token.sol`](../src/SER9Token.sol) | 51 | ERC20 토큰. 초기 1조 발행 후 staking 컨트랙트만 추가 mint 가능 |
 | `Series9Staking` | [`src/Series9Staking.sol`](../src/Series9Staking.sol) | 1,708 | SER9/MON 듀얼 스테이킹 + Monad validator 위임/리밸런싱 |
-| `Series9Identity` | [`src/Series9Identity.sol`](../src/Series9Identity.sol) | 1,151 | 1 주소당 하나의 identity ERC721 + handle 기반 결제 |
+| `Series9Identity` | [`src/Series9Identity.sol`](../src/Series9Identity.sol) | 1,380 | 1 주소당 하나의 identity ERC721 + handle 기반 결제 + 지갑 팩토리 + 에스크로 전송 |
+| `Series9IdentityWallet` | [`src/Series9IdentityWallet.sol`](../src/Series9IdentityWallet.sol) | 153 | identity별 스마트 어카운트 지갑 (execute/배포, NFT 귀속 권한, 허용목록 업그레이드) |
 | `Series9IdentityRenderer` | [`src/Series9IdentityRenderer.sol`](../src/Series9IdentityRenderer.sol) | 1,150 | 온체인 SVG/JSON 메타데이터 렌더러 (Identity의 base) |
 | `IMonadStaking` | [`src/interfaces/IMonadStaking.sol`](../src/interfaces/IMonadStaking.sol) | 47 | Monad staking precompile (`0x1000`) 인터페이스 |
 | `IPermit2` | [`src/interfaces/IPermit2.sol`](../src/interfaces/IPermit2.sol) | 21 | Uniswap Permit2 부분 인터페이스 |
@@ -18,7 +19,8 @@
 
 - [`SER9Token.md`](./SER9Token.md) — SER9 ERC20 토큰
 - [`Series9Staking.md`](./Series9Staking.md) — 스테이킹 + Monad 위임 (핵심 컨트랙트)
-- [`Series9Identity.md`](./Series9Identity.md) — Identity NFT + Payment
+- [`Series9Identity.md`](./Series9Identity.md) — Identity NFT + Payment + 지갑 팩토리/에스크로 전송
+- [`Series9IdentityWallet.md`](./Series9IdentityWallet.md) — identity별 스마트 어카운트 지갑
 - [`Series9IdentityRenderer.md`](./Series9IdentityRenderer.md) — On-chain SVG 렌더러
 - [`Interfaces.md`](./Interfaces.md) — 외부 인터페이스
 
@@ -37,6 +39,9 @@
 | Identity 보상 분배 (reputation 가중) | 완전 구현 |
 | Identity handle 결제 (ERC20/MON) + 결제 요청 | 완전 구현 |
 | Identity EIP-712 서명 결제 위임 | 완전 구현 |
+| Identity별 스마트 어카운트 지갑 (execute/배포, NFT 귀속 권한) | 완전 구현 |
+| 지갑 소유자 주도 업그레이드 (허용목록 + 다운그레이드 금지) | 완전 구현 |
+| 정체성 에스크로 전송 (수락 + 6시간 지연 + 양측 취소, 전송 중 지갑 동결) | 완전 구현 |
 | `tokenCreationFee` / `accruedCreationFees` / `sweepCreationFees` | **사용되지 않는 dead code** (managedToken 제거 후 잔재, sweep만 가능하나 누적 경로 없음) |
 | `customAvatarSeed` (mapping + setter) | **deprecated** — 렌더러에서 무시함 (스토리지 호환성 유지용) |
 
@@ -54,6 +59,10 @@ Series9Staking (UUPS)         <-- owner: deployer (또는 Safe)
 Series9Identity (UUPS)        <-- owner: deployer (또는 Safe)
   └─ self upgrade: upgradeToAndCall (onlyOwner)
   └─ Series9IdentityRenderer를 inherit (별도 proxy 없음)
+  └─ initializeWalletFactory(bootstrapImpl) (reinitializer(3))로 지갑 팩토리 설정
+
+Series9IdentityWallet (per-wallet UUPS)   <-- identity별 ERC1967 프록시, CREATE2(salt=tokenId)
+  └─ upgrade 권한: 현 NFT 보유자 + Series9Identity 허용목록(setWalletImplApproved) + 다운그레이드 금지
 ```
 
 ## 빠른 시작

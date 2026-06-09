@@ -10,7 +10,10 @@ import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/Reentrancy
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ECDSA} from "openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
+import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {Create2} from "openzeppelin-contracts/contracts/utils/Create2.sol";
 import {Series9IdentityRenderer} from "./Series9IdentityRenderer.sol";
+import {Series9IdentityWallet} from "./Series9IdentityWallet.sol";
 
 /// @notice Interface for Series9Staking — stake() + reward claiming
 interface ISeries9Staking {
@@ -202,6 +205,18 @@ contract Series9Identity is
     );
     /// @notice Emitted when a payment request is cancelled
     event PaymentRequestCancelled(uint256 indexed requestId, address indexed caller);
+    /// @notice Emitted when an identity's smart-account wallet is created
+    event WalletCreated(uint256 indexed tokenId, address indexed wallet, address indexed owner);
+    /// @notice Emitted when a wallet implementation is allowlisted or revoked (version 0 = revoked)
+    event WalletImplApprovalSet(address indexed impl, uint256 version);
+    /// @notice Emitted when an identity transfer is initiated
+    event IdentityTransferInitiated(uint256 indexed tokenId, address indexed from, address indexed to);
+    /// @notice Emitted when the recipient accepts a transfer (the 6-hour delay starts)
+    event IdentityTransferAccepted(uint256 indexed tokenId, address indexed to, uint64 readyAt);
+    /// @notice Emitted when a transfer is cancelled by either party
+    event IdentityTransferCancelled(uint256 indexed tokenId, address indexed caller);
+    /// @notice Emitted when a transfer completes and the identity moves
+    event IdentityTransferCompleted(uint256 indexed tokenId, address indexed from, address indexed to);
 
     // ─────────────────── Errors ───────────────────
 
@@ -237,6 +252,20 @@ contract Series9Identity is
     error InvalidPaymentDueAt();
     error PaymentSignatureExpired();
     error InvalidPaymentSignature();
+    error NoIdentity();
+    error WalletAlreadyCreated();
+    error WalletNotConfigured();
+    error WalletImplNotApproved();
+    error WalletDowngradeNotAllowed();
+    error WalletFrozenDuringTransfer();
+    error InvalidTransferRecipient();
+    error TransferAlreadyActive();
+    error TransferNotPending();
+    error TransferNotAccepted();
+    error NoActiveTransfer();
+    error UnauthorizedTransferActor();
+    error TransferDelayNotElapsed(uint64 readyAt);
+    error TransferRestricted();
 
     // ─────────────────── Init ───────────────────
 
@@ -413,6 +442,8 @@ contract Series9Identity is
         reputationScores[tokenId] = _defaultReputationScore(entityType);
 
         _safeMint(msg.sender, tokenId);
+
+        _createWalletIfConfigured(tokenId);
 
         emit IdentityStaked(msg.sender, fee);
 
@@ -854,6 +885,166 @@ contract Series9Identity is
         return _payeePaymentRequestIds[tokenId][index];
     }
 
+    // ─────────────────── Identity wallet factory + registry ───────────────────
+
+    /// @notice One-time setup of the wallet factory after upgrading the identity proxy.
+    /// @param bootstrapImpl The Series9IdentityWallet implementation used as every wallet proxy's birth logic.
+    /// @dev `walletImplementation` has no setter — it is frozen here so every wallet's CREATE2 address
+    ///      (derived from the proxy init-code) stays permanently deterministic. Newer wallet logic is
+    ///      introduced only as an allowlisted upgrade target via {setWalletImplApproved}.
+    function initializeWalletFactory(address bootstrapImpl) external reinitializer(3) onlyOwner {
+        if (bootstrapImpl == address(0) || bootstrapImpl.code.length == 0) revert WalletNotConfigured();
+        walletImplementation = bootstrapImpl;
+        walletImplVersion[bootstrapImpl] = 1;
+        emit WalletImplApprovalSet(bootstrapImpl, 1);
+    }
+
+    /// @notice Allowlist (or revoke) a wallet implementation as an upgrade target.
+    /// @param impl The Series9IdentityWallet implementation.
+    /// @param version Monotonic version; higher = newer; 0 = revoke. Holders may upgrade only to a strictly
+    ///        higher version than their wallet currently runs (no downgrade).
+    function setWalletImplApproved(address impl, uint256 version) external onlyOwner {
+        if (impl == address(0)) revert WalletNotConfigured();
+        walletImplVersion[impl] = version;
+        emit WalletImplApprovalSet(impl, version);
+    }
+
+    /// @notice Deploy the smart-account wallet for an identity at its deterministic address.
+    /// @dev Permissionless: the address is fixed by `tokenId`, so anyone may trigger creation. New mints
+    ///      auto-create; this also covers identities minted before the factory existed.
+    function createWallet(uint256 tokenId) public returns (address wallet) {
+        if (_ownerOf(tokenId) == address(0)) revert NonexistentToken();
+        if (walletOf[tokenId] != address(0)) revert WalletAlreadyCreated();
+        if (walletImplementation == address(0)) revert WalletNotConfigured();
+
+        wallet = Create2.deploy(0, bytes32(tokenId), _walletProxyInitCode(tokenId));
+        walletOf[tokenId] = wallet;
+        emit WalletCreated(tokenId, wallet, _ownerOf(tokenId));
+    }
+
+    /// @notice The wallet address an identity has (or would have, once created).
+    function predictWalletAddress(uint256 tokenId) external view returns (address) {
+        return Create2.computeAddress(bytes32(tokenId), keccak256(_walletProxyInitCode(tokenId)));
+    }
+
+    /// @dev Proxy init-code is deterministic per tokenId (fixed bootstrap impl + initialize calldata), so the
+    ///      CREATE2 wallet address is stable and predictable. The proxy initializes in its own constructor.
+    function _walletProxyInitCode(uint256 tokenId) internal view returns (bytes memory) {
+        bytes memory initData = abi.encodeCall(Series9IdentityWallet.initialize, (address(this), tokenId));
+        return abi.encodePacked(type(ERC1967Proxy).creationCode, abi.encode(walletImplementation, initData));
+    }
+
+    function _createWalletIfConfigured(uint256 tokenId) internal {
+        if (walletImplementation != address(0) && walletOf[tokenId] == address(0)) {
+            createWallet(tokenId);
+        }
+    }
+
+    // ─────────────────── Wallet authorization (called by wallets) ───────────────────
+
+    /// @notice Authorize an operation on the wallet bound to `tokenId`; reverts otherwise.
+    /// @dev Authority is the NFT: only the current `ownerOf(tokenId)` passes, and never while a transfer
+    ///      is freezing the wallet.
+    function authorizeWalletCall(uint256 tokenId, address operator) external view {
+        if (_ownerOf(tokenId) != operator) revert NotTokenOwner();
+        _requireWalletNotFrozen(tokenId);
+    }
+
+    /// @notice Authorize a wallet logic upgrade; reverts otherwise.
+    /// @dev Owner-triggered (NFT holder), allowlisted target, strictly-higher version (no downgrade),
+    ///      and blocked during a transfer freeze.
+    function authorizeWalletUpgrade(uint256 tokenId, address operator, address currentImpl, address newImpl)
+        external
+        view
+    {
+        if (_ownerOf(tokenId) != operator) revert NotTokenOwner();
+        uint256 newVersion = walletImplVersion[newImpl];
+        if (newVersion == 0) revert WalletImplNotApproved();
+        if (newVersion <= walletImplVersion[currentImpl]) revert WalletDowngradeNotAllowed();
+        _requireWalletNotFrozen(tokenId);
+    }
+
+    function _requireWalletNotFrozen(uint256 tokenId) internal view {
+        TransferStatus status = _identityTransfers[tokenId].status;
+        if (status == TransferStatus.Pending || status == TransferStatus.Accepted) {
+            revert WalletFrozenDuringTransfer();
+        }
+    }
+
+    // ─────────────────── Escrowed identity transfer ───────────────────
+
+    /// @notice Begin transferring your identity (and its wallet) to `to`. The recipient must accept, after
+    ///         which a 6-hour delay must elapse before finalize. The wallet freezes immediately.
+    function initiateIdentityTransfer(address to) external whenNotPaused {
+        uint256 tokenId = ownerTokenId[msg.sender];
+        if (tokenId == 0) revert NoIdentity();
+        if (to == address(0) || to == msg.sender) revert InvalidTransferRecipient();
+        if (ownerTokenId[to] != 0) revert AlreadyHasIdentity(to);
+
+        TransferStatus status = _identityTransfers[tokenId].status;
+        if (status == TransferStatus.Pending || status == TransferStatus.Accepted) revert TransferAlreadyActive();
+
+        _identityTransfers[tokenId] =
+            IdentityTransfer({from: msg.sender, to: to, acceptedAt: 0, status: TransferStatus.Pending});
+        emit IdentityTransferInitiated(tokenId, msg.sender, to);
+    }
+
+    /// @notice Recipient accepts a pending transfer, starting the 6-hour delay.
+    function acceptIdentityTransfer(uint256 tokenId) external whenNotPaused {
+        IdentityTransfer storage t = _identityTransfers[tokenId];
+        if (t.status != TransferStatus.Pending) revert TransferNotPending();
+        if (msg.sender != t.to) revert UnauthorizedTransferActor();
+        if (ownerTokenId[t.to] != 0) revert AlreadyHasIdentity(t.to);
+
+        // Unix timestamps fit comfortably in uint64.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint64 acceptedAt = uint64(block.timestamp);
+        t.acceptedAt = acceptedAt;
+        t.status = TransferStatus.Accepted;
+        emit IdentityTransferAccepted(tokenId, t.to, acceptedAt + IDENTITY_TRANSFER_DELAY);
+    }
+
+    /// @notice Cancel a transfer. Either the sender or the recipient may cancel any time before completion.
+    /// @dev Callable while paused so parties can always unwind.
+    function cancelIdentityTransfer(uint256 tokenId) external {
+        IdentityTransfer storage t = _identityTransfers[tokenId];
+        if (t.status != TransferStatus.Pending && t.status != TransferStatus.Accepted) revert NoActiveTransfer();
+        if (msg.sender != t.from && msg.sender != t.to) revert UnauthorizedTransferActor();
+
+        t.status = TransferStatus.Cancelled;
+        emit IdentityTransferCancelled(tokenId, msg.sender);
+    }
+
+    /// @notice Complete an accepted transfer once the 6-hour delay has elapsed. Permissionless.
+    function finalizeIdentityTransfer(uint256 tokenId) external whenNotPaused nonReentrant {
+        IdentityTransfer storage t = _identityTransfers[tokenId];
+        if (t.status != TransferStatus.Accepted) revert TransferNotAccepted();
+
+        uint64 readyAt = t.acceptedAt + IDENTITY_TRANSFER_DELAY;
+        if (block.timestamp < readyAt) revert TransferDelayNotElapsed(readyAt);
+        if (ownerTokenId[t.to] != 0) revert AlreadyHasIdentity(t.to);
+
+        address from = t.from;
+        address to = t.to;
+        t.status = TransferStatus.Completed;
+
+        _escrowTransferInProgress = true;
+        _safeTransfer(from, to, tokenId, "");
+        _escrowTransferInProgress = false;
+
+        emit IdentityTransferCompleted(tokenId, from, to);
+    }
+
+    /// @notice The current transfer escrow record for an identity.
+    function identityTransferOf(uint256 tokenId)
+        external
+        view
+        returns (address from, address to, uint64 acceptedAt, TransferStatus status)
+    {
+        IdentityTransfer storage t = _identityTransfers[tokenId];
+        return (t.from, t.to, t.acceptedAt, t.status);
+    }
+
     // ─────────────────── Overrides ───────────────────
 
     function _update(address to, uint256 tokenId, address auth)
@@ -861,6 +1052,13 @@ contract Series9Identity is
         override(ERC721Upgradeable)
         returns (address from)
     {
+        // Identity (and thus its wallet) may move only through the escrow flow; block raw transfers.
+        // Mint (currentOwner == 0) and burn (to == 0) are unaffected.
+        address currentOwner = _ownerOf(tokenId);
+        if (currentOwner != address(0) && to != address(0) && !_escrowTransferInProgress) {
+            revert TransferRestricted();
+        }
+
         from = super._update(to, tokenId, auth);
         uint256 score = _reputationScore(tokenId);
         bool rebuiltScore = false;
@@ -1147,5 +1345,36 @@ contract Series9Identity is
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[35] private __gap;
+    // ─────────────────── Identity wallet + escrowed transfer (storage) ───────────────────
+
+    /// @notice The 6-hour delay between accepting a transfer and being able to finalize it.
+    uint64 public constant IDENTITY_TRANSFER_DELAY = 6 hours;
+
+    enum TransferStatus {
+        None,
+        Pending,
+        Accepted,
+        Completed,
+        Cancelled
+    }
+
+    struct IdentityTransfer {
+        address from;
+        address to;
+        uint64 acceptedAt;
+        TransferStatus status;
+    }
+
+    /// @notice Fixed bootstrap wallet implementation (every wallet proxy's birth logic). Set once; never changed.
+    address public walletImplementation;
+    /// @notice Deployed smart-account wallet per identity (0 until created).
+    mapping(uint256 => address) public walletOf;
+    /// @notice Allowlisted wallet implementations and their versions (0 = not approved).
+    mapping(address => uint256) public walletImplVersion;
+    /// @notice Active transfer escrow per identity.
+    mapping(uint256 => IdentityTransfer) private _identityTransfers;
+    /// @dev Set only inside finalizeIdentityTransfer so the escrow NFT move is allowed through _update.
+    bool private _escrowTransferInProgress;
+
+    uint256[30] private __gap;
 }
