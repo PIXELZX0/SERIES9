@@ -4,10 +4,38 @@ pragma solidity ^0.8.22;
 import "forge-std/Test.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {ECDSA} from "openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
 import {Series9Identity} from "../src/Series9Identity.sol";
 import {Series9IdentityRenderer} from "../src/Series9IdentityRenderer.sol";
 import {SER9Token} from "../src/SER9Token.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
+
+/// @dev A smart-contract account that authorizes via ERC-1271 (validating an internal owner key's ECDSA sig),
+///      used to prove a contract-held identity can authorize delegated payments after the EIP-1271 upgrade.
+contract ERC1271Wallet {
+    address public immutable signerOwner;
+
+    constructor(address signerOwner_) {
+        signerOwner = signerOwner_;
+    }
+
+    function approveAndMint(SER9Token ser9, Series9Identity id, string calldata handle) external returns (uint256) {
+        ser9.approve(address(id), type(uint256).max);
+        return id.mintIdentityWithHandle("CW", "", Series9Identity.EntityType.Human, 10, 10, handle);
+    }
+
+    function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
+        (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, signature);
+        if (err == ECDSA.RecoverError.NoError && recovered == signerOwner) {
+            return 0x1626ba7e; // IERC1271.isValidSignature.selector
+        }
+        return 0xffffffff;
+    }
+
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
+}
 
 contract Series9IdentityRendererHarness is Series9IdentityRenderer {
     function exposedEscapeJson(string memory value) external pure returns (string memory) {
@@ -813,6 +841,43 @@ contract Series9IdentityTest is Test {
         assertEq(
             uint8(identity.effectivePaymentRequestStatus(requestId)), uint8(Series9Identity.PaymentRequestStatus.Paid)
         );
+    }
+
+    /// @dev A contract-held identity (smart-account owner) can authorize a delegated payment via ERC-1271,
+    ///      proving the SignatureChecker upgrade no longer requires the payer owner to be an EOA.
+    function test_payPaymentRequestWithSig_erc1271ContractSigner() public {
+        // Payee (bob) needs an identity to raise a request.
+        vm.prank(bob);
+        identity.mintIdentity("Bob", "", Series9Identity.EntityType.Human, 120, 180);
+
+        // Payer is a smart-contract account (ERC-1271) that owns an identity with handle "cwhandle".
+        (address ownerKeyAddr, uint256 ownerKey) = makeAddrAndKey("cw-owner");
+        ERC1271Wallet cw = new ERC1271Wallet(ownerKeyAddr);
+        ser9.transfer(address(cw), 100 ether);
+        cw.approveAndMint(ser9, identity, "cwhandle");
+
+        vm.prank(bob);
+        uint256 requestId = identity.createPaymentRequest(
+            "cwhandle", address(ser9), 4 ether, uint64(block.timestamp + 1 days), "1271 delegated"
+        );
+
+        // Relayer (charlie) supplies the funds.
+        ser9.transfer(charlie, 10 ether);
+        vm.prank(charlie);
+        ser9.approve(address(identity), type(uint256).max);
+
+        uint256 nonce = identity.paymentNonces(address(cw));
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes32 digest = identity.payPaymentRequestDigest(requestId, nonce, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        uint256 bobBefore = ser9.balanceOf(bob);
+        vm.prank(charlie);
+        identity.payPaymentRequestWithSig(requestId, nonce, deadline, sig);
+
+        assertEq(ser9.balanceOf(bob), bobBefore + 4 ether);
+        assertEq(identity.paymentNonces(address(cw)), nonce + 1);
     }
 
     function test_payPaymentRequestWithSig_rejectsReplay() public {

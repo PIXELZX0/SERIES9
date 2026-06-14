@@ -37,6 +37,25 @@ contract Series9IdentityWalletV2 is Series9IdentityWallet {
     }
 }
 
+/// @dev Malicious escrow recipient: if its ERC721 receiver hook were ever invoked during finalize it would
+///      try to forward the just-received identity with a raw transfer, bypassing the escrow restriction.
+///      Since finalize uses the callback-free _transfer, this hook must never run.
+contract ReentrantRecipient {
+    Series9Identity public immutable id;
+    bool public hookRan;
+
+    constructor(Series9Identity _id) {
+        id = _id;
+    }
+
+    function onERC721Received(address, address, uint256 tokenId, bytes calldata) external returns (bytes4) {
+        hookRan = true;
+        // Attempt the bypass; swallow the revert so we can detect whether the hook ran at all.
+        try id.transferFrom(address(this), address(0xdead), tokenId) {} catch {}
+        return this.onERC721Received.selector;
+    }
+}
+
 contract Series9IdentityWalletTest is Test {
     Series9Identity public identity;
     SER9Token public ser9;
@@ -51,6 +70,10 @@ contract Series9IdentityWalletTest is Test {
 
     uint256 constant AI_FEE = 10 ether;
     uint256 constant HUMAN_FEE = 50 ether;
+
+    // Storage slots (from `forge inspect Series9Identity storage-layout`).
+    uint256 constant _NEXT_PAYMENT_ID_SLOT = 19;
+    uint256 constant _NEXT_PAYMENT_REQUEST_ID_SLOT = 20;
 
     function setUp() public {
         owner = address(this);
@@ -76,6 +99,9 @@ contract Series9IdentityWalletTest is Test {
                 )
             )
         );
+
+        // Initialize payment storage (reinitializer(2)) before configuring the wallet factory (reinitializer(3)).
+        identity.initializePayment();
 
         // Configure the wallet factory (reinitializer(3)).
         bootstrap = new Series9IdentityWallet();
@@ -137,6 +163,7 @@ contract Series9IdentityWalletTest is Test {
         assertEq(legacy.walletOf(tid), address(0));
 
         // Configure factory after the fact, then lazily create the wallet.
+        legacy.initializePayment();
         Series9IdentityWallet boot2 = new Series9IdentityWallet();
         legacy.initializeWalletFactory(address(boot2));
         address predicted = legacy.predictWalletAddress(tid);
@@ -484,5 +511,107 @@ contract Series9IdentityWalletTest is Test {
         vm.prank(alice);
         vm.expectRevert(Series9Identity.TransferAlreadyActive.selector);
         identity.initiateIdentityTransfer(bob);
+    }
+
+    // ─────────────────── Regression: hardening fixes ───────────────────
+
+    /// @dev finalize must use the callback-free _transfer: a contract recipient's ERC721 hook is never invoked,
+    ///      so it cannot re-enter and forward the identity to bypass the escrow restriction.
+    function test_finalizeDoesNotInvokeRecipientHookNorAllowReentrantBypass() public {
+        (uint256 tid,) = _mint(alice);
+        ReentrantRecipient recipient = new ReentrantRecipient(identity);
+
+        vm.prank(alice);
+        identity.initiateIdentityTransfer(address(recipient));
+        vm.prank(address(recipient));
+        identity.acceptIdentityTransfer(tid);
+        vm.warp(block.timestamp + identity.IDENTITY_TRANSFER_DELAY());
+        identity.finalizeIdentityTransfer(tid);
+
+        // Hook never ran → no reentrancy surface; identity stayed with the legitimate recipient.
+        assertFalse(recipient.hookRan());
+        assertEq(identity.ownerOf(tid), address(recipient));
+        assertEq(identity.ownerTokenId(address(recipient)), tid);
+    }
+
+    /// @dev Approvals are disabled outright (escrow-only / soulbound) so no misleading allowance can exist.
+    function test_approvalsDisabled() public {
+        (uint256 tid,) = _mint(alice);
+
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.ApprovalsDisabled.selector);
+        identity.approve(bob, tid);
+
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.ApprovalsDisabled.selector);
+        identity.setApprovalForAll(bob, true);
+    }
+
+    /// @dev predictWalletAddress reverts before the factory is configured (would otherwise return a
+    ///      zero-impl-derived address that never matches the deployed wallet).
+    function test_predictWalletAddressRevertsBeforeFactoryConfigured() public {
+        Series9Identity legacyImpl = new Series9Identity();
+        Series9Identity legacy = Series9Identity(
+            address(
+                new ERC1967Proxy(
+                    address(legacyImpl),
+                    abi.encodeCall(Series9Identity.initialize, (owner, address(ser9), address(staking), AI_FEE, HUMAN_FEE))
+                )
+            )
+        );
+        vm.expectRevert(Series9Identity.WalletNotConfigured.selector);
+        legacy.predictWalletAddress(1);
+    }
+
+    /// @dev A revoked implementation can no longer be an upgrade target, even though its baseline version stays.
+    function test_revokedImplCannotBeUpgradeTarget() public {
+        (, Series9IdentityWallet wallet) = _mint(alice);
+        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        identity.setWalletImplApproved(address(v2), 2);
+        identity.revokeWalletImpl(address(v2));
+
+        vm.prank(alice);
+        vm.expectRevert(Series9Identity.WalletImplNotApproved.selector);
+        wallet.upgradeToAndCall(address(v2), "");
+    }
+
+    /// @dev Versions are immutable once set, so re-numbering an approved impl (which could lower the
+    ///      no-downgrade baseline) is rejected.
+    function test_setWalletImplApprovedIsImmutable() public {
+        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        identity.setWalletImplApproved(address(v2), 2);
+        vm.expectRevert(Series9Identity.WalletImplAlreadyApproved.selector);
+        identity.setWalletImplApproved(address(v2), 3);
+    }
+
+    function test_setWalletImplApprovedRejectsZeroVersionAndCodeless() public {
+        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        vm.expectRevert(Series9Identity.WalletImplNotApproved.selector);
+        identity.setWalletImplApproved(address(v2), 0);
+
+        vm.expectRevert(Series9Identity.WalletNotConfigured.selector);
+        identity.setWalletImplApproved(makeAddr("noCode"), 2);
+    }
+
+    /// @dev initializeWalletFactory (reinitializer 3) fails loud if payment storage was never initialized
+    ///      (an ancient proxy at _initialized=1 whose initialize predates payment), rather than silently
+    ///      bricking payments by advancing _initialized to 3. Simulated by zeroing the payment cursors.
+    function test_initializeWalletFactoryRequiresPaymentInitialized() public {
+        Series9Identity freshImpl = new Series9Identity();
+        Series9Identity fresh = Series9Identity(
+            address(
+                new ERC1967Proxy(
+                    address(freshImpl),
+                    abi.encodeCall(Series9Identity.initialize, (owner, address(ser9), address(staking), AI_FEE, HUMAN_FEE))
+                )
+            )
+        );
+        // Force the pre-payment storage state (initialize() sets these; an old impl would not have).
+        vm.store(address(fresh), bytes32(_NEXT_PAYMENT_ID_SLOT), bytes32(0));
+        vm.store(address(fresh), bytes32(_NEXT_PAYMENT_REQUEST_ID_SLOT), bytes32(0));
+
+        Series9IdentityWallet boot = new Series9IdentityWallet();
+        vm.expectRevert(Series9Identity.PaymentNotInitialized.selector);
+        fresh.initializeWalletFactory(address(boot));
     }
 }

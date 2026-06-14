@@ -9,7 +9,7 @@ import {PausableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ECDSA} from "openzeppelin-contracts/contracts/utils/cryptography/ECDSA.sol";
+import {SignatureChecker} from "openzeppelin-contracts/contracts/utils/cryptography/SignatureChecker.sol";
 import {ERC1967Proxy} from "openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Create2} from "openzeppelin-contracts/contracts/utils/Create2.sol";
 import {Series9IdentityRenderer} from "./Series9IdentityRenderer.sol";
@@ -207,8 +207,10 @@ contract Series9Identity is
     event PaymentRequestCancelled(uint256 indexed requestId, address indexed caller);
     /// @notice Emitted when an identity's smart-account wallet is created
     event WalletCreated(uint256 indexed tokenId, address indexed wallet, address indexed owner);
-    /// @notice Emitted when a wallet implementation is allowlisted or revoked (version 0 = revoked)
+    /// @notice Emitted when a wallet implementation is allowlisted as an upgrade target with its version
     event WalletImplApprovalSet(address indexed impl, uint256 version);
+    /// @notice Emitted when a wallet implementation is revoked as a future upgrade target
+    event WalletImplRevoked(address indexed impl);
     /// @notice Emitted when an identity transfer is initiated
     event IdentityTransferInitiated(uint256 indexed tokenId, address indexed from, address indexed to);
     /// @notice Emitted when the recipient accepts a transfer (the 6-hour delay starts)
@@ -256,8 +258,10 @@ contract Series9Identity is
     error WalletAlreadyCreated();
     error WalletNotConfigured();
     error WalletImplNotApproved();
+    error WalletImplAlreadyApproved();
     error WalletDowngradeNotAllowed();
     error WalletFrozenDuringTransfer();
+    error ApprovalsDisabled();
     error InvalidTransferRecipient();
     error TransferAlreadyActive();
     error TransferNotPending();
@@ -893,37 +897,57 @@ contract Series9Identity is
     ///      (derived from the proxy init-code) stays permanently deterministic. Newer wallet logic is
     ///      introduced only as an allowlisted upgrade target via {setWalletImplApproved}.
     function initializeWalletFactory(address bootstrapImpl) external reinitializer(3) onlyOwner {
+        // reinitializer(3) only guarantees _initialized < 3; it does NOT guarantee the payment reinitializer(2)
+        // ran. Require it explicitly so a proxy can never jump 1 -> 3 and permanently brick the payment module.
+        _requirePaymentInitialized();
         if (bootstrapImpl == address(0) || bootstrapImpl.code.length == 0) revert WalletNotConfigured();
         walletImplementation = bootstrapImpl;
         walletImplVersion[bootstrapImpl] = 1;
         emit WalletImplApprovalSet(bootstrapImpl, 1);
     }
 
-    /// @notice Allowlist (or revoke) a wallet implementation as an upgrade target.
+    /// @notice Allowlist a wallet implementation as an upgrade target with a monotonic version.
     /// @param impl The Series9IdentityWallet implementation.
-    /// @param version Monotonic version; higher = newer; 0 = revoke. Holders may upgrade only to a strictly
-    ///        higher version than their wallet currently runs (no downgrade).
+    /// @param version Strictly-positive version; higher = newer. Holders may upgrade only to a strictly higher
+    ///        version than their wallet currently runs (no downgrade).
+    /// @dev A version is immutable once set — re-approving the same impl reverts — so the no-downgrade baseline
+    ///      (read live from `walletImplVersion[currentImpl]` during an upgrade) can never be lowered by
+    ///      re-numbering. Use {revokeWalletImpl} to retire a target without touching its baseline version.
     function setWalletImplApproved(address impl, uint256 version) external onlyOwner {
-        if (impl == address(0)) revert WalletNotConfigured();
+        if (impl == address(0) || impl.code.length == 0) revert WalletNotConfigured();
+        if (version == 0) revert WalletImplNotApproved();
+        if (walletImplVersion[impl] != 0) revert WalletImplAlreadyApproved();
         walletImplVersion[impl] = version;
         emit WalletImplApprovalSet(impl, version);
+    }
+
+    /// @notice Revoke a wallet implementation as a future upgrade target.
+    /// @dev Only blocks new upgrades TO `impl`; it leaves `walletImplVersion[impl]` intact so a wallet already
+    ///      running it keeps an honest no-downgrade baseline and stays fully operable.
+    function revokeWalletImpl(address impl) external onlyOwner {
+        walletImplRevoked[impl] = true;
+        emit WalletImplRevoked(impl);
     }
 
     /// @notice Deploy the smart-account wallet for an identity at its deterministic address.
     /// @dev Permissionless: the address is fixed by `tokenId`, so anyone may trigger creation. New mints
     ///      auto-create; this also covers identities minted before the factory existed.
     function createWallet(uint256 tokenId) public returns (address wallet) {
-        if (_ownerOf(tokenId) == address(0)) revert NonexistentToken();
+        address tokenOwner = _ownerOf(tokenId);
+        if (tokenOwner == address(0)) revert NonexistentToken();
         if (walletOf[tokenId] != address(0)) revert WalletAlreadyCreated();
         if (walletImplementation == address(0)) revert WalletNotConfigured();
 
         wallet = Create2.deploy(0, bytes32(tokenId), _walletProxyInitCode(tokenId));
         walletOf[tokenId] = wallet;
-        emit WalletCreated(tokenId, wallet, _ownerOf(tokenId));
+        emit WalletCreated(tokenId, wallet, tokenOwner);
     }
 
     /// @notice The wallet address an identity has (or would have, once created).
+    /// @dev Reverts before the factory is configured so callers never receive an address derived from a
+    ///      zero implementation (which would not match the wallet that {createWallet} eventually deploys).
     function predictWalletAddress(uint256 tokenId) external view returns (address) {
+        if (walletImplementation == address(0)) revert WalletNotConfigured();
         return Create2.computeAddress(bytes32(tokenId), keccak256(_walletProxyInitCode(tokenId)));
     }
 
@@ -959,7 +983,7 @@ contract Series9Identity is
     {
         if (_ownerOf(tokenId) != operator) revert NotTokenOwner();
         uint256 newVersion = walletImplVersion[newImpl];
-        if (newVersion == 0) revert WalletImplNotApproved();
+        if (newVersion == 0 || walletImplRevoked[newImpl]) revert WalletImplNotApproved();
         if (newVersion <= walletImplVersion[currentImpl]) revert WalletDowngradeNotAllowed();
         _requireWalletNotFrozen(tokenId);
     }
@@ -1028,9 +1052,13 @@ contract Series9Identity is
         address to = t.to;
         t.status = TransferStatus.Completed;
 
-        _escrowTransferInProgress = true;
-        _safeTransfer(from, to, tokenId, "");
-        _escrowTransferInProgress = false;
+        // Authorize exactly this token through the _update transfer-restriction (per-token, never a global
+        // bypass), and use the callback-free _transfer — not _safeTransfer — so no recipient onERC721Received
+        // hook can re-enter while the restriction is lifted. _transfer also reverts if `from` is no longer the
+        // owner, so the frozen escrow record can never move a stale `from`.
+        _escrowTransferTokenId = tokenId;
+        _transfer(from, to, tokenId);
+        _escrowTransferTokenId = 0;
 
         emit IdentityTransferCompleted(tokenId, from, to);
     }
@@ -1053,9 +1081,10 @@ contract Series9Identity is
         returns (address from)
     {
         // Identity (and thus its wallet) may move only through the escrow flow; block raw transfers.
-        // Mint (currentOwner == 0) and burn (to == 0) are unaffected.
+        // Mint (currentOwner == 0) and burn (to == 0) are unaffected. Only the exact tokenId currently being
+        // finalized is allowed through — a global flag would let a reentrant move of a different token slip by.
         address currentOwner = _ownerOf(tokenId);
-        if (currentOwner != address(0) && to != address(0) && !_escrowTransferInProgress) {
+        if (currentOwner != address(0) && to != address(0) && _escrowTransferTokenId != tokenId) {
             revert TransferRestricted();
         }
 
@@ -1088,6 +1117,16 @@ contract Series9Identity is
             ownerTokenId[to] = tokenId;
             nftUserRewardPerTokenPaid[to] = nftRewardPerToken;
         }
+    }
+
+    /// @dev Identities are escrow-only (soulbound); an approval can never lead to a transfer. Disable
+    ///      approvals outright so no misleading allowance exists and no operator path can be relied upon.
+    function approve(address, uint256) public pure override(ERC721Upgradeable) {
+        revert ApprovalsDisabled();
+    }
+
+    function setApprovalForAll(address, bool) public pure override(ERC721Upgradeable) {
+        revert ApprovalsDisabled();
     }
 
     function _accrueNFTReward(address account) internal {
@@ -1272,14 +1311,15 @@ contract Series9Identity is
         bytes calldata signature,
         uint256 expectedPayerTokenId
     ) internal returns (address signer) {
+        // Signer is the current owner of the payer identity. SignatureChecker validates both EOA (ECDSA) and
+        // smart-account (EIP-1271) signatures, so an identity held by a contract wallet can still authorize.
+        signer = _ownerOf(expectedPayerTokenId);
+        if (signer == address(0)) revert InvalidPaymentSignature();
         bytes32 digest = _payPaymentRequestDigest(requestId, nonce, deadline);
-        (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(digest, signature);
-        if (err != ECDSA.RecoverError.NoError || recovered == address(0)) revert InvalidPaymentSignature();
-        if (ownerTokenId[recovered] != expectedPayerTokenId) revert InvalidPaymentSignature();
-        if (paymentNonces[recovered] != nonce) revert InvalidPaymentSignature();
+        if (!SignatureChecker.isValidSignatureNow(signer, digest, signature)) revert InvalidPaymentSignature();
+        if (paymentNonces[signer] != nonce) revert InvalidPaymentSignature();
 
-        paymentNonces[recovered] = nonce + 1;
-        signer = recovered;
+        paymentNonces[signer] = nonce + 1;
     }
 
     function _effectivePaymentRequestStatus(PaymentRequest storage request)
@@ -1369,12 +1409,15 @@ contract Series9Identity is
     address public walletImplementation;
     /// @notice Deployed smart-account wallet per identity (0 until created).
     mapping(uint256 => address) public walletOf;
-    /// @notice Allowlisted wallet implementations and their versions (0 = not approved).
+    /// @notice Allowlisted wallet implementations and their versions (0 = not approved). Immutable once set.
     mapping(address => uint256) public walletImplVersion;
     /// @notice Active transfer escrow per identity.
     mapping(uint256 => IdentityTransfer) private _identityTransfers;
-    /// @dev Set only inside finalizeIdentityTransfer so the escrow NFT move is allowed through _update.
-    bool private _escrowTransferInProgress;
+    /// @dev The single tokenId currently authorized to move through _update (0 = none). Set only inside
+    ///      finalizeIdentityTransfer so exactly that escrow NFT move — and no other — is allowed through.
+    uint256 private _escrowTransferTokenId;
+    /// @notice Wallet implementations revoked as future upgrade targets (baseline version is left intact).
+    mapping(address => bool) public walletImplRevoked;
 
-    uint256[30] private __gap;
+    uint256[29] private __gap;
 }

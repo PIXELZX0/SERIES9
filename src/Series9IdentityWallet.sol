@@ -40,7 +40,6 @@ contract Series9IdentityWallet is Initializable, UUPSUpgradeable, ReentrancyGuar
 
     event Executed(address indexed to, uint256 value, bytes data, bytes result);
     event ContractDeployed(address indexed deployed, uint256 value);
-    event Received(address indexed from, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -53,9 +52,9 @@ contract Series9IdentityWallet is Initializable, UUPSUpgradeable, ReentrancyGuar
         tokenId = tokenId_;
     }
 
-    receive() external payable {
-        emit Received(msg.sender, msg.value);
-    }
+    // Accept native MON. Kept free of any LOG/SSTORE so a plain `.transfer()`/`.send()` (2300-gas stipend)
+    // into the wallet never reverts — the wallet must fund as cheaply as a regular account.
+    receive() external payable {}
 
     /// @dev Gate every outbound operation on the identity contract (owner + freeze check).
     modifier onlyOperator() {
@@ -102,7 +101,6 @@ contract Series9IdentityWallet is Initializable, UUPSUpgradeable, ReentrancyGuar
         returns (address deployed)
     {
         bytes memory code = bytecode;
-        // forge-lint: disable-next-line(incorrect-shift)
         assembly ("memory-safe") {
             deployed := create(value, add(code, 0x20), mload(code))
         }
@@ -150,4 +148,9 @@ contract Series9IdentityWallet is Initializable, UUPSUpgradeable, ReentrancyGuar
             tokenId, msg.sender, ERC1967Utils.getImplementation(), newImplementation
         );
     }
+
+    /// @dev Reserved storage so future wallet versions can append state without colliding with the proxy's
+    ///      existing linear layout (slot 0 `identity`, slot 1 `tokenId`; the inherited bases use ERC-7201
+    ///      namespaced storage and occupy no linear slot here).
+    uint256[50] private __gap;
 }
