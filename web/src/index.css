@@ -1230,3 +1230,72 @@ textarea::placeholder {
     grid-template-columns: 1fr;
   }
 }
+
+/* SERIES9 intro / landing */
+.intro-hero {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.intro-headline {
+  margin: 0;
+  font-size: 1.5rem;
+  font-family: 'Space Grotesk', sans-serif;
+  letter-spacing: -0.01em;
+}
+
+.intro-lead {
+  max-width: 64ch;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.intro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.intro-card {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  gap: 0.35rem;
+  text-decoration: none;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  transition: border-color 0.16s ease, transform 0.16s ease, background-color 0.16s ease;
+}
+
+.intro-card:hover {
+  border-color: var(--line-strong);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0)), var(--surface);
+  transform: translateY(-2px);
+}
+
+.intro-card h3 {
+  margin: 0;
+  font-size: 1.12rem;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.intro-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.intro-card-index {
+  position: absolute;
+  top: 1rem;
+  right: 1.2rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  color: var(--line-strong);
+}
+
+.intro-card-cta {
+  margin-top: 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--success);
+}

@@ -1,5 +1,5 @@
 export const ko = {
-  appTitle: 'SER9 풀 DApp',
+  appTitle: 'SERIES9',
   appSubtitle: 'Monad Mainnet 기반 SER9 / MONAD 스테이킹 패널입니다.',
   connectWallet: '지갑 연결',
   walletConnectTitle: '지갑 연결',
@@ -13,10 +13,30 @@ export const ko = {
   korean: '한국어',
   english: '영어',
   navHome: '홈',
+  navStaking: '스테이킹',
   navTokens: '토큰',
   navIdentity: 'Identity',
   navPayment: 'Payment',
   navCreateToken: '토큰 생성',
+  introKicker: 'SERIES9 소개',
+  introHeadline: '하나의 온체인 스택: 토큰 · 스테이킹 · Identity',
+  introLead:
+    'SERIES9는 SER9 토큰, Monad 스테이킹 엔진, 온체인 Identity를 하나의 dApp으로 묶습니다. 아래에서 각 모듈을 살펴보세요.',
+  introTokenTag: '모듈 01',
+  introTokenTitle: 'SER9 토큰',
+  introTokenDesc:
+    'SER9 ERC-20은 SERIES9 생태계 전반의 수수료, 스테이킹 보상, Identity 발행에 사용됩니다.',
+  introTokenCta: '토큰 보기',
+  introStakingTag: '모듈 02',
+  introStakingTitle: '스테이킹',
+  introStakingDesc:
+    'Monad에서 SER9 또는 네이티브 MON을 스테이킹해 SER9 보상을 받으세요. 포지션·보상·언스테이킹을 한 패널에서 관리합니다.',
+  introStakingCta: '스테이킹 열기',
+  introIdentityTag: '모듈 03',
+  introIdentityTitle: 'Identity',
+  introIdentityDesc:
+    '지갑당 하나의 프로필 NFT를 발행하세요. 아바타와 bio를 가진 SERIES9 핸들이며 SER9로 결제하고 송금에 사용됩니다.',
+  introIdentityCta: 'Identity 생성',
   wrongNetworkTitle: '잘못된 네트워크에 연결됨',
   wrongNetworkBody: '이 앱은 Monad Mainnet (chainId 143) 기준으로 동작합니다.',
   switchNetwork: 'Monad Mainnet으로 전환',

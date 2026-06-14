@@ -1197,7 +1197,9 @@ export default function App() {
   const isTokenCreatePage = false;
   const isIdentityPage = normalizedPathname === '/identity';
   const isPaymentPage = normalizedPathname === '/payment';
-  const isHomePage = !isTokensListPage && !isTokenCreatePage && !isIdentityPage && !isPaymentPage;
+  const isStakingPage = normalizedPathname === '/staking';
+  const isHomePage =
+    !isTokensListPage && !isTokenCreatePage && !isIdentityPage && !isPaymentPage && !isStakingPage;
   const hasTxActivity =
     tx.isWalletPrompt ||
     tx.isConfirming ||
@@ -2316,8 +2318,11 @@ export default function App() {
         <div className="hero-copy">
           <div className="hero-topline">
             <nav className="page-nav">
-              <a href="/" className={normalizedPathname === '/' ? 'active' : ''}>
+              <a href="/" className={isHomePage ? 'active' : ''}>
                 {t('navHome')}
+              </a>
+              <a href="/staking" className={isStakingPage ? 'active' : ''}>
+                {t('navStaking')}
               </a>
               <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
                 {t('navTokens')}
@@ -2329,7 +2334,7 @@ export default function App() {
                 {t('navPayment')}
               </a>
             </nav>
-            <div className="section-title hero-kicker">{t('stakingOverview')}</div>
+            <div className="section-title hero-kicker">{t(isHomePage ? 'introKicker' : 'stakingOverview')}</div>
           </div>
           <div className="hero-copy-block">
             <h1>{t('appTitle')}</h1>
@@ -2430,6 +2435,40 @@ export default function App() {
             {isSwitchingNetwork ? t('switchPending') : t('switchNetwork')}
           </button>
         </section>
+      )}
+
+      {isHomePage && (
+        <>
+          <section className="card intro-hero">
+            <div className="section-title">{t('introKicker')}</div>
+            <h2 className="intro-headline">{t('introHeadline')}</h2>
+            <p className="muted intro-lead">{t('introLead')}</p>
+          </section>
+
+          <section className="intro-grid">
+            <a className="card intro-card" href="/tokens">
+              <span className="intro-card-index">01</span>
+              <div className="section-title">{t('introTokenTag')}</div>
+              <h3>{t('introTokenTitle')}</h3>
+              <p className="muted">{t('introTokenDesc')}</p>
+              <span className="intro-card-cta">{t('introTokenCta')} →</span>
+            </a>
+            <a className="card intro-card" href="/staking">
+              <span className="intro-card-index">02</span>
+              <div className="section-title">{t('introStakingTag')}</div>
+              <h3>{t('introStakingTitle')}</h3>
+              <p className="muted">{t('introStakingDesc')}</p>
+              <span className="intro-card-cta">{t('introStakingCta')} →</span>
+            </a>
+            <a className="card intro-card" href="/identity">
+              <span className="intro-card-index">03</span>
+              <div className="section-title">{t('introIdentityTag')}</div>
+              <h3>{t('introIdentityTitle')}</h3>
+              <p className="muted">{t('introIdentityDesc')}</p>
+              <span className="intro-card-cta">{t('introIdentityCta')} →</span>
+            </a>
+          </section>
+        </>
       )}
 
       {isIdentityPage && (
@@ -2954,7 +2993,7 @@ export default function App() {
         </>
       )}
 
-      {isHomePage && (
+      {isStakingPage && (
         <>
           <div className="section-title section-title-top">{t('userState')}</div>
           <section className="summary-grid">

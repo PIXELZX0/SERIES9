@@ -1,5 +1,5 @@
 export const en = {
-  appTitle: 'SER9 Full DApp',
+  appTitle: 'SERIES9',
   appSubtitle: 'Monad Mainnet SER9 / MONAD staking panel.',
   connectWallet: 'Connect Wallet',
   walletConnectTitle: 'Connect Wallet',
@@ -13,10 +13,30 @@ export const en = {
   korean: 'Korean',
   english: 'English',
   navHome: 'Home',
+  navStaking: 'Staking',
   navTokens: 'Tokens',
   navIdentity: 'Identity',
   navPayment: 'Payment',
   navCreateToken: 'Create Token',
+  introKicker: 'What is SERIES9',
+  introHeadline: 'One on-chain stack: Token, Staking, Identity',
+  introLead:
+    'SERIES9 bundles the SER9 token, a Monad staking engine, and on-chain identity into a single dApp. Explore each module below.',
+  introTokenTag: 'Module 01',
+  introTokenTitle: 'SER9 Token',
+  introTokenDesc:
+    'The SER9 ERC-20 powers fees, staking rewards, and identity minting across the SERIES9 ecosystem.',
+  introTokenCta: 'View token',
+  introStakingTag: 'Module 02',
+  introStakingTitle: 'Staking',
+  introStakingDesc:
+    'Stake SER9 or native MON on Monad to earn SER9 rewards. Track positions, rewards, and unstaking in one panel.',
+  introStakingCta: 'Open staking',
+  introIdentityTag: 'Module 03',
+  introIdentityTitle: 'Identity',
+  introIdentityDesc:
+    'Mint one profile NFT per wallet — a SERIES9 handle with avatar and bio, paid in SER9 and used for payments.',
+  introIdentityCta: 'Create identity',
   wrongNetworkTitle: 'Wrong network connected',
   wrongNetworkBody: 'This app is configured for Monad Mainnet (chainId 143).',
   switchNetwork: 'Switch to Monad Mainnet',
