@@ -70,6 +70,7 @@ jobs:
           jq '.abi' out/Series9Staking.sol/Series9Staking.json > "$ABI_DIR/Series9Staking.abi.json"
           jq '.abi' out/SER9Token.sol/SER9Token.json > "$ABI_DIR/SER9Token.abi.json"
           jq '.abi' out/Series9Identity.sol/Series9Identity.json > "$ABI_DIR/Series9Identity.abi.json"
+          jq '.abi' out/Series9IdentityWallet.sol/Series9IdentityWallet.json > "$ABI_DIR/Series9IdentityWallet.abi.json"
 
           echo "abi_dir=$ABI_DIR" >> "$GITHUB_OUTPUT"
           echo "ref_slug=$REF_SLUG" >> "$GITHUB_OUTPUT"
@@ -134,14 +135,38 @@ jobs:
             DEPLOY_IDENTITY="$(decide_deploy "$IDENTITY_CURRENT_IMPL" out/Series9Identity.sol/Series9Identity.json)"
           fi
 
+          # Wallet factory bootstrap detection.
+          # The pre-wallet Identity impl has no walletImplementation() getter, so the call reverts -> uninitialized.
+          # A new impl that has never been bootstrapped returns the zero address -> also uninitialized.
+          # Only a valid non-zero address means the factory is already live.
+          DEPLOY_WALLET=false
+          WALLET_FACTORY_INITIALIZED=false
+          WALLET_CURRENT_IMPL=""
+          if [[ -n "${IDENTITY_PROXY:-}" ]]; then
+            if WALLET_CURRENT_IMPL="$(cast call "$IDENTITY_PROXY" "walletImplementation()(address)" --rpc-url "$MONAD_RPC_URL" 2>/dev/null)"; then
+              WALLET_CURRENT_IMPL="$(printf '%s' "$WALLET_CURRENT_IMPL" | tr 'A-F' 'a-f')"
+            else
+              WALLET_CURRENT_IMPL=""
+            fi
+            if [[ "$WALLET_CURRENT_IMPL" =~ ^0x[0-9a-f]{40}$ && "$WALLET_CURRENT_IMPL" != "0x0000000000000000000000000000000000000000" ]]; then
+              WALLET_FACTORY_INITIALIZED=true
+            else
+              # First-time rollout: deploy the bootstrap wallet impl and queue initializeWalletFactory.
+              DEPLOY_WALLET=true
+            fi
+          fi
+
           {
             echo "deploy_staking=$DEPLOY_STAKING"
             echo "deploy_ser9=$DEPLOY_SER9"
             echo "deploy_identity=$DEPLOY_IDENTITY"
+            echo "deploy_wallet=$DEPLOY_WALLET"
+            echo "wallet_factory_initialized=$WALLET_FACTORY_INITIALIZED"
             echo "staking_current_impl=$STAKING_CURRENT_IMPL"
             echo "ser9_proxy=$SER9_PROXY"
             echo "ser9_current_impl=$SER9_CURRENT_IMPL"
             echo "identity_current_impl=$IDENTITY_CURRENT_IMPL"
+            echo "wallet_current_impl=$WALLET_CURRENT_IMPL"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -150,6 +175,11 @@ jobs:
             echo "- SER9: deploy=\`$DEPLOY_SER9\` (current=\`$SER9_CURRENT_IMPL\`)"
             if [[ -n "${IDENTITY_PROXY:-}" ]]; then
               echo "- Identity: deploy=\`$DEPLOY_IDENTITY\` (current=\`$IDENTITY_CURRENT_IMPL\`)"
+              if [[ "$WALLET_FACTORY_INITIALIZED" == "true" ]]; then
+                echo "- Wallet factory: already initialized (bootstrap=\`$WALLET_CURRENT_IMPL\`); logic upgrades need manual setWalletImplApproved."
+              else
+                echo "- Wallet factory: deploy=\`$DEPLOY_WALLET\` (first-time bootstrap via initializeWalletFactory)"
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -163,6 +193,8 @@ jobs:
           DEPLOY_STAKING: ${{ steps.detect.outputs.deploy_staking }}
           DEPLOY_SER9: ${{ steps.detect.outputs.deploy_ser9 }}
           DEPLOY_IDENTITY: ${{ steps.detect.outputs.deploy_identity }}
+          DEPLOY_WALLET: ${{ steps.detect.outputs.deploy_wallet }}
+          WALLET_FACTORY_INITIALIZED: ${{ steps.detect.outputs.wallet_factory_initialized }}
         run: |
           set -euo pipefail
 
@@ -202,6 +234,8 @@ jobs:
           SER9_TX_HASH=""
           IDENTITY_IMPL=""
           IDENTITY_TX_HASH=""
+          WALLET_IMPL=""
+          WALLET_TX_HASH=""
 
           parse_deploy_address() {
             local label="$1"
@@ -255,6 +289,21 @@ jobs:
             echo "IDENTITY_PROXY is not set; skipping Identity implementation deployment and upgrade transaction."
           else
             echo "Identity implementation matches on-chain bytecode; skipping deploy."
+          fi
+
+          if [[ -n "${IDENTITY_PROXY:-}" && "$DEPLOY_WALLET" == "true" ]]; then
+            echo "Deploying Series9IdentityWallet bootstrap implementation..."
+            WALLET_DEPLOY_JSON="$(forge create src/Series9IdentityWallet.sol:Series9IdentityWallet \
+              --rpc-url "$MONAD_RPC_URL" \
+              --private-key "$PRIVATE_KEY" \
+              --broadcast \
+              --json)"
+            WALLET_IMPL="$(parse_deploy_address Wallet "$WALLET_DEPLOY_JSON")"
+            WALLET_TX_HASH="$(echo "$WALLET_DEPLOY_JSON" | jq -r '.transactionHash')"
+          elif [[ -z "${IDENTITY_PROXY:-}" ]]; then
+            echo "IDENTITY_PROXY is not set; skipping wallet factory bootstrap."
+          else
+            echo "Wallet factory already initialized; skipping wallet implementation deploy (logic upgrades are manual via setWalletImplApproved)."
           fi
 
           VERIFICATION_STATUS="skipped"
@@ -328,6 +377,10 @@ jobs:
               VERIFIED_ANY=true
               verify_contract_dual "$IDENTITY_IMPL" src/Series9Identity.sol:Series9Identity "Series9Identity"
             fi
+            if [[ -n "$WALLET_IMPL" ]]; then
+              VERIFIED_ANY=true
+              verify_contract_dual "$WALLET_IMPL" src/Series9IdentityWallet.sol:Series9IdentityWallet "Series9IdentityWallet"
+            fi
 
             if [[ "$VERIFIED_ANY" == "true" ]]; then
               if [[ -n "$VERIFICATION_FAILURES" ]]; then
@@ -390,6 +443,21 @@ jobs:
             append_description "Identity"
           fi
 
+          # Wallet factory bootstrap MUST be ordered after the Identity upgrade tx above: initializeWalletFactory
+          # is reinitializer(3) on the NEW impl, so the proxy must already point at it. It also calls
+          # _requirePaymentInitialized(), so the payment reinitializer(2) must have run (in a prior release, or in
+          # this same batch via IDENTITY_UPGRADE_DATA) or this tx reverts when the Safe executes it.
+          if [[ -n "$WALLET_IMPL" ]]; then
+            WALLET_INIT_CALLDATA="$(cast calldata \
+              "initializeWalletFactory(address)" \
+              "$WALLET_IMPL")"
+            TX_ARRAY="$(echo "$TX_ARRAY" | jq \
+              --arg to "$IDENTITY_PROXY" \
+              --arg data "$WALLET_INIT_CALLDATA" \
+              '. + [{"to": $to, "value": "0", "data": $data}]')"
+            append_description "Wallet factory"
+          fi
+
           TX_COUNT="$(echo "$TX_ARRAY" | jq 'length')"
           DESCRIPTION="No contract changes detected."
           if [[ "$TX_COUNT" != "0" ]]; then
@@ -421,12 +489,16 @@ jobs:
             --arg stakingImpl "$STAKING_IMPL" \
             --arg ser9Impl "$SER9_IMPL" \
             --arg identityImpl "$IDENTITY_IMPL" \
+            --arg walletImpl "$WALLET_IMPL" \
             --arg stakingTxHash "$STAKING_TX_HASH" \
             --arg ser9TxHash "$SER9_TX_HASH" \
             --arg identityTxHash "$IDENTITY_TX_HASH" \
+            --arg walletTxHash "$WALLET_TX_HASH" \
             --arg deployStaking "$DEPLOY_STAKING" \
             --arg deploySer9 "$DEPLOY_SER9" \
             --arg deployIdentity "$DEPLOY_IDENTITY" \
+            --arg deployWallet "$DEPLOY_WALLET" \
+            --arg walletFactoryInitialized "$WALLET_FACTORY_INITIALIZED" \
             --arg safeJson "$SAFE_JSON_OUT" \
             --arg skipVerify "$SKIP_VERIFY" \
             --arg verificationStatus "$VERIFICATION_STATUS" \
@@ -448,6 +520,12 @@ jobs:
                 "address": $identityImpl,
                 "txHash": $identityTxHash,
                 "deployed": ($deployIdentity == "true")
+              },
+              "wallet": {
+                "address": $walletImpl,
+                "txHash": $walletTxHash,
+                "deployed": ($deployWallet == "true"),
+                "factoryAlreadyInitialized": ($walletFactoryInitialized == "true")
               }
             } as $implementations
             | {
@@ -472,6 +550,7 @@ jobs:
           echo "staking_impl=$STAKING_IMPL" >> "$GITHUB_OUTPUT"
           echo "ser9_impl=$SER9_IMPL" >> "$GITHUB_OUTPUT"
           echo "identity_impl=$IDENTITY_IMPL" >> "$GITHUB_OUTPUT"
+          echo "wallet_impl=$WALLET_IMPL" >> "$GITHUB_OUTPUT"
           echo "tx_count=$TX_COUNT" >> "$GITHUB_OUTPUT"
           echo "verification_status=$VERIFICATION_STATUS" >> "$GITHUB_OUTPUT"
           echo "verification_failures=$VERIFICATION_FAILURES" >> "$GITHUB_OUTPUT"
@@ -518,6 +597,11 @@ jobs:
                 echo "- New Identity implementation: \`${{ steps.deploy.outputs.identity_impl }}\`"
               else
                 echo "- Identity implementation unchanged (current: \`${{ steps.detect.outputs.identity_current_impl }}\`)"
+              fi
+              if [[ "${{ steps.detect.outputs.deploy_wallet }}" == "true" ]]; then
+                echo "- New Wallet bootstrap implementation: \`${{ steps.deploy.outputs.wallet_impl }}\` (initializeWalletFactory queued in Safe batch)"
+              elif [[ "${{ steps.detect.outputs.wallet_factory_initialized }}" == "true" ]]; then
+                echo "- Wallet factory already initialized (bootstrap: \`${{ steps.detect.outputs.wallet_current_impl }}\`); logic upgrades are manual via setWalletImplApproved"
               fi
             fi
             echo "- Safe transactions queued: \`${{ steps.deploy.outputs.tx_count }}\`"
