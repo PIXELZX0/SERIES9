@@ -89,7 +89,11 @@ contract Series9Identity is
     mapping(uint256 => IdentityProfile) public profiles;
     mapping(address => uint256) public ownerTokenId; // 1 identity per address
     mapping(uint256 => string) public customAvatarSeed; // Deprecated: unused after avatar v2; slot kept for storage layout compatibility
-    mapping(uint256 => AvatarConfig) public avatarConfig; // 8-slot character avatar customization
+    // NOTE: `avatarConfig` intentionally lives at the END of the layout (see bottom of contract). The v0.3.0
+    // avatar rework originally declared it HERE mid-layout, which shifted every later variable by +1 slot on
+    // already-deployed proxies (corrupting reads of payment/handle/reputation state). Removing it from here
+    // restores the pre-v0.3.0 (v0.2.5) positions of all following variables so existing on-chain data reads
+    // correctly; avatarConfig is appended below and its entries relocated by repairAvatarConfigLayout().
 
     uint256 private constant PRECISION = 1e18;
     address public constant NATIVE_MON = address(0);
@@ -891,6 +895,33 @@ contract Series9Identity is
 
     // ─────────────────── Identity wallet factory + registry ───────────────────
 
+    /// @notice One-time storage repair after this upgrade moved `avatarConfig` to the end of the layout.
+    /// @dev The v0.3.0 avatar rework declared `avatarConfig` mid-layout (old base slot 4), shifting every later
+    ///      variable by +1 on already-deployed proxies. This impl restores the original positions and appends
+    ///      `avatarConfig`; pre-existing entries were written under the OLD base slot 4 and are copied to the new
+    ///      base here. Non-destructive + idempotent: only writes a new slot that is still empty, so it never
+    ///      clobbers a config set after migration. Owner-gated; call once per token range after the upgrade.
+    /// @param fromTokenId First tokenId, inclusive (token ids start at 1).
+    /// @param toTokenId One past the last tokenId, exclusive (e.g. pass the current next-token id).
+    function repairAvatarConfigLayout(uint256 fromTokenId, uint256 toTokenId) external onlyOwner {
+        uint256 oldBase = 4; // avatarConfig's slot in the broken v0.3.0..v0.4.0 layout
+        uint256 newBase;
+        assembly {
+            newBase := avatarConfig.slot
+        }
+        for (uint256 tokenId = fromTokenId; tokenId < toTokenId; tokenId++) {
+            bytes32 oldSlot = keccak256(abi.encode(tokenId, oldBase));
+            bytes32 newSlot = keccak256(abi.encode(tokenId, newBase));
+            // AvatarConfig packs into a single slot; relocate it only if the destination is still empty.
+            assembly {
+                if iszero(sload(newSlot)) {
+                    let v := sload(oldSlot)
+                    if iszero(iszero(v)) { sstore(newSlot, v) }
+                }
+            }
+        }
+    }
+
     /// @notice One-time setup of the wallet factory after upgrading the identity proxy.
     /// @param bootstrapImpl The Series9IdentityWallet implementation used as every wallet proxy's birth logic.
     /// @dev `walletImplementation` has no setter — it is frozen here so every wallet's CREATE2 address
@@ -1418,6 +1449,10 @@ contract Series9Identity is
     uint256 private _escrowTransferTokenId;
     /// @notice Wallet implementations revoked as future upgrade targets (baseline version is left intact).
     mapping(address => bool) public walletImplRevoked;
+    // Appended at the END of the layout (NOT at its original mid-layout slot) to undo the v0.3.0 insertion
+    // that shifted all later storage by +1 on deployed proxies. Pre-existing entries (written under the old
+    // mid-layout base slot) are relocated here by {repairAvatarConfigLayout}.
+    mapping(uint256 => AvatarConfig) public avatarConfig; // 8-slot character avatar customization
 
-    uint256[29] private __gap;
+    uint256[28] private __gap;
 }
