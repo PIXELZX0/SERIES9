@@ -15,9 +15,9 @@ import {
 } from 'wagmi';
 import { encodeFunctionData, getAddress, isAddress, isHex, maxUint256, zeroAddress, type Address, type Hex } from 'viem';
 
-import { explorerTxUrl, networkConfig } from './config/chain';
+import { explorerAddressUrl, explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
-import { identityAbi, ser9Abi, stakingAbi } from './contracts/abi';
+import { identityAbi, ser9Abi, stakingAbi, walletAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
 import { type MessageKey } from './i18n';
 import { useI18n } from './i18n/useI18n';
@@ -70,6 +70,19 @@ const monadStakingPrecompileAbi = [
       { name: 'epoch', type: 'uint64', internalType: 'uint64' },
       { name: 'inEpochDelayPeriod', type: 'bool', internalType: 'bool' },
     ],
+    stateMutability: 'nonpayable',
+  },
+] as const;
+
+const ERC20_TRANSFER_ABI = [
+  {
+    type: 'function',
+    name: 'transfer',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
     stateMutability: 'nonpayable',
   },
 ] as const;
@@ -472,6 +485,13 @@ export default function App() {
     signer: Address;
   } | null>(null);
   const [relayPaymentPayload, setRelayPaymentPayload] = useState('');
+  const [walletMonRecipient, setWalletMonRecipient] = useState('');
+  const [walletMonAmount, setWalletMonAmount] = useState('');
+  const [walletSer9Recipient, setWalletSer9Recipient] = useState('');
+  const [walletSer9Amount, setWalletSer9Amount] = useState('');
+  const [walletExecTo, setWalletExecTo] = useState('');
+  const [walletExecValue, setWalletExecValue] = useState('');
+  const [walletExecData, setWalletExecData] = useState('0x');
 
   const normalizedConnectedAddress = address ? getAddress(address) : undefined;
   const addressForReads = normalizedConnectedAddress ?? zeroAddress;
@@ -630,6 +650,60 @@ export default function App() {
     args: [identityTokenIdForReads],
     query: {
       enabled: identityTokenIdForReads > 0n,
+    },
+  });
+
+  const walletImplementationRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'walletImplementation',
+  });
+  const walletFactoryReady = Boolean(
+    walletImplementationRead.data && walletImplementationRead.data !== zeroAddress,
+  );
+
+  const walletOfRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'walletOf',
+    args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n,
+    },
+  });
+
+  const predictedWalletRead = useReadContract({
+    address: contracts.identityProxy,
+    abi: identityAbi,
+    functionName: 'predictWalletAddress',
+    args: [identityTokenIdForReads],
+    query: {
+      enabled: identityTokenIdForReads > 0n && walletFactoryReady,
+    },
+  });
+
+  const walletAddress =
+    walletOfRead.data && walletOfRead.data !== zeroAddress ? getAddress(walletOfRead.data) : undefined;
+  const walletCreated = Boolean(walletAddress);
+  const predictedWalletAddress =
+    predictedWalletRead.data && predictedWalletRead.data !== zeroAddress
+      ? getAddress(predictedWalletRead.data)
+      : undefined;
+
+  const walletMonBalanceRead = useBalance({
+    address: walletAddress,
+    query: {
+      enabled: Boolean(walletAddress),
+    },
+  });
+
+  const walletSer9BalanceRead = useReadContract({
+    address: contracts.ser9Proxy,
+    abi: ser9Abi,
+    functionName: 'balanceOf',
+    args: [walletAddress ?? zeroAddress],
+    query: {
+      enabled: Boolean(walletAddress),
     },
   });
 
@@ -1198,8 +1272,9 @@ export default function App() {
   const isIdentityPage = normalizedPathname === '/identity';
   const isPaymentPage = normalizedPathname === '/payment';
   const isStakingPage = normalizedPathname === '/staking';
+  const isWalletPage = normalizedPathname === '/wallet';
   const isHomePage =
-    !isTokensListPage && !isTokenCreatePage && !isIdentityPage && !isPaymentPage && !isStakingPage;
+    !isTokensListPage && !isTokenCreatePage && !isIdentityPage && !isPaymentPage && !isStakingPage && !isWalletPage;
   const hasTxActivity =
     tx.isWalletPrompt ||
     tx.isConfirming ||
@@ -2333,6 +2408,9 @@ export default function App() {
               <a href="/payment" className={isPaymentPage ? 'active' : ''}>
                 {t('navPayment')}
               </a>
+              <a href="/wallet" className={isWalletPage ? 'active' : ''}>
+                {t('navWallet')}
+              </a>
             </nav>
             <div className="section-title hero-kicker">{t(isHomePage ? 'introKicker' : 'stakingOverview')}</div>
           </div>
@@ -2466,6 +2544,13 @@ export default function App() {
               <h3>{t('introIdentityTitle')}</h3>
               <p className="muted">{t('introIdentityDesc')}</p>
               <span className="intro-card-cta">{t('introIdentityCta')} →</span>
+            </a>
+            <a className="card intro-card" href="/wallet">
+              <span className="intro-card-index">04</span>
+              <div className="section-title">{t('introWalletTag')}</div>
+              <h3>{t('introWalletTitle')}</h3>
+              <p className="muted">{t('introWalletDesc')}</p>
+              <span className="intro-card-cta">{t('introWalletCta')} →</span>
             </a>
           </section>
         </>
@@ -3122,6 +3207,219 @@ export default function App() {
             </article>
           </section>
 
+        </>
+      )}
+
+      {isWalletPage && (
+        <>
+          <section className="card status-card">
+            <div className="status-card-head">
+              <div>
+                <div className="section-title section-title-inline">SERIES9 Wallet</div>
+                <h2>{t('walletOverview')}</h2>
+              </div>
+              <span className={`pill ${walletCreated ? 'is-live' : ''}`}>
+                {walletCreated ? t('walletCreatedBadge') : t('walletNotCreated')}
+              </span>
+            </div>
+            <p className="muted">{t('walletPageLead')}</p>
+          </section>
+
+          {!isConnected ? (
+            <section className="card">
+              <p className="muted">{t('walletConnectFirst')}</p>
+            </section>
+          ) : !hasIdentity ? (
+            <section className="card">
+              <p className="muted">{t('walletNeedsIdentity')}</p>
+            </section>
+          ) : !walletFactoryReady ? (
+            <section className="card">
+              <p className="muted">{t('walletFactoryNotReady')}</p>
+            </section>
+          ) : (
+            <>
+              <section className="summary-grid">
+                <article className="status-card">
+                  <div className="status-card-head">
+                    <div>
+                      <div className="section-title section-title-inline">WALLET</div>
+                      <h2>{t('walletStatusTitle')}</h2>
+                    </div>
+                    <span className="pill">MON</span>
+                  </div>
+                  <div className="metric-grid">
+                    <MetricCard
+                      label={t('walletAddressLabel')}
+                      value={
+                        walletAddress ? (
+                          <a href={explorerAddressUrl(walletAddress)} target="_blank" rel="noreferrer">
+                            {shortenAddress(walletAddress, 6)}
+                          </a>
+                        ) : (
+                          t('walletNotCreated')
+                        )
+                      }
+                    />
+                    <MetricCard
+                      label={t('walletPredictedLabel')}
+                      value={predictedWalletAddress ? shortenAddress(predictedWalletAddress, 6) : '-'}
+                    />
+                    <MetricCard
+                      label={t('walletMonBalanceLabel')}
+                      value={walletCreated ? formatTokenAmount(walletMonBalanceRead.data?.value) : '-'}
+                    />
+                    <MetricCard
+                      label={t('walletSer9BalanceLabel')}
+                      value={walletCreated ? formatTokenAmount(walletSer9BalanceRead.data) : '-'}
+                    />
+                  </div>
+                  {walletCreated ? (
+                    <p className="status-card-copy muted">{t('walletFundHint')}</p>
+                  ) : (
+                    <div className="status-actions status-actions-single">
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={!isConnected || onWrongChain}
+                        onClick={(event) =>
+                          onSubmit(event, () =>
+                            runWrite('createWalletAction', () => ({
+                              address: contracts.identityProxy,
+                              abi: identityAbi,
+                              functionName: 'createWallet' as const,
+                              args: [identityTokenId] as const,
+                            })),
+                          )
+                        }
+                      >
+                        {t('createWalletAction')}
+                      </button>
+                    </div>
+                  )}
+                </article>
+              </section>
+
+              {walletCreated && walletAddress && (
+                <section className="payment-layout">
+                  <form
+                    className="single-form identity-form"
+                    onSubmit={(event) =>
+                      onSubmit(event, () =>
+                        runWrite('walletSendMonActionLabel', () => {
+                          const to = walletMonRecipient.trim();
+                          if (!isAddress(to)) throw new Error('INVALID_ADDRESS');
+                          const amount = parsePositiveTokenAmount(walletMonAmount);
+                          return {
+                            address: walletAddress,
+                            abi: walletAbi,
+                            functionName: 'execute' as const,
+                            args: [getAddress(to), amount, '0x' as Hex] as const,
+                          };
+                        }),
+                      )
+                    }
+                  >
+                    <h3>{t('walletSendMonTitle')}</h3>
+                    <div className="metric-grid">
+                      <MetricCard label={t('walletMonBalanceLabel')} value={formatTokenAmount(walletMonBalanceRead.data?.value)} />
+                    </div>
+                    <label className="field-stack">
+                      <span>{t('walletRecipientLabel')}</span>
+                      <input value={walletMonRecipient} onChange={(event) => setWalletMonRecipient(event.target.value)} placeholder="0x..." />
+                    </label>
+                    <label className="field-stack">
+                      <span>{t('walletAmountLabel')}</span>
+                      <input value={walletMonAmount} onChange={(event) => setWalletMonAmount(event.target.value)} placeholder="0.0" inputMode="decimal" />
+                    </label>
+                    <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
+                      {t('walletSendAction')}
+                    </button>
+                  </form>
+
+                  <form
+                    className="single-form identity-form"
+                    onSubmit={(event) =>
+                      onSubmit(event, () =>
+                        runWrite('walletSendSer9ActionLabel', () => {
+                          const to = walletSer9Recipient.trim();
+                          if (!isAddress(to)) throw new Error('INVALID_ADDRESS');
+                          const amount = parsePositiveTokenAmount(walletSer9Amount);
+                          const data = encodeFunctionData({
+                            abi: ERC20_TRANSFER_ABI,
+                            functionName: 'transfer',
+                            args: [getAddress(to), amount],
+                          });
+                          return {
+                            address: walletAddress,
+                            abi: walletAbi,
+                            functionName: 'execute' as const,
+                            args: [contracts.ser9Proxy, 0n, data] as const,
+                          };
+                        }),
+                      )
+                    }
+                  >
+                    <h3>{t('walletSendSer9Title')}</h3>
+                    <div className="metric-grid">
+                      <MetricCard label={t('walletSer9BalanceLabel')} value={formatTokenAmount(walletSer9BalanceRead.data)} />
+                    </div>
+                    <label className="field-stack">
+                      <span>{t('walletRecipientLabel')}</span>
+                      <input value={walletSer9Recipient} onChange={(event) => setWalletSer9Recipient(event.target.value)} placeholder="0x..." />
+                    </label>
+                    <label className="field-stack">
+                      <span>{t('walletAmountLabel')}</span>
+                      <input value={walletSer9Amount} onChange={(event) => setWalletSer9Amount(event.target.value)} placeholder="0.0" inputMode="decimal" />
+                    </label>
+                    <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
+                      {t('walletSendAction')}
+                    </button>
+                  </form>
+
+                  <form
+                    className="single-form identity-form"
+                    onSubmit={(event) =>
+                      onSubmit(event, () =>
+                        runWrite('walletExecuteActionLabel', () => {
+                          const to = walletExecTo.trim();
+                          if (!isAddress(to)) throw new Error('INVALID_ADDRESS');
+                          const data = walletExecData.trim() || '0x';
+                          if (!isHex(data)) throw new Error('INVALID_HEX');
+                          const value = walletExecValue.trim() ? parsePositiveTokenAmount(walletExecValue) : 0n;
+                          return {
+                            address: walletAddress,
+                            abi: walletAbi,
+                            functionName: 'execute' as const,
+                            args: [getAddress(to), value, data as Hex] as const,
+                          };
+                        }),
+                      )
+                    }
+                  >
+                    <h3>{t('walletExecuteTitle')}</h3>
+                    <p className="muted">{t('walletExecuteHint')}</p>
+                    <label className="field-stack">
+                      <span>{t('walletExecuteToLabel')}</span>
+                      <input value={walletExecTo} onChange={(event) => setWalletExecTo(event.target.value)} placeholder="0x..." />
+                    </label>
+                    <label className="field-stack">
+                      <span>{t('walletExecuteValueLabel')}</span>
+                      <input value={walletExecValue} onChange={(event) => setWalletExecValue(event.target.value)} placeholder="0.0" inputMode="decimal" />
+                    </label>
+                    <label className="field-stack">
+                      <span>{t('walletExecuteDataLabel')}</span>
+                      <textarea value={walletExecData} onChange={(event) => setWalletExecData(event.target.value)} placeholder="0x" />
+                      <small className="muted">{t('byteDefaultHint')}</small>
+                    </label>
+                    <button type="submit" className="primary" disabled={!isConnected || onWrongChain}>
+                      {t('walletExecuteAction')}
+                    </button>
+                  </form>
+                </section>
+              )}
+            </>
+          )}
         </>
       )}
 
