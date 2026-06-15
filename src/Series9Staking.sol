@@ -82,6 +82,10 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
     SER9Token public ser9;
     IPermit2 public permit2;
+    // Deprecated: the managedToken feature was removed (commit fe55d2a). These slots are RETAINED here, in
+    // their original on-chain order, so the storage layout still matches the already-deployed proxy — removing
+    // them mid-layout would shift every later variable and corrupt live staking state. Do not reuse.
+    uint256 private __deprecated_managedTokenImplementation;
     uint256 public tokenCreationFee;
 
     uint256 public rewardRatePerBlock;
@@ -89,10 +93,25 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     uint256 public lastUpdateBlock;
 
     uint256 public totalStaked;
+    uint256 private __deprecated_totalRewardWeight; // deprecated; slot retained for layout compatibility
 
     mapping(address => uint256) public stakedBalance;
+    uint256 private __deprecated_lockedBalance;       // deprecated; slot retained
+    uint256 private __deprecated_rewardWeightBalance; // deprecated; slot retained
     mapping(address => uint256) public userRewardPerTokenPaid;
     mapping(address => uint256) public rewards;
+    // Deprecated managedToken / fee-pool slots — retained in their original order for storage-layout
+    // compatibility with the deployed proxy. Do not reuse.
+    uint256 private __deprecated_tokenConfigs;
+    uint256 private __deprecated_tokenMintPolicies;
+    uint256 private __deprecated_managedTokens;
+    uint256 private __deprecated_userTokenDebt;
+    uint256 private __deprecated_userTokenCollateralUsed;
+    uint256 private __deprecated_usedLockedSer9;
+    uint256 private __deprecated_feePools;
+    uint256 private __deprecated_feeStakeBalance;
+    uint256 private __deprecated_feeRewardDebt;
+    uint256 private __deprecated_feePendingRewards;
 
     uint256 public monadRewardRatePerBlock;
     uint256 public monadRewardPerTokenStored;
