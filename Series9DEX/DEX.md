@@ -2,16 +2,17 @@
 
 > **프로젝트:** Series9 Decentralized Exchange
 > **위치:** `series9/Series9DEX/`
-> **상태:** 초안 (Draft v0.1)
+> **상태:** 초안 (Draft v0.2)
 
 ---
 
 ## 1. 개요 (Overview)
 
 **Series9DEX**는 **SER9 네이티브 토큰**과 **ERC-20 토큰** 간의 탈중앙화 거래소(DEX)입니다.
-AMM 기반의 시장가 주문과, 오프체인 호가창 또는 온체인 오더북 기반의 **지정가 주문**을 모두 지원합니다.
+AMM 기반의 시장가 주문과, **완전 온체인 오더북(on-chain orderbook)** 기반의 지정가 주문을 모두 지원합니다.
 
 모든 거래 페어는 고유한 **Pair ID** 로 식별되며, 해당 ID 는 페어에 속한 **풀(Pool)** 을 조회·연결하는 키로 사용됩니다.
+**수수료(fee rate)는 풀을 생성하는 사람이 직접 선택**할 수 있어, 같은 페어라 하더라도 풀마다 다른 수수료 정책을 운영할 수 있습니다.
 
 ---
 
@@ -20,20 +21,21 @@ AMM 기반의 시장가 주문과, 오프체인 호가창 또는 온체인 오�
 ```
 Series9DEX
 ├── Pairs (페어 목록)
-│   ├── Pair ID  ──→  Pair Metadata (tokenA, tokenB, feeTier, ...)
+│   ├── Pair ID  ──→  Pair Metadata (tokenA, tokenB, ...)
 │   │
 │   ├── Spot Pool (현물 풀)
 │   │     ├── tokenA reserves
-│   │     └── tokenB reserves
+│   │     ├── tokenB reserves
+│   │     └── feeRate  (풀 생성자가 설정)
 │   │
 │   └── Futures Pool (선물 풀)
 │         ├── Long positions
 │         ├── Short positions
 │         └── Collateral (USDC 등)
 │
-└── Orderbook (주문 시스템)
+└── Orderbook (주문 시스템)  ── ALL ON-CHAIN
     ├── Market Orders  (시장가)
-    └── Limit Orders   (지정가)
+    └── Limit Orders   (지정가, 전량 온체인)
 ```
 
 ---
@@ -53,13 +55,15 @@ Series9DEX
 - 페어 ID 는 풀 컨트랙트에 저장되며, 새 풀을 추가할 때 동일한 페어 ID 를 공유합니다.
 
 ```
-pairId = keccak256(abi.encodePacked(tokenSER9, tokenERC20, feeTier))
+pairId = keccak256(abi.encodePacked(tokenSER9, tokenERC20))
 ```
+
+> 참고: `feeTier` 는 페어 ID 생성에서 제외됩니다. 같은 페어라도 **풀마다 다른 수수료**를 가질 수 있기 때문입니다.
 
 ### 3.3 페어 ↔ 풀 매핑
 - 단일 페어 ID 는 **여러 풀**을 가질 수 있습니다.
-  - 현물 풀 1개
-  - 선물 풀 1개 (또는 만기/마진 종류별 N개)
+  - 현물 풀 N개 (수수료/세팅 다르게)
+  - 선물 풀 N개 (만기/마진 종류별)
 - 페어 ID 로 모든 풀을 조회할 수 있어야 합니다.
 
 ---
@@ -70,11 +74,23 @@ pairId = keccak256(abi.encodePacked(tokenSER9, tokenERC20, feeTier))
 - AMM 의 현재 호가(현물 풀 reserves 기반)로 즉시 체결.
 - 슬리피지 허용치(`minAmountOut`) 지정 필수.
 - 페어 ID → 해당 현물 풀 라우팅.
+- 수수료는 **선택된 풀의 feeRate** 가 적용됩니다.
 
-### 4.2 지정가 주문 (Limit Order)
+### 4.2 지정가 주문 (Limit Order) — 전량 온체인
 - 원하는 가격에 도달했을 때 자동 체결.
-- 오프체인 오더북 + 온체인 settlement 하이브리드 구조 권장.
+- **호가창(Orderbook) 자체가 온체인에 저장·관리**됩니다. 오프체인 relayer 를 두지 않으며, 외부 운영 주체 없이 누구나 체인만 보고 호가를 조회·체결할 수 있습니다.
 - 페어 ID 와 목표 가격(`limitPrice`)을 주문에 포함.
+
+#### 온체인 오더북 구조 (예시)
+```
+Orderbook (pairId 별)
+├── bids[price]        ── 매수 주문 누적 (price → totalAmount)
+└── asks[price]        ── 매도 주문 누적 (price → totalAmount)
+```
+- 가격 단위(price tick)는 풀 생성 시 설정.
+- 주문 등록/취소/매칭 모두 트랜잭션으로 발생 — 가스 비용 발생.
+- 누구나 `Orderbook(pairId).bestBid()` / `bestAsk()` 로 호가 조회 가능 (view).
+- 매칭 로직은 동일 페어의 **현물 풀(AMM)** 과 대조하여 자동 체결.
 
 #### Limit Order 필드 (예시)
 | 필드 | 타입 | 설명 |
@@ -85,7 +101,11 @@ pairId = keccak256(abi.encodePacked(tokenSER9, tokenERC20, feeTier))
 | `price` | `uint256` | 지정 가격 |
 | `amount` | `uint256` | 주문 수량 |
 | `expiry` | `uint256` | 만료 시각 |
-| `status` | `enum (OPEN / FILLED / CANCELLED)` | 주문 상태 |
+| `status` | `enum (OPEN / FILLED / CANCELLED / EXPIRED)` | 주문 상태 |
+
+#### 온체인 오더북의 장단점
+- ✅ **장점:** 단일 진실 공급원, 검열 저항성, 투명한 호가, relayer 의존성 없음.
+- ⚠️ **단점:** 주문 등록/취소/매칭 모두 가스 비용. (Monad 등 고처리량 L1 에서 완화 기대)
 
 ---
 
@@ -108,20 +128,41 @@ pairId = keccak256(abi.encodePacked(tokenSER9, tokenERC20, feeTier))
 | 용도 | 즉시 스왑 | 레버리지 포지션 |
 | 가격 결정 | reserves 비 (x*y=k) | 오라클 / 마크 가격 |
 | 페어 ID 공유 | ✅ | ✅ |
+| 수수료 설정 | **풀 생성자가 feeRate 선택** | (별도 정의) |
 | LP / 트레이더 | LP (유동성 공급) | 트레이더 (포지션 진입) |
 
 ---
 
-## 6. 향후 보완 항목 (To Be Defined)
+## 6. 수수료 (Fee) — 풀 생성자 결정
+
+> **원칙:** 수수료는 고정 티어(fee tier) 가 아니라, **풀을 생성하는 사람이 풀 생성 시점에 직접 선택**합니다.
+
+### 6.1 적용 범위
+- **현물 풀:** 풀 생성 트랜잭션의 파라미터로 `feeRate` 를 지정. (예: `3 / 1000` = 0.3%)
+- **선물 풀:** 별도 정의 (향후 결정).
+- **시장가/지정가 주문:** 거래가 라우팅되는 **해당 풀의 feeRate** 가 자동 적용.
+
+### 6.2 수수료 분배
+- 풀 생성 시 설정된 fee 분배 정책(`feeRecipient`, LP 비중 등) 사용.
+- 기본값(미설정 시): LP 에 100% 분배.
+
+### 6.3 제약
+- 수수료 범위: 가드레일 적용 (예: 0.01% ≤ feeRate ≤ 5%).
+- 가드레일 상·하한은 거버넌스(또는 일시적 owner) 가 관리.
+
+---
+
+## 7. 향후 보완 항목 (To Be Defined)
 
 > 아래 항목은 추후 상세 설계 시 결정합니다.
 
-- [ ] 정확한 페어 수수료 티어 (`feeTier`) 구조
-- [ ] 오프체인 오더북 운영 방식 (centralized relayer vs. on-chain orderbook)
 - [ ] 선물 풀의 마진 통화 (USDC 단일 or 페어 quote token)
+- [ ] 선물 풀 수수료 정책 (현물과 동일하게 생성자 선택? 별도 모델?)
 - [ ] 청산 봇 / Keeper 인센티브
 - [ ] 크로스 체인 SER9 처리 여부
 - [ ] 거버넌스 토큰 및 파라미터 업데이트 방식
+- [ ] 수수료 가드레일의 거버넌스 권한 구조
+- [ ] 온체인 오더북의 인덱싱/조회 최적화 (price-tier 별 누적 구조)
 
 ---
 
@@ -129,5 +170,6 @@ pairId = keccak256(abi.encodePacked(tokenSER9, tokenERC20, feeTier))
 
 | 버전 | 날짜 (UTC) | 작성자 | 변경 |
 |---|---|---|---|
+| v0.2 | 2026-06-20 | 유서연 | (1) 오더북 완전 온체인 방식으로 확정 — 오프체인/relayer 옵션 제거. (2) 수수료는 풀 생성자가 선택하도록 변경 — 고정 feeTier 제거. 페어 ID 생성에서 feeTier 제외. |
 | v0.1.1 | 2026-06-18 | 유서연 | 오타 수정: "주문簿" → "오더북" |
 | v0.1 | 2026-06-18 | 유서연 | 초안 작성 (페어 ID, 현물/선물 풀, 시장가/지정가 주문) |
