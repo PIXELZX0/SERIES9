@@ -2389,48 +2389,33 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="hero">
-        <div className="hero-copy">
-          <div className="hero-topline">
-            <nav className="page-nav">
-              <a href="/" className={isHomePage ? 'active' : ''}>
-                {t('navHome')}
-              </a>
-              <a href="/staking" className={isStakingPage ? 'active' : ''}>
-                {t('navStaking')}
-              </a>
-              <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
-                {t('navTokens')}
-              </a>
-              <a href="/identity" className={isIdentityPage ? 'active' : ''}>
-                {t('navIdentity')}
-              </a>
-              <a href="/payment" className={isPaymentPage ? 'active' : ''}>
-                {t('navPayment')}
-              </a>
-              <a href="/wallet" className={isWalletPage ? 'active' : ''}>
-                {t('navWallet')}
-              </a>
-            </nav>
-            <div className="section-title hero-kicker">{t(isHomePage ? 'introKicker' : 'stakingOverview')}</div>
-          </div>
-          <div className="hero-copy-block">
-            <h1>{t('appTitle')}</h1>
-            <p className="hero-description">{t('appSubtitle')}</p>
-          </div>
-          <div className="hero-badges">
-            <span className="hero-badge">
-              {t('targetChain')}: {networkConfig.chainId}
-            </span>
-            <span className={`hero-badge ${pausedRead.data ? 'is-paused' : 'is-live'}`}>
-              {t('paused')}: {pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
-            </span>
-          </div>
-        </div>
-
-        <div className="header-actions hero-panel">
+      <header className="topbar">
+        <a href="/" className="brand" aria-label="SERIES9">
+          <span className="brand-mark" aria-hidden="true">S9</span>
+          <span className="brand-name">SERIES9</span>
+        </a>
+        <nav className="page-nav">
+          <a href="/" className={isHomePage ? 'active' : ''}>
+            {t('navHome')}
+          </a>
+          <a href="/staking" className={isStakingPage ? 'active' : ''}>
+            {t('navStaking')}
+          </a>
+          <a href="/tokens" className={isTokensListPage ? 'active' : ''}>
+            {t('navTokens')}
+          </a>
+          <a href="/identity" className={isIdentityPage ? 'active' : ''}>
+            {t('navIdentity')}
+          </a>
+          <a href="/payment" className={isPaymentPage ? 'active' : ''}>
+            {t('navPayment')}
+          </a>
+          <a href="/wallet" className={isWalletPage ? 'active' : ''}>
+            {t('navWallet')}
+          </a>
+        </nav>
+        <div className="topbar-actions">
           <div className="lang-switch">
-            <span>{t('languageLabel')}</span>
             <button
               type="button"
               className={locale === 'ko' ? 'active' : ''}
@@ -2446,37 +2431,60 @@ export default function App() {
               {t('english')}
             </button>
           </div>
+          {!isConnected ? (
+            connectors.length === 0 ? (
+              <p className="muted">{t('walletNotDetected')}</p>
+            ) : (
+              <button
+                type="button"
+                className="primary"
+                disabled={isConnecting}
+                onClick={() => {
+                  setConnectError(null);
+                  setIsWalletModalOpen(true);
+                }}
+              >
+                {isConnecting ? t('connectPending') : t('connectWallet')}
+              </button>
+            )
+          ) : (
+            <div className="wallet-chip">
+              <span className="wallet-chip-dot" aria-hidden="true" />
+              <span className="wallet-chip-addr">
+                {normalizedConnectedAddress ? shortenAddress(normalizedConnectedAddress, 4) : '-'}
+              </span>
+              <button type="button" className="secondary" onClick={() => disconnect()}>
+                {t('disconnectWallet')}
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+      {connectError && <p className="error topbar-error">{connectError}</p>}
 
+      <header className="hero">
+        <div className="hero-copy">
+          <div className="section-title hero-kicker">{t(isHomePage ? 'introKicker' : 'stakingOverview')}</div>
+          <div className="hero-copy-block">
+            <h1>{t('appTitle')}</h1>
+            <p className="hero-description">{t('appSubtitle')}</p>
+          </div>
+          <div className="hero-badges">
+            <span className="hero-badge">
+              {t('targetChain')}: {networkConfig.chainId}
+            </span>
+            <span className={`hero-badge ${pausedRead.data ? 'is-paused' : 'is-live'}`}>
+              {t('paused')}: {pausedRead.data === undefined ? '-' : pausedRead.data ? t('yes') : t('no')}
+            </span>
+          </div>
+        </div>
+
+        <div className="hero-panel">
           <div className="hero-account-card">
             <span>{t('account')}</span>
             <strong>{normalizedConnectedAddress ? shortenAddress(normalizedConnectedAddress, 6) : '-'}</strong>
             <small>{isConnected ? `${t('networkLabel')}: ${chainId}` : t('connectHint')}</small>
           </div>
-
-          {!isConnected ? (
-            <div className="wallet-connectors">
-              {connectors.length === 0 ? (
-                <p className="muted">{t('walletNotDetected')}</p>
-              ) : (
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={isConnecting}
-                  onClick={() => {
-                    setConnectError(null);
-                    setIsWalletModalOpen(true);
-                  }}
-                >
-                  {isConnecting ? t('connectPending') : t('connectWallet')}
-                </button>
-              )}
-              {connectError && <p className="error">{connectError}</p>}
-            </div>
-          ) : (
-            <button type="button" className="secondary" onClick={() => disconnect()}>
-              {t('disconnectWallet')}
-            </button>
-          )}
         </div>
       </header>
 
