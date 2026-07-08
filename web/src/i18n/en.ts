@@ -347,4 +347,8 @@ export const en = {
   walletNftNotOwned: 'Not owned',
   walletSendNftActionLabel: 'Send NFT from wallet',
   walletRemoveAction: 'Remove',
+  walletAutoScanAction: 'Auto-detect',
+  walletAutoScanRunning: 'Scanning...',
+  walletAutoScanDone: 'Auto-detect scans the most recent ~5,000 blocks only — older transfers may be missed. Add older tokens/NFTs manually.',
+  walletAutoScanFailed: 'Auto-detect failed. You can still add tokens/NFTs manually.',
 } as const;

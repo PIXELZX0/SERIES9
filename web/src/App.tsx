@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   useAccount,
   useBalance,
@@ -13,7 +13,17 @@ import {
   useSignTypedData,
   useSwitchChain,
 } from 'wagmi';
-import { encodeFunctionData, getAddress, isAddress, isHex, maxUint256, zeroAddress, type Address, type Hex } from 'viem';
+import {
+  encodeFunctionData,
+  getAddress,
+  isAddress,
+  isHex,
+  maxUint256,
+  numberToHex,
+  zeroAddress,
+  type Address,
+  type Hex,
+} from 'viem';
 
 import { explorerAddressUrl, explorerTxUrl, networkConfig } from './config/chain';
 import { contracts } from './config/contracts';
@@ -159,6 +169,15 @@ const ERC721_ABI = [
 
 const WALLET_TOKENS_STORAGE_PREFIX = 'series9.wallet.tokens.';
 const WALLET_NFTS_STORAGE_PREFIX = 'series9.wallet.nfts.';
+
+const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' as const;
+const WALLET_SCAN_CHUNK_BLOCKS = 99n;
+const WALLET_SCAN_LOOKBACK_BLOCKS = 5_000n;
+const WALLET_SCAN_CONCURRENCY = 4;
+
+function addressToTopic(address: Address): Hex {
+  return `0x${'0'.repeat(24)}${address.slice(2).toLowerCase()}` as Hex;
+}
 
 const MONAD_STAKING_PRECOMPILE = getAddress('0x0000000000000000000000000000000000001000');
 const MONAD_EPOCH_APPROX_MS = 5.5 * 60 * 60 * 1000;
@@ -952,6 +971,107 @@ export default function App() {
       return { ...nft, owner, isOwned, imageSrc, name: metadata?.name };
     });
   }, [customNfts, customNftsRead.data, walletAddress]);
+
+  const [isAutoScanning, setIsAutoScanning] = useState(false);
+  const [autoScanNotice, setAutoScanNotice] = useState<string | null>(null);
+  const autoScannedWalletRef = useRef<string | null>(null);
+
+  const scanWalletTransfers = useCallback(async () => {
+    if (!walletAddress || !publicClient) {
+      return;
+    }
+
+    setIsAutoScanning(true);
+    setAutoScanNotice(null);
+
+    try {
+      const latestBlock = await publicClient.getBlockNumber();
+      const lookback = latestBlock < WALLET_SCAN_LOOKBACK_BLOCKS ? latestBlock : WALLET_SCAN_LOOKBACK_BLOCKS;
+      const scanFromBlock = latestBlock - lookback;
+
+      const ranges: { fromBlock: bigint; toBlock: bigint }[] = [];
+      for (let start = scanFromBlock; start <= latestBlock; start += WALLET_SCAN_CHUNK_BLOCKS + 1n) {
+        const end = start + WALLET_SCAN_CHUNK_BLOCKS > latestBlock ? latestBlock : start + WALLET_SCAN_CHUNK_BLOCKS;
+        ranges.push({ fromBlock: start, toBlock: end });
+      }
+
+      const toTopic = addressToTopic(walletAddress);
+      const discoveredTokens = new Set<Address>();
+      const discoveredNfts = new Map<string, WalletNftEntry>();
+
+      for (let i = 0; i < ranges.length; i += WALLET_SCAN_CONCURRENCY) {
+        const batch = ranges.slice(i, i + WALLET_SCAN_CONCURRENCY);
+        const batchResults = await Promise.all(
+          batch.map((range) =>
+            publicClient.request({
+              method: 'eth_getLogs',
+              params: [
+                {
+                  topics: [ERC20_TRANSFER_TOPIC, null, toTopic],
+                  fromBlock: numberToHex(range.fromBlock),
+                  toBlock: numberToHex(range.toBlock),
+                },
+              ],
+            }),
+          ),
+        );
+
+        for (const logs of batchResults) {
+          for (const log of logs) {
+            if (!log.topics || log.topics.length < 3) {
+              continue;
+            }
+            const contractAddress = getAddress(log.address);
+            const nftTopic = log.topics[3];
+            if (log.topics.length >= 4 && nftTopic) {
+              const tokenId = BigInt(nftTopic).toString();
+              discoveredNfts.set(`${contractAddress.toLowerCase()}-${tokenId}`, { address: contractAddress, tokenId });
+            } else {
+              discoveredTokens.add(contractAddress);
+            }
+          }
+        }
+      }
+
+      if (discoveredTokens.size > 0) {
+        setCustomTokens((prev) => {
+          const next = [...prev];
+          for (const token of discoveredTokens) {
+            if (!next.some((entry) => equalsAddress(entry, token))) {
+              next.push(token);
+            }
+          }
+          return next;
+        });
+      }
+
+      if (discoveredNfts.size > 0) {
+        setCustomNfts((prev) => {
+          const next = [...prev];
+          for (const nft of discoveredNfts.values()) {
+            if (!next.some((entry) => equalsAddress(entry.address, nft.address) && entry.tokenId === nft.tokenId)) {
+              next.push(nft);
+            }
+          }
+          return next;
+        });
+      }
+
+      setAutoScanNotice(t('walletAutoScanDone'));
+    } catch {
+      setAutoScanNotice(t('walletAutoScanFailed'));
+    } finally {
+      setIsAutoScanning(false);
+    }
+  }, [walletAddress, publicClient, t]);
+
+  useEffect(() => {
+    if (!walletAddress || autoScannedWalletRef.current === walletAddress) {
+      return;
+    }
+    autoScannedWalletRef.current = walletAddress;
+    void scanWalletTransfers();
+  }, [walletAddress, scanWalletTransfers]);
 
   const legacyHandleReservationsFinalizedRead = useReadContract({
     address: contracts.identityProxy,
@@ -3775,8 +3895,17 @@ export default function App() {
                       <div className="section-title section-title-inline">ERC-20</div>
                       <h2>{t('walletTokensTitle')}</h2>
                     </div>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={isAutoScanning}
+                      onClick={() => void scanWalletTransfers()}
+                    >
+                      {isAutoScanning ? t('walletAutoScanRunning') : t('walletAutoScanAction')}
+                    </button>
                   </div>
                   <p className="muted">{t('walletTokensHint')}</p>
+                  {autoScanNotice && <p className="muted">{autoScanNotice}</p>}
                   <form className="form-row" onSubmit={(event) => onSubmit(event, addCustomToken)}>
                     <label className="field-stack">
                       <span>{t('walletTokenAddressLabel')}</span>
@@ -3865,6 +3994,14 @@ export default function App() {
                       <div className="section-title section-title-inline">NFT</div>
                       <h2>{t('walletNftsTitle')}</h2>
                     </div>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={isAutoScanning}
+                      onClick={() => void scanWalletTransfers()}
+                    >
+                      {isAutoScanning ? t('walletAutoScanRunning') : t('walletAutoScanAction')}
+                    </button>
                   </div>
                   <p className="muted">{t('walletNftsHint')}</p>
                   <form className="form-row" onSubmit={(event) => onSubmit(event, addCustomNft)}>

@@ -347,4 +347,8 @@ export const ko = {
   walletNftNotOwned: '보유하지 않음',
   walletSendNftActionLabel: '지갑에서 NFT 전송',
   walletRemoveAction: '삭제',
+  walletAutoScanAction: '자동 감지',
+  walletAutoScanRunning: '감지 중...',
+  walletAutoScanDone: '자동 감지는 최근 약 5,000블록만 스캔합니다 — 그 이전 전송 내역은 놓칠 수 있습니다. 오래된 토큰/NFT는 직접 추가하세요.',
+  walletAutoScanFailed: '자동 감지에 실패했습니다. 토큰/NFT를 직접 추가할 수 있습니다.',
 } as const;
