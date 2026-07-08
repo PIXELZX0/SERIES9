@@ -896,6 +896,15 @@ button:disabled {
   gap: 0.85rem;
 }
 
+.wallet-nft-image {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .payment-request-card {
   padding: 1.1rem;
   display: grid;

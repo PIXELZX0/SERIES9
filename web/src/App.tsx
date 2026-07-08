@@ -21,7 +21,7 @@ import { identityAbi, ser9Abi, stakingAbi, walletAbi } from './contracts/abi';
 import { useTxExecutor } from './hooks/useTxExecutor';
 import { type MessageKey } from './i18n';
 import { useI18n } from './i18n/useI18n';
-import { formatRewardAmount, formatTokenAmount, shortenAddress } from './utils/format';
+import { equalsAddress, formatRewardAmount, formatTokenAmount, shortenAddress } from './utils/format';
 import { parsePositiveTokenAmount } from './utils/validation';
 import {
   DEFAULT_AVATAR_CONFIG,
@@ -50,6 +50,24 @@ type IdentityTokenMetadata = {
   description?: string;
   image?: string;
   image_data?: string;
+};
+
+type TokenMetadata = IdentityTokenMetadata;
+
+type WalletTokenBalance = {
+  address: Address;
+  symbol: string;
+  decimals: number;
+  balance: bigint | undefined;
+};
+
+type WalletNftEntry = { address: Address; tokenId: string };
+
+type WalletNftDetail = WalletNftEntry & {
+  owner: Address | undefined;
+  isOwned: boolean;
+  imageSrc: string | null;
+  name: string | undefined;
 };
 
 
@@ -86,6 +104,61 @@ const ERC20_TRANSFER_ABI = [
     stateMutability: 'nonpayable',
   },
 ] as const;
+
+const ERC20_READ_ABI = [
+  {
+    type: 'function',
+    name: 'symbol',
+    inputs: [],
+    outputs: [{ name: '', type: 'string' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'decimals',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint8' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'balanceOf',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+    stateMutability: 'view',
+  },
+] as const;
+
+const ERC721_ABI = [
+  {
+    type: 'function',
+    name: 'ownerOf',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [{ name: '', type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'tokenURI',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [{ name: '', type: 'string' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'safeTransferFrom',
+    inputs: [
+      { name: 'from', type: 'address' },
+      { name: 'to', type: 'address' },
+      { name: 'tokenId', type: 'uint256' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+] as const;
+
+const WALLET_TOKENS_STORAGE_PREFIX = 'series9.wallet.tokens.';
+const WALLET_NFTS_STORAGE_PREFIX = 'series9.wallet.nfts.';
 
 const MONAD_STAKING_PRECOMPILE = getAddress('0x0000000000000000000000000000000000001000');
 const MONAD_EPOCH_APPROX_MS = 5.5 * 60 * 60 * 1000;
@@ -191,6 +264,67 @@ function resolveIdentityImageSrc(metadata: IdentityTokenMetadata | null): string
   }
 
   return image;
+}
+
+function loadWalletTokenList(walletAddress: Address, chainId: number): Address[] {
+  try {
+    const raw = localStorage.getItem(`${WALLET_TOKENS_STORAGE_PREFIX}${chainId}.${walletAddress.toLowerCase()}`);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((entry): entry is Address => typeof entry === 'string' && isAddress(entry));
+  } catch {
+    return [];
+  }
+}
+
+function saveWalletTokenList(walletAddress: Address, chainId: number, tokens: Address[]): void {
+  try {
+    localStorage.setItem(
+      `${WALLET_TOKENS_STORAGE_PREFIX}${chainId}.${walletAddress.toLowerCase()}`,
+      JSON.stringify(tokens),
+    );
+  } catch {
+    /* localStorage unavailable */
+  }
+}
+
+function loadWalletNftList(walletAddress: Address, chainId: number): WalletNftEntry[] {
+  try {
+    const raw = localStorage.getItem(`${WALLET_NFTS_STORAGE_PREFIX}${chainId}.${walletAddress.toLowerCase()}`);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter(
+      (entry): entry is WalletNftEntry =>
+        Boolean(entry) &&
+        typeof entry === 'object' &&
+        typeof (entry as WalletNftEntry).address === 'string' &&
+        isAddress((entry as WalletNftEntry).address) &&
+        typeof (entry as WalletNftEntry).tokenId === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveWalletNftList(walletAddress: Address, chainId: number, nfts: WalletNftEntry[]): void {
+  try {
+    localStorage.setItem(
+      `${WALLET_NFTS_STORAGE_PREFIX}${chainId}.${walletAddress.toLowerCase()}`,
+      JSON.stringify(nfts),
+    );
+  } catch {
+    /* localStorage unavailable */
+  }
 }
 
 function formatApproxRemainingEpochTime(locale: string, remainingEpochs: number): string {
@@ -492,6 +626,13 @@ export default function App() {
   const [walletExecTo, setWalletExecTo] = useState('');
   const [walletExecValue, setWalletExecValue] = useState('');
   const [walletExecData, setWalletExecData] = useState('0x');
+  const [customTokenInput, setCustomTokenInput] = useState('');
+  const [customTokens, setCustomTokens] = useState<Address[]>([]);
+  const [tokenSendInputs, setTokenSendInputs] = useState<Record<string, { recipient: string; amount: string }>>({});
+  const [customNftAddressInput, setCustomNftAddressInput] = useState('');
+  const [customNftTokenIdInput, setCustomNftTokenIdInput] = useState('');
+  const [customNfts, setCustomNfts] = useState<WalletNftEntry[]>([]);
+  const [nftSendRecipients, setNftSendRecipients] = useState<Record<string, string>>({});
 
   const normalizedConnectedAddress = address ? getAddress(address) : undefined;
   const addressForReads = normalizedConnectedAddress ?? zeroAddress;
@@ -706,6 +847,111 @@ export default function App() {
       enabled: Boolean(walletAddress),
     },
   });
+
+  useEffect(() => {
+    if (!walletAddress) {
+      setCustomTokens([]);
+      setCustomNfts([]);
+      return;
+    }
+    setCustomTokens(loadWalletTokenList(walletAddress, chainId));
+    setCustomNfts(loadWalletNftList(walletAddress, chainId));
+  }, [walletAddress, chainId]);
+
+  useEffect(() => {
+    if (!walletAddress) {
+      return;
+    }
+    saveWalletTokenList(walletAddress, chainId, customTokens);
+  }, [walletAddress, chainId, customTokens]);
+
+  useEffect(() => {
+    if (!walletAddress) {
+      return;
+    }
+    saveWalletNftList(walletAddress, chainId, customNfts);
+  }, [walletAddress, chainId, customNfts]);
+
+  const customTokenReadContracts = useMemo(
+    () =>
+      customTokens.flatMap((token) => [
+        { address: token, abi: ERC20_READ_ABI, functionName: 'symbol' as const },
+        { address: token, abi: ERC20_READ_ABI, functionName: 'decimals' as const },
+        {
+          address: token,
+          abi: ERC20_READ_ABI,
+          functionName: 'balanceOf' as const,
+          args: [walletAddress ?? zeroAddress] as const,
+        },
+      ]),
+    [customTokens, walletAddress],
+  );
+
+  const customTokensRead = useReadContracts({
+    contracts: customTokenReadContracts,
+    query: {
+      enabled: Boolean(walletAddress) && customTokenReadContracts.length > 0,
+      refetchInterval: 15_000,
+    },
+  });
+
+  const customTokenBalances = useMemo<WalletTokenBalance[]>(() => {
+    return customTokens.map((token, index) => {
+      const base = index * 3;
+      const results = customTokensRead.data;
+      const symbolResult = results?.[base];
+      const decimalsResult = results?.[base + 1];
+      const balanceResult = results?.[base + 2];
+      const symbol =
+        symbolResult?.status === 'success' && typeof symbolResult.result === 'string'
+          ? symbolResult.result
+          : shortenAddress(token);
+      const decimals =
+        decimalsResult?.status === 'success' && typeof decimalsResult.result === 'number'
+          ? decimalsResult.result
+          : 18;
+      const balance = balanceResult?.status === 'success' && typeof balanceResult.result === 'bigint' ? balanceResult.result : undefined;
+      return { address: token, symbol, decimals, balance };
+    });
+  }, [customTokens, customTokensRead.data]);
+
+  const customNftReadContracts = useMemo(
+    () =>
+      customNfts.flatMap((nft) => {
+        const tokenId = /^\d+$/.test(nft.tokenId) ? BigInt(nft.tokenId) : 0n;
+        return [
+          { address: nft.address, abi: ERC721_ABI, functionName: 'ownerOf' as const, args: [tokenId] as const },
+          { address: nft.address, abi: ERC721_ABI, functionName: 'tokenURI' as const, args: [tokenId] as const },
+        ];
+      }),
+    [customNfts],
+  );
+
+  const customNftsRead = useReadContracts({
+    contracts: customNftReadContracts,
+    query: {
+      enabled: Boolean(walletAddress) && customNftReadContracts.length > 0,
+      refetchInterval: 20_000,
+    },
+  });
+
+  const customNftDetails = useMemo<WalletNftDetail[]>(() => {
+    return customNfts.map((nft, index) => {
+      const base = index * 2;
+      const results = customNftsRead.data;
+      const ownerResult = results?.[base];
+      const uriResult = results?.[base + 1];
+      const owner =
+        ownerResult?.status === 'success' && typeof ownerResult.result === 'string'
+          ? (ownerResult.result as Address)
+          : undefined;
+      const tokenUri = uriResult?.status === 'success' && typeof uriResult.result === 'string' ? uriResult.result : undefined;
+      const metadata: TokenMetadata | null = parseIdentityTokenMetadata(tokenUri);
+      const imageSrc = resolveIdentityImageSrc(metadata);
+      const isOwned = Boolean(owner && walletAddress && equalsAddress(owner, walletAddress));
+      return { ...nft, owner, isOwned, imageSrc, name: metadata?.name };
+    });
+  }, [customNfts, customNftsRead.data, walletAddress]);
 
   const legacyHandleReservationsFinalizedRead = useReadContract({
     address: contracts.identityProxy,
@@ -1592,6 +1838,101 @@ export default function App() {
   function onSubmit(event: { preventDefault: () => void }, handler: () => void) {
     event.preventDefault();
     void handler();
+  }
+
+  function addCustomToken() {
+    resetErrors();
+    const value = customTokenInput.trim();
+    if (!isAddress(value)) {
+      setFormError(mapLocalError(new Error('INVALID_ADDRESS')));
+      return;
+    }
+    const normalized = getAddress(value);
+    if (equalsAddress(normalized, contracts.ser9Proxy)) {
+      setFormError(mapLocalError(new Error('INVALID_ADDRESS')));
+      return;
+    }
+    setCustomTokens((prev) => (prev.some((token) => equalsAddress(token, normalized)) ? prev : [...prev, normalized]));
+    setCustomTokenInput('');
+  }
+
+  function removeCustomToken(token: Address) {
+    setCustomTokens((prev) => prev.filter((entry) => !equalsAddress(entry, token)));
+    setTokenSendInputs((prev) => {
+      const next = { ...prev };
+      delete next[token.toLowerCase()];
+      return next;
+    });
+  }
+
+  function addCustomNft() {
+    resetErrors();
+    const address = customNftAddressInput.trim();
+    const tokenId = customNftTokenIdInput.trim();
+    if (!isAddress(address) || !/^\d+$/.test(tokenId)) {
+      setFormError(mapLocalError(new Error('INVALID_ADDRESS')));
+      return;
+    }
+    const normalized = getAddress(address);
+    setCustomNfts((prev) =>
+      prev.some((entry) => equalsAddress(entry.address, normalized) && entry.tokenId === tokenId)
+        ? prev
+        : [...prev, { address: normalized, tokenId }],
+    );
+    setCustomNftAddressInput('');
+    setCustomNftTokenIdInput('');
+  }
+
+  function removeCustomNft(nft: WalletNftEntry) {
+    setCustomNfts((prev) => prev.filter((entry) => !(equalsAddress(entry.address, nft.address) && entry.tokenId === nft.tokenId)));
+    setNftSendRecipients((prev) => {
+      const next = { ...prev };
+      delete next[`${nft.address.toLowerCase()}-${nft.tokenId}`];
+      return next;
+    });
+  }
+
+  async function runSendCustomTokenFlow(token: WalletTokenBalance) {
+    const key = token.address.toLowerCase();
+    const inputs = tokenSendInputs[key] ?? { recipient: '', amount: '' };
+    await runWrite('walletSendTokenActionLabel', () => {
+      if (!walletAddress) throw new Error('REQUIRED_FIELD');
+      const to = inputs.recipient.trim();
+      if (!isAddress(to)) throw new Error('INVALID_ADDRESS');
+      const amount = parsePositiveTokenAmount(inputs.amount, token.decimals);
+      const data = encodeFunctionData({
+        abi: ERC20_TRANSFER_ABI,
+        functionName: 'transfer',
+        args: [getAddress(to), amount],
+      });
+      return {
+        address: walletAddress,
+        abi: walletAbi,
+        functionName: 'execute' as const,
+        args: [token.address, 0n, data] as const,
+      };
+    });
+  }
+
+  async function runSendCustomNftFlow(nft: WalletNftDetail) {
+    const key = `${nft.address.toLowerCase()}-${nft.tokenId}`;
+    const recipient = nftSendRecipients[key] ?? '';
+    await runWrite('walletSendNftActionLabel', () => {
+      if (!walletAddress) throw new Error('REQUIRED_FIELD');
+      const to = recipient.trim();
+      if (!isAddress(to)) throw new Error('INVALID_ADDRESS');
+      const data = encodeFunctionData({
+        abi: ERC721_ABI,
+        functionName: 'safeTransferFrom',
+        args: [walletAddress, getAddress(to), BigInt(nft.tokenId)],
+      });
+      return {
+        address: walletAddress,
+        abi: walletAbi,
+        functionName: 'execute' as const,
+        args: [nft.address, 0n, data] as const,
+      };
+    });
   }
 
   async function ensureHandleRegistrationReady() {
@@ -3424,6 +3765,189 @@ export default function App() {
                       {t('walletExecuteAction')}
                     </button>
                   </form>
+                </section>
+              )}
+
+              {walletCreated && walletAddress && (
+                <section className="card">
+                  <div className="section-head section-head-highlight">
+                    <div>
+                      <div className="section-title section-title-inline">ERC-20</div>
+                      <h2>{t('walletTokensTitle')}</h2>
+                    </div>
+                  </div>
+                  <p className="muted">{t('walletTokensHint')}</p>
+                  <form className="form-row" onSubmit={(event) => onSubmit(event, addCustomToken)}>
+                    <label className="field-stack">
+                      <span>{t('walletTokenAddressLabel')}</span>
+                      <input
+                        value={customTokenInput}
+                        onChange={(event) => setCustomTokenInput(event.target.value)}
+                        placeholder="0x..."
+                      />
+                    </label>
+                    <button type="submit" className="secondary" disabled={!isConnected || onWrongChain}>
+                      {t('walletAddTokenAction')}
+                    </button>
+                  </form>
+                  {customTokenBalances.length === 0 ? (
+                    <p className="muted">{t('walletNoCustomTokens')}</p>
+                  ) : (
+                    <div className="payment-request-list">
+                      {customTokenBalances.map((token) => {
+                        const key = token.address.toLowerCase();
+                        const inputs = tokenSendInputs[key] ?? { recipient: '', amount: '' };
+                        return (
+                          <article key={key} className="payment-request-card">
+                            <div className="payment-request-head">
+                              <strong>{token.symbol}</strong>
+                              <a href={explorerAddressUrl(token.address)} target="_blank" rel="noreferrer">
+                                {shortenAddress(token.address, 6)}
+                              </a>
+                            </div>
+                            <div className="metric-grid">
+                              <MetricCard label={t('amount')} value={formatTokenAmount(token.balance, token.decimals)} />
+                            </div>
+                            <div className="form-row">
+                              <label className="field-stack">
+                                <span>{t('walletRecipientLabel')}</span>
+                                <input
+                                  value={inputs.recipient}
+                                  onChange={(event) =>
+                                    setTokenSendInputs((prev) => ({
+                                      ...prev,
+                                      [key]: { ...inputs, recipient: event.target.value },
+                                    }))
+                                  }
+                                  placeholder="0x..."
+                                />
+                              </label>
+                              <label className="field-stack">
+                                <span>{t('walletAmountLabel')}</span>
+                                <input
+                                  value={inputs.amount}
+                                  onChange={(event) =>
+                                    setTokenSendInputs((prev) => ({
+                                      ...prev,
+                                      [key]: { ...inputs, amount: event.target.value },
+                                    }))
+                                  }
+                                  placeholder="0.0"
+                                  inputMode="decimal"
+                                />
+                              </label>
+                            </div>
+                            <div className="status-actions status-actions-two">
+                              <button
+                                type="button"
+                                className="primary"
+                                disabled={!isConnected || onWrongChain}
+                                onClick={() => void runSendCustomTokenFlow(token)}
+                              >
+                                {t('walletSendAction')}
+                              </button>
+                              <button type="button" className="secondary" onClick={() => removeCustomToken(token.address)}>
+                                {t('walletRemoveAction')}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {walletCreated && walletAddress && (
+                <section className="card">
+                  <div className="section-head section-head-highlight">
+                    <div>
+                      <div className="section-title section-title-inline">NFT</div>
+                      <h2>{t('walletNftsTitle')}</h2>
+                    </div>
+                  </div>
+                  <p className="muted">{t('walletNftsHint')}</p>
+                  <form className="form-row" onSubmit={(event) => onSubmit(event, addCustomNft)}>
+                    <label className="field-stack">
+                      <span>{t('walletNftAddressLabel')}</span>
+                      <input
+                        value={customNftAddressInput}
+                        onChange={(event) => setCustomNftAddressInput(event.target.value)}
+                        placeholder="0x..."
+                      />
+                    </label>
+                    <label className="field-stack">
+                      <span>{t('walletNftTokenIdLabel')}</span>
+                      <input
+                        value={customNftTokenIdInput}
+                        onChange={(event) => setCustomNftTokenIdInput(event.target.value)}
+                        placeholder="1"
+                        inputMode="numeric"
+                      />
+                    </label>
+                    <button type="submit" className="secondary" disabled={!isConnected || onWrongChain}>
+                      {t('walletAddNftAction')}
+                    </button>
+                  </form>
+                  {customNftDetails.length === 0 ? (
+                    <p className="muted">{t('walletNoCustomNfts')}</p>
+                  ) : (
+                    <div className="payment-request-list">
+                      {customNftDetails.map((nft) => {
+                        const key = `${nft.address.toLowerCase()}-${nft.tokenId}`;
+                        const recipient = nftSendRecipients[key] ?? '';
+                        return (
+                          <article key={key} className="payment-request-card">
+                            <div className="payment-request-head">
+                              <strong>{nft.name || `#${nft.tokenId}`}</strong>
+                              <span className={`pill ${nft.isOwned ? 'is-live' : ''}`}>
+                                {nft.isOwned ? t('walletNftOwned') : t('walletNftNotOwned')}
+                              </span>
+                            </div>
+                            {nft.imageSrc && (
+                              <img src={nft.imageSrc} alt={nft.name || nft.tokenId} className="wallet-nft-image" />
+                            )}
+                            <div className="metric-grid">
+                              <MetricCard
+                                label={t('walletNftAddressLabel')}
+                                value={
+                                  <a href={explorerAddressUrl(nft.address)} target="_blank" rel="noreferrer">
+                                    {shortenAddress(nft.address, 6)}
+                                  </a>
+                                }
+                              />
+                              <MetricCard label={t('walletNftTokenIdLabel')} value={`#${nft.tokenId}`} />
+                            </div>
+                            <div className="form-row">
+                              <label className="field-stack">
+                                <span>{t('walletRecipientLabel')}</span>
+                                <input
+                                  value={recipient}
+                                  onChange={(event) =>
+                                    setNftSendRecipients((prev) => ({ ...prev, [key]: event.target.value }))
+                                  }
+                                  placeholder="0x..."
+                                />
+                              </label>
+                            </div>
+                            <div className="status-actions status-actions-two">
+                              <button
+                                type="button"
+                                className="primary"
+                                disabled={!isConnected || onWrongChain || !nft.isOwned}
+                                onClick={() => void runSendCustomNftFlow(nft)}
+                              >
+                                {t('walletSendAction')}
+                              </button>
+                              <button type="button" className="secondary" onClick={() => removeCustomNft(nft)}>
+                                {t('walletRemoveAction')}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
                 </section>
               )}
             </>
