@@ -17,6 +17,7 @@
 
 ## 개별 문서
 
+- [`DeveloperGuide.md`](./DeveloperGuide.md) — **개발자용 사용 가이드** (SERIES9/Staking/Identity/Wallet 통합 방법, cast/viem 예시)
 - [`SER9Token.md`](./SER9Token.md) — SER9 ERC20 토큰
 - [`Series9Staking.md`](./Series9Staking.md) — 스테이킹 + Monad 위임 (핵심 컨트랙트)
 - [`Series9Identity.md`](./Series9Identity.md) — Identity NFT + Payment + 지갑 팩토리/에스크로 전송
