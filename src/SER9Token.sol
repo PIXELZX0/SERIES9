@@ -11,10 +11,16 @@ contract SER9Token is Initializable, ERC20Upgradeable, OwnableUpgradeable, UUPSU
 
     address public stakingContract;
 
+    /// @notice ERC-20M: token image URI (data:, ipfs://, https://).
+    string public image;
+    /// @notice ERC-20M: token description.
+    string public description;
+
     error InvalidStakingAddress();
     error UnauthorizedMinter();
 
     event StakingContractSet(address indexed previousStakingContract, address indexed stakingContractAddress);
+    event TokenMetadataSet(string image, string description);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -37,6 +43,13 @@ contract SER9Token is Initializable, ERC20Upgradeable, OwnableUpgradeable, UUPSU
         emit StakingContractSet(previousStaking, stakingContractAddress);
     }
 
+    /// @notice ERC-20M metadata setter. Live proxy predates these fields, so they are set post-upgrade.
+    function setTokenMetadata(string calldata image_, string calldata description_) external onlyOwner {
+        image = image_;
+        description = description_;
+        emit TokenMetadataSet(image_, description_);
+    }
+
     function mint(address to, uint256 amount) external {
         if (msg.sender != stakingContract) {
             revert UnauthorizedMinter();
@@ -47,5 +60,5 @@ contract SER9Token is Initializable, ERC20Upgradeable, OwnableUpgradeable, UUPSU
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
-    uint256[49] private _gap;
+    uint256[47] private _gap;
 }
