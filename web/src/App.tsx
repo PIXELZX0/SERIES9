@@ -582,7 +582,7 @@ export default function App() {
 
   const { connectAsync, connectors, isPending: isConnecting } = useConnect();
   const { disconnect } = useDisconnect();
-  const { switchChain, isPending: isSwitchingNetwork } = useSwitchChain();
+  const { switchChain, switchChainAsync, isPending: isSwitchingNetwork } = useSwitchChain();
 
   const tx = useTxExecutor({
     onMined: () => {
@@ -1922,7 +1922,14 @@ export default function App() {
     setConnectingConnectorUid(connector.uid);
 
     try {
-      await connectAsync({ connector });
+      const result = await connectAsync({ connector });
+      if (result.chainId !== networkConfig.chainId) {
+        try {
+          await switchChainAsync({ chainId: networkConfig.chainId });
+        } catch {
+          /* user can retry via wrong-network banner */
+        }
+      }
       setIsWalletModalOpen(false);
     } catch (error) {
       setConnectError(mapConnectError(error));
