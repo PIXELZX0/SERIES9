@@ -87,6 +87,25 @@ per-wallet UUPS. `_authorizeUpgrade` → `Series9Identity.authorizeWalletUpgrade
 - 업그레이드는 소유자 주도 + 허용목록 + 전진 버전만 — 피싱당한 소유자도 임의 drainer impl 설치 불가, 취약 버전으로 롤백 불가.
 - 불변 bootstrap 주소 → CREATE2 지갑 주소 영구 고정·예측 가능.
 
+## ERC-1271 서명 (지갑 로직 v2, `Series9IdentityWalletV2`)
+
+v2부터 지갑이 **서명자**가 된다. `isValidSignature(bytes32 hash, bytes signature) → bytes4`:
+
+```
+holder = ownerOf(tokenId)                       // 실패(소각 등) → 0xffffffff
+authorizeWalletCall(tokenId, holder)            // revert(freeze 등) → 0xffffffff
+SignatureChecker.isValidSignatureNow(holder, hash, signature)
+    ? 0x1626ba7e : 0xffffffff
+```
+
+- **서명 권한도 NFT에 귀속** — `execute`와 동일하게 매 호출 현재 `ownerOf(tokenId)`를 재확인. 정체성이 이전되면 이전 보유자의 서명은 즉시 무효, 새 보유자의 서명이 유효해짐.
+- **freeze 중 서명 무효** — 전송(Pending/Accepted) 중에는 `authorizeWalletCall`이 revert하므로 `0xffffffff` 반환. 출금 동결과 동일한 규칙을 재사용(권한 로직 사본 없음).
+- **절대 revert하지 않음** — 모든 실패 경로는 `0xffffffff` 반환.
+- **컨트랙트 보유자 지원** — `SignatureChecker`가 EOA(ECDSA) / 컨트랙트(중첩 ERC-1271) 양쪽을 처리. 다른 스마트 어카운트가 정체성을 보유해도 서명 가능.
+- **raw hash 방식** — dapp이 넘긴 `hash`를 그대로 검증(도메인 래핑 없음). Permit2·마켓플레이스 리스팅·SIWE 등 표준 서명 플로우와 그대로 호환.
+  - ⚠️ 트레이드오프: 한 보유자가 여러 정체성 지갑을 가질 경우, **같은 hash에 대한 서명은 그 보유자의 모든 지갑에서 유효**하다(지갑별 도메인 바인딩 없음). 지갑별 분리가 필요한 프로토콜은 자기 도메인에 `verifyingContract`로 지갑 주소를 넣어 hash 자체를 분리할 것.
+- v2는 **스토리지를 추가하지 않음** → 보유자가 `upgradeToAndCall(walletV2, "")`로 직접 업그레이드(init data 불필요). 배포·허용목록은 `script/UpgradeIdentityWalletV2.s.sol`이 Safe TX JSON으로 생성.
+
 ## 통합 포인트
 
 - **Series9Identity**: 팩토리(`createWallet`/`predictWalletAddress`) + 권한 훅(`authorizeWalletCall`/`authorizeWalletUpgrade`) + 허용목록(`setWalletImplApproved`).

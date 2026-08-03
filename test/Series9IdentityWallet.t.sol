@@ -31,7 +31,7 @@ contract Dummy {
 }
 
 /// @dev A valid forward wallet implementation (same storage layout, extra function).
-contract Series9IdentityWalletV2 is Series9IdentityWallet {
+contract WalletUpgradeTarget is Series9IdentityWallet {
     function walletVersion() external pure returns (uint256) {
         return 2;
     }
@@ -265,7 +265,7 @@ contract Series9IdentityWalletTest is Test {
 
     function test_upgradeToApprovedImpl() public {
         (, Series9IdentityWallet wallet) = _mint(alice);
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget();
         identity.setWalletImplApproved(address(v2), 2);
 
         vm.prank(alice);
@@ -273,12 +273,12 @@ contract Series9IdentityWalletTest is Test {
 
         // State preserved; new behavior available.
         assertEq(wallet.identity(), address(identity));
-        assertEq(Series9IdentityWalletV2(payable(address(wallet))).walletVersion(), 2);
+        assertEq(WalletUpgradeTarget(payable(address(wallet))).walletVersion(), 2);
     }
 
     function test_upgradeToUnapprovedImplReverts() public {
         (, Series9IdentityWallet wallet) = _mint(alice);
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2(); // not approved
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget(); // not approved
 
         vm.prank(alice);
         vm.expectRevert(Series9Identity.WalletImplNotApproved.selector);
@@ -287,7 +287,7 @@ contract Series9IdentityWalletTest is Test {
 
     function test_upgradeByNonOwnerReverts() public {
         (, Series9IdentityWallet wallet) = _mint(alice);
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget();
         identity.setWalletImplApproved(address(v2), 2);
 
         vm.prank(bob);
@@ -297,7 +297,7 @@ contract Series9IdentityWalletTest is Test {
 
     function test_downgradeReverts() public {
         (, Series9IdentityWallet wallet) = _mint(alice);
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget();
         identity.setWalletImplApproved(address(v2), 2);
 
         vm.prank(alice);
@@ -311,8 +311,8 @@ contract Series9IdentityWalletTest is Test {
 
     function test_equalVersionUpgradeReverts() public {
         (, Series9IdentityWallet wallet) = _mint(alice);
-        Series9IdentityWalletV2 v2a = new Series9IdentityWalletV2();
-        Series9IdentityWalletV2 v2b = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2a = new WalletUpgradeTarget();
+        WalletUpgradeTarget v2b = new WalletUpgradeTarget();
         identity.setWalletImplApproved(address(v2a), 2);
         identity.setWalletImplApproved(address(v2b), 2);
 
@@ -326,7 +326,7 @@ contract Series9IdentityWalletTest is Test {
 
     function test_upgradeBlockedDuringTransferFreeze() public {
         (, Series9IdentityWallet wallet) = _mint(alice);
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget();
         identity.setWalletImplApproved(address(v2), 2);
 
         vm.prank(alice);
@@ -566,7 +566,7 @@ contract Series9IdentityWalletTest is Test {
     /// @dev A revoked implementation can no longer be an upgrade target, even though its baseline version stays.
     function test_revokedImplCannotBeUpgradeTarget() public {
         (, Series9IdentityWallet wallet) = _mint(alice);
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget();
         identity.setWalletImplApproved(address(v2), 2);
         identity.revokeWalletImpl(address(v2));
 
@@ -578,14 +578,14 @@ contract Series9IdentityWalletTest is Test {
     /// @dev Versions are immutable once set, so re-numbering an approved impl (which could lower the
     ///      no-downgrade baseline) is rejected.
     function test_setWalletImplApprovedIsImmutable() public {
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget();
         identity.setWalletImplApproved(address(v2), 2);
         vm.expectRevert(Series9Identity.WalletImplAlreadyApproved.selector);
         identity.setWalletImplApproved(address(v2), 3);
     }
 
     function test_setWalletImplApprovedRejectsZeroVersionAndCodeless() public {
-        Series9IdentityWalletV2 v2 = new Series9IdentityWalletV2();
+        WalletUpgradeTarget v2 = new WalletUpgradeTarget();
         vm.expectRevert(Series9Identity.WalletImplNotApproved.selector);
         identity.setWalletImplApproved(address(v2), 0);
 
