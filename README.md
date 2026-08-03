@@ -1,6 +1,6 @@
-# SER9 Staking System
+# SERIES9
 
-Foundry 기반의 `SER9` 스테이킹 시스템입니다.
+Foundry 기반의 `SER9` 토큰 + 스테이킹 시스템입니다.
 모든 핵심 컨트랙트는 `UUPS + ERC1967Proxy` 기반 업그레이드 구조를 사용합니다.
 
 ## 핵심 개념
@@ -14,29 +14,19 @@ Foundry 기반의 `SER9` 스테이킹 시스템입니다.
   - Monad unstake coverage queueing은 `processPendingMonadUnstakeCoverage(maxValidators)`로 누구나 진행 가능하고, 만기 도달한 undelegation 출금은 `processMaturedMonadUndelegations(maxTickets)`로 누구나 진행 가능
   - `claimUnstakedMonad(...)`는 이미 backing/withdraw 처리가 끝난 요청만 청구하며, backlog를 durable 하게 전진시키는 경로는 위 permissionless processor들임
   - validator/ticket 전역 처리는 cursor 기반 bounded batch로 나뉘므로 backlog가 큰 경우 여러 번 호출해 점진적으로 처리 가능
-- `Series9Identity`:
-  - SER9 mint fee를 스테이킹하는 UUPS 기반 identity NFT
-  - Identity 스테이킹 보상은 reputation score 비율로 분배 (기본값: Human 9, AI 1)
-  - 고유 payment handle 기반 ERC20/MON 송금 및 결제 요청 지원
-  - 기존 identity 보유자는 profile name 기반 legacy handle 우선권을 30일간 클레임 가능
-  - `IDENTITY_PROXY`가 설정된 릴리즈 워크플로우에서 implementation 배포와 Safe 업그레이드 트랜잭션 생성 지원
 - 업그레이드 경로:
   - `upgradeSer9(...)`로 `SER9`를 명시적으로 업그레이드
-  - `Series9Identity`는 identity proxy owner(Safe)가 `upgradeToAndCall(...)`로 직접 업그레이드
 
 ## 주요 규칙
 
 1. SER9 스테이킹 보상은 초 단위가 아니라 블록 단위로 누적되며, 기본값은 `1 SER9 / block` (owner가 변경 가능)
 2. `SER9.mint`는 staking 컨트랙트 주소만 호출 가능하며, owner 직접 민트는 불가
 3. Monad unstake backing queue / validator reward harvest / matured undelegation withdraw / delegation rebalance는 더 이상 전체 배열 full scan에 의존하지 않고 bounded multi-call progress를 사용
-4. Identity NFT 보상은 각 identity의 reputation score 비율로 계산되며, owner가 점수를 조정할 수 있음
-5. Identity Payment는 현재 identity 소유자 본인이 실행할 때만 승인된 ERC20 또는 전송한 MON을 이동함
 
 ## 컨트랙트
 
 - `src/SER9Token.sol`
 - `src/Series9Staking.sol`
-- `src/Series9Identity.sol`
 
 Monad unstake/undelegation 관련 주요 함수:
 
@@ -111,10 +101,10 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 `safe.global` Transaction Builder import용 JSON을 자동 생성합니다.
 
 - 워크플로: `.github/workflows/release-monad-mainnet-upgrade.yml`
-- 배포 방식: `forge create`로 새 implementation(Staking/SER9, 선택 시 Identity) 배포 후 Safe JSON 생성
+- 배포 방식: `forge create`로 새 implementation(Staking/SER9) 배포 후 Safe JSON 생성
 - 생성 파일: `safe-tx-upgrade-<release-tag-slug>.json`
-  - 기본 트랜잭션 2개: `upgradeToAndCall` + `upgradeSer9`
-  - `IDENTITY_PROXY` 설정 시 Identity `upgradeToAndCall` 트랜잭션 1개 추가
+  - 트랜잭션 2개: `upgradeToAndCall`(Staking) + `upgradeSer9`(SER9)
+  - 온체인 bytecode가 이미 일치하면 해당 컨트랙트는 배포/트랜잭션에서 제외
 
 필수 GitHub Secrets:
 
@@ -124,11 +114,15 @@ forge script script/UpgradeTokens.s.sol:UpgradeTokens \
 
 선택 GitHub Secrets:
 
-- `IDENTITY_PROXY` (설정 시 Identity implementation 배포 및 업그레이드 Safe tx 생성)
 - `STAKING_UPGRADE_DATA`
 - `SER9_UPGRADE_DATA`
-- `IDENTITY_UPGRADE_DATA` (기존 Identity 프록시에 Payment 초기화가 필요하면 `0x38cdfc0c`, `initializePayment()`)
 
 선택 GitHub Variables:
 
 - `SKIP_VERIFY` (`true`/`false`, 기본값은 `false`이며 MonadVision 검증을 시도)
+
+## 관련 레포
+
+- [SERIES9Identity](https://github.com/PIXELZX0/SERIES9Identity) — Identity NFT + identity 지갑 컨트랙트
+- [SERIES9DEX](https://github.com/PIXELZX0/SERIES9DEX) — DEX (현물/오더북/선물)
+- [SERIES9_Front](https://github.com/PIXELZX0/SERIES9_Front) — 웹 프론트엔드
