@@ -4,3 +4,4 @@ broadcast/
 .env
 safe-tx-*.json
 .playwright-mcp/
+.omc/state/
