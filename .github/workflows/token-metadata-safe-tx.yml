@@ -1,0 +1,77 @@
+name: Token Metadata Safe Tx
+
+on:
+  workflow_dispatch:
+    inputs:
+      description:
+        description: ERC-20M description string to store on SER9
+        required: true
+        default: SERIES9 staking token
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate setTokenMetadata Safe Tx JSON
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MONAD_RPC_URL: ${{ secrets.MONAD_RPC_URL }}
+      STAKING_PROXY: ${{ secrets.STAKING_PROXY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${MONAD_RPC_URL:?GitHub secret MONAD_RPC_URL is required}"
+          : "${STAKING_PROXY:?GitHub secret STAKING_PROXY is required}"
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Resolve SER9 proxy
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Read it off the Staking proxy rather than taking an address as input,
+          # so the batch can never target the wrong contract.
+          SER9_PROXY="$(cast call "$STAKING_PROXY" "ser9()(address)" --rpc-url "$MONAD_RPC_URL")"
+          echo "ser9_proxy=$SER9_PROXY" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Safe Transaction Builder JSON
+        env:
+          SER9_PROXY: ${{ steps.resolve.outputs.ser9_proxy }}
+          METADATA_DESCRIPTION: ${{ inputs.description }}
+        run: |
+          set -euo pipefail
+          forge script script/SafeBatch.s.sol:SafeSetTokenMetadata \
+            --sig "run(string)" "$METADATA_DESCRIPTION"
+
+      - name: Upload Safe tx JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: safe-tx-set-token-metadata
+          if-no-files-found: error
+          path: safe-tx-set-token-metadata.json
+
+      - name: Write job summary
+        run: |
+          {
+            echo "## SER9 token metadata Safe transaction"
+            echo ""
+            echo "- SER9 proxy: \`${{ steps.resolve.outputs.ser9_proxy }}\`"
+            echo "- Description: \`${{ inputs.description }}\`"
+            echo "- Image: inlined base64 data: URI from \`assets/series9-logo.svg\`"
+            echo "- Artifact: \`safe-tx-set-token-metadata\`"
+            echo "- Safe import URL: https://app.safe.global/transactions/tx-builder"
+          } >> "$GITHUB_STEP_SUMMARY"
