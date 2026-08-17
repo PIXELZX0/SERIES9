@@ -1,36 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#35e6a4"/>
-      <stop offset="1" stop-color="#6d5cff"/>
-    </linearGradient>
-    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#6ef7c0"/>
-      <stop offset="1" stop-color="#2eb186"/>
-    </linearGradient>
-    <path id="rim" d="M 128,24 a 104,104 0 1,1 -0.01,0" fill="none"/>
+    <path id="rim" d="M 128,26 a 102,102 0 1,1 -0.01,0" fill="none"/>
   </defs>
 
   <!-- coin base -->
-  <circle cx="128" cy="128" r="124" fill="#05060b"/>
-  <circle cx="128" cy="128" r="122" fill="none" stroke="url(#ring)" stroke-width="4"/>
-  <circle cx="128" cy="128" r="95" fill="none" stroke="url(#ring)" stroke-width="2" opacity="0.6"/>
+  <circle cx="128" cy="128" r="128" fill="#0a0a0a"/>
+  <circle cx="128" cy="128" r="121" fill="none" stroke="#ffffff" stroke-width="1.5" opacity="0.9"/>
+  <circle cx="128" cy="128" r="92" fill="none" stroke="#ffffff" stroke-width="1" opacity="0.28"/>
 
   <!-- rim text: SERIES9 repeating, slow rotation -->
   <g>
     <animateTransform attributeName="transform" type="rotate"
                       from="0 128 128" to="360 128 128"
                       dur="40s" repeatCount="indefinite"/>
-    <text font-family="Avenir Next, Helvetica Neue, Arial, sans-serif"
-          font-size="15" font-weight="600" letter-spacing="1.5"
-          fill="#8f7bff">
-      <textPath href="#rim" startOffset="0" textLength="653" lengthAdjust="spacing">SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183;</textPath>
+    <text font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+          font-size="13" font-weight="500" letter-spacing="2"
+          fill="#ffffff" opacity="0.55">
+      <textPath href="#rim" startOffset="0" textLength="641" lengthAdjust="spacing">SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183;</textPath>
     </text>
   </g>
 
-  <!-- SER9 monogram -->
-  <text x="128" y="128" text-anchor="middle" dominant-baseline="central"
-        font-family="Avenir Next, Helvetica Neue, Arial, sans-serif"
-        font-size="58" font-weight="700" letter-spacing="-2"
-        fill="url(#mark)">SER9</text>
+  <!-- concave 4-pointed star -->
+  <path fill="#ffffff" d="M 128,64
+    Q 135.78,100.22 172,108
+    Q 135.78,115.78 128,152
+    Q 120.22,115.78 84,108
+    Q 120.22,100.22 128,64 Z"/>
+  <!-- knocked-out inner star -->
+  <path fill="#0a0a0a" d="M 128,83.8
+    Q 132.28,103.72 152.2,108
+    Q 132.28,112.28 128,132.2
+    Q 123.72,112.28 103.8,108
+    Q 123.72,103.72 128,83.8 Z"/>
+
+  <!-- SER9 wordmark -->
+  <text x="128" y="182" text-anchor="middle" dominant-baseline="central"
+        font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="22" font-weight="600" letter-spacing="3"
+        fill="#ffffff">SER9</text>
 </svg>

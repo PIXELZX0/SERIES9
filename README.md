@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/series9-logo.svg" alt="SERIES9" width="160" height="160">
+</p>
+
 # SERIES9
 
 Foundry 기반의 `SER9` 토큰 + 스테이킹 시스템입니다.
