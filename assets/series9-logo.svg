@@ -13,31 +13,47 @@
     <animateTransform attributeName="transform" type="rotate"
                       from="0 128 128" to="360 128 128"
                       dur="40s" repeatCount="indefinite"/>
+    <!-- 6 words centered every 60 deg. Separate textPaths instead of one
+         run with textLength/lengthAdjust: renderers distribute textLength
+         inconsistently once tspans split the run, which collided the words. -->
     <text font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
           font-size="13" font-weight="500" letter-spacing="2"
-          fill="#ffffff" opacity="0.55">
-      <!-- 6 identical "SERIES9 · " units incl. trailing nbsp, so the wrap gap
-           matches the others; textLength = 2*pi*102 (full rim circumference) -->
-      <textPath href="#rim" startOffset="0" textLength="640.9" lengthAdjust="spacing">SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;</textPath>
+          text-anchor="middle" fill="#ffffff" fill-opacity="0.55">
+      <!-- offset by half a unit so no word straddles the path seam at 0% -->
+      <textPath href="#rim" startOffset="8.333%">SERIES9</textPath>
+      <textPath href="#rim" startOffset="25%">SERIES9</textPath>
+      <textPath href="#rim" startOffset="41.667%">SERIES9</textPath>
+      <textPath href="#rim" startOffset="58.333%">SERIES9</textPath>
+      <textPath href="#rim" startOffset="75%">SERIES9</textPath>
+      <textPath href="#rim" startOffset="91.667%">SERIES9</textPath>
     </text>
+    <!-- gold separators, on the bisector of each word gap, radius 106 -->
+    <g fill="#d4af37">
+      <circle cx="128" cy="22" r="2"/>
+      <circle cx="219.8" cy="75" r="2"/>
+      <circle cx="219.8" cy="181" r="2"/>
+      <circle cx="128" cy="234" r="2"/>
+      <circle cx="36.2" cy="181" r="2"/>
+      <circle cx="36.2" cy="75" r="2"/>
+    </g>
   </g>
 
-  <!-- concave 4-pointed star (center 128,106 / R 56 / inner 14) -->
-  <path fill="#ffffff" d="M 128,50
-    Q 137.9,96.1 184,106
-    Q 137.9,115.9 128,162
-    Q 118.1,115.9 72,106
-    Q 118.1,96.1 128,50 Z"/>
-  <!-- knocked-out inner star (same shape at 0.55) -->
-  <path fill="#0a0a0a" d="M 128,75.2
-    Q 133.45,100.55 158.8,106
-    Q 133.45,111.45 128,136.8
-    Q 122.55,111.45 97.2,106
-    Q 122.55,100.55 128,75.2 Z"/>
-
-  <!-- SER9 wordmark -->
-  <text x="128" y="186" text-anchor="middle" dominant-baseline="central"
-        font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
-        font-size="15" font-weight="600" letter-spacing="3.5"
-        fill="#ffffff">SER9</text>
+  <!-- concave 4-pointed star (center 128,128 / R 76 / inner 19) -->
+  <path fill="#ffffff" d="M 128,52
+    Q 141.44,114.56 204,128
+    Q 141.44,141.44 128,204
+    Q 114.56,141.44 52,128
+    Q 114.56,114.56 128,52 Z"/>
+  <!-- knocked-out inner star (same shape at 0.72) -->
+  <path fill="#0a0a0a" d="M 128,73.28
+    Q 137.67,118.33 182.72,128
+    Q 137.67,137.67 128,182.72
+    Q 118.33,137.67 73.28,128
+    Q 118.33,118.33 128,73.28 Z"/>
+  <!-- gold core star (same shape at 0.38) -->
+  <path fill="#d4af37" d="M 128,99.12
+    Q 133.11,122.89 156.88,128
+    Q 133.11,133.11 128,156.88
+    Q 122.89,133.11 99.12,128
+    Q 122.89,122.89 128,99.12 Z"/>
 </svg>
