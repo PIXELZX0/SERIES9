@@ -16,26 +16,28 @@
     <text font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
           font-size="13" font-weight="500" letter-spacing="2"
           fill="#ffffff" opacity="0.55">
-      <textPath href="#rim" startOffset="0" textLength="641" lengthAdjust="spacing">SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183; SERIES9 &#183;</textPath>
+      <!-- 6 identical "SERIES9 · " units incl. trailing nbsp, so the wrap gap
+           matches the others; textLength = 2*pi*102 (full rim circumference) -->
+      <textPath href="#rim" startOffset="0" textLength="640.9" lengthAdjust="spacing">SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;SERIES9&#160;&#183;&#160;</textPath>
     </text>
   </g>
 
-  <!-- concave 4-pointed star -->
-  <path fill="#ffffff" d="M 128,64
-    Q 135.78,100.22 172,108
-    Q 135.78,115.78 128,152
-    Q 120.22,115.78 84,108
-    Q 120.22,100.22 128,64 Z"/>
-  <!-- knocked-out inner star -->
-  <path fill="#0a0a0a" d="M 128,83.8
-    Q 132.28,103.72 152.2,108
-    Q 132.28,112.28 128,132.2
-    Q 123.72,112.28 103.8,108
-    Q 123.72,103.72 128,83.8 Z"/>
+  <!-- concave 4-pointed star (center 128,106 / R 56 / inner 14) -->
+  <path fill="#ffffff" d="M 128,50
+    Q 137.9,96.1 184,106
+    Q 137.9,115.9 128,162
+    Q 118.1,115.9 72,106
+    Q 118.1,96.1 128,50 Z"/>
+  <!-- knocked-out inner star (same shape at 0.55) -->
+  <path fill="#0a0a0a" d="M 128,75.2
+    Q 133.45,100.55 158.8,106
+    Q 133.45,111.45 128,136.8
+    Q 122.55,111.45 97.2,106
+    Q 122.55,100.55 128,75.2 Z"/>
 
   <!-- SER9 wordmark -->
-  <text x="128" y="182" text-anchor="middle" dominant-baseline="central"
+  <text x="128" y="186" text-anchor="middle" dominant-baseline="central"
         font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
-        font-size="22" font-weight="600" letter-spacing="3"
+        font-size="15" font-weight="600" letter-spacing="3.5"
         fill="#ffffff">SER9</text>
 </svg>
