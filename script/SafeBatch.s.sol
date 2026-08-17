@@ -3,6 +3,9 @@ pragma solidity ^0.8.22;
 
 import {Script, console} from "forge-std/Script.sol";
 
+import {Base64} from "openzeppelin-contracts/contracts/utils/Base64.sol";
+
+import {SER9Token} from "../src/SER9Token.sol";
 import {Series9Staking} from "../src/Series9Staking.sol";
 
 /// @notice Generates Safe Transaction Builder JSON for admin operations.
@@ -133,5 +136,32 @@ contract SafeCustomBatch is SafeBatchBase {
         );
 
         _writeBatch("custom-batch", txs);
+    }
+}
+
+/// @notice Set ERC-20M token metadata (image + description) on the SER9 proxy.
+///
+/// The image is inlined as a base64 data: URI built from assets/series9-logo.svg,
+/// so the logo has no host dependency. The SVG is ~2.6KB, so the encoded string is
+/// ~3.5KB of onchain storage — budget for it.
+///
+/// Usage:
+///   SER9_PROXY=0x... forge script script/SafeBatch.s.sol:SafeSetTokenMetadata \
+///     --sig "run(string)" "SERIES9 staking token"
+contract SafeSetTokenMetadata is SafeBatchBase {
+    function run(string calldata description_) external {
+        address ser9 = vm.envAddress("SER9_PROXY");
+        // forge-lint: disable-next-line(unsafe-cheatcode)
+        string memory svg = vm.readFile("assets/series9-logo.svg");
+        string memory image = string.concat("data:image/svg+xml;base64,", Base64.encode(bytes(svg)));
+
+        console.log("SER9:", ser9);
+        console.log("Image URI bytes:", bytes(image).length);
+        console.log("Description:", description_);
+
+        _writeBatch(
+            "set-token-metadata",
+            _tx(ser9, abi.encodeCall(SER9Token.setTokenMetadata, (image, description_)))
+        );
     }
 }
