@@ -141,27 +141,52 @@ contract SafeCustomBatch is SafeBatchBase {
 
 /// @notice Set ERC-20M token metadata (image + description) on the SER9 proxy.
 ///
-/// The image is inlined as a base64 data: URI built from assets/series9-logo.svg,
-/// so the logo has no host dependency. The SVG is ~2.6KB, so the encoded string is
-/// ~3.5KB of onchain storage — budget for it.
+/// setTokenMetadata is onlyOwner and SER9's owner is the Staking proxy, not the Safe,
+/// so a direct Safe -> SER9 call reverts with OwnableUnauthorizedAccount. The Safe goes
+/// through upgradeSer9(currentImpl, data) instead: upgradeToAndCall delegatecalls data
+/// with msg.sender still set to Staking, which does own SER9. Re-pointing the proxy at
+/// the implementation it already runs leaves the implementation slot unchanged, so this
+/// is a metadata write and not an upgrade.
+///
+/// The image is inlined as a base64 data: URI built from assets/series9-logo.svg, so the
+/// logo has no host dependency. The SVG is ~2.6KB, so the encoded string is ~3.5KB of
+/// onchain storage — budget for it.
+///
+/// Needs --rpc-url: the SER9 proxy and its current implementation are read from chain
+/// rather than taken as input, so the batch cannot target a stale address.
 ///
 /// Usage:
-///   SER9_PROXY=0x... forge script script/SafeBatch.s.sol:SafeSetTokenMetadata \
-///     --sig "run(string)" "SERIES9 staking token"
+///   STAKING_PROXY=0x... forge script script/SafeBatch.s.sol:SafeSetTokenMetadata \
+///     --sig "run(string)" "SERIES9 staking token" --rpc-url "$MONAD_RPC_URL"
 contract SafeSetTokenMetadata is SafeBatchBase {
+    /// @dev EIP-1967 implementation slot.
+    bytes32 constant IMPL_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    error Ser9ImplementationNotFound(address ser9);
+
     function run(string calldata description_) external {
-        address ser9 = vm.envAddress("SER9_PROXY");
+        address staking = _staking();
+        address ser9 = address(Series9Staking(payable(staking)).ser9());
+        address ser9Impl = address(uint160(uint256(vm.load(ser9, IMPL_SLOT))));
+        if (ser9Impl == address(0)) {
+            revert Ser9ImplementationNotFound(ser9);
+        }
+
         // forge-lint: disable-next-line(unsafe-cheatcode)
         string memory svg = vm.readFile("assets/series9-logo.svg");
         string memory image = string.concat("data:image/svg+xml;base64,", Base64.encode(bytes(svg)));
 
+        console.log("Staking:", staking);
         console.log("SER9:", ser9);
+        console.log("SER9 implementation (unchanged):", ser9Impl);
         console.log("Image URI bytes:", bytes(image).length);
         console.log("Description:", description_);
 
+        bytes memory setMetadata = abi.encodeCall(SER9Token.setTokenMetadata, (image, description_));
+
         _writeBatch(
             "set-token-metadata",
-            _tx(ser9, abi.encodeCall(SER9Token.setTokenMetadata, (image, description_)))
+            _tx(staking, abi.encodeCall(Series9Staking.upgradeSer9, (ser9Impl, setMetadata)))
         );
     }
 }

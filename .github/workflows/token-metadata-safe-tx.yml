@@ -38,24 +38,19 @@ jobs:
         with:
           version: stable
 
-      - name: Resolve SER9 proxy
-        id: resolve
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Read it off the Staking proxy rather than taking an address as input,
-          # so the batch can never target the wrong contract.
-          SER9_PROXY="$(cast call "$STAKING_PROXY" "ser9()(address)" --rpc-url "$MONAD_RPC_URL")"
-          echo "ser9_proxy=$SER9_PROXY" >> "$GITHUB_OUTPUT"
+      - name: Verify the batch simulates against live state
+        run: forge test --match-path test/Ser9MetadataFork.t.sol -vv
 
       - name: Generate Safe Transaction Builder JSON
         env:
-          SER9_PROXY: ${{ steps.resolve.outputs.ser9_proxy }}
           METADATA_DESCRIPTION: ${{ inputs.description }}
         run: |
           set -euo pipefail
+          # The script reads the SER9 proxy and its current implementation off chain,
+          # so it needs an RPC and takes no address input.
           forge script script/SafeBatch.s.sol:SafeSetTokenMetadata \
-            --sig "run(string)" "$METADATA_DESCRIPTION"
+            --sig "run(string)" "$METADATA_DESCRIPTION" \
+            --rpc-url "$MONAD_RPC_URL"
 
       - name: Upload Safe tx JSON
         uses: actions/upload-artifact@v4
@@ -69,7 +64,8 @@ jobs:
           {
             echo "## SER9 token metadata Safe transaction"
             echo ""
-            echo "- SER9 proxy: \`${{ steps.resolve.outputs.ser9_proxy }}\`"
+            echo "- Staking proxy (batch target): \`${STAKING_PROXY}\`"
+            echo "- Route: \`upgradeSer9(currentImpl, setTokenMetadata(...))\` — SER9 is owned by Staking, not the Safe"
             echo "- Description: \`${{ inputs.description }}\`"
             echo "- Image: inlined base64 data: URI from \`assets/series9-logo.svg\`"
             echo "- Artifact: \`safe-tx-set-token-metadata\`"
