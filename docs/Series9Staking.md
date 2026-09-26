@@ -137,7 +137,7 @@ struct UnstakeCandidate { uint64 validatorId; uint256 score; uint256 commission;
 | `setRewardRatePerBlock(uint256)` | SER9 트랙 블록당 보상 변경 + `updateReward(0)` |
 | `setMonadRewardRatePerBlock(uint256)` | MON 트랙 블록당 보상 변경 + `updateReward(0)` |
 | `setMonadRebalanceKeeper(address keeper, bool allowed)` | keeper 권한 부여/회수 |
-| `forceReleaseUndelegateTicket(uint256 ticketIndex)` | 정상 처리되지 않은 ticket을 강제 회수 처리. 카운터/withdrawId 해제 |
+| `forceReleaseUndelegateTicket(uint256 ticketIndex, uint64 validatorId, uint8 withdrawId)` | 정상 처리되지 않은 ticket을 강제 회수 처리. 카운터/withdrawId 해제. 인덱스는 compaction으로 바뀔 수 있어 (validatorId, withdrawId) 일치 검사 |
 | `setMonadUnstakeDelayEpochs(uint64)` | MON unstake 지연 epoch (1~30) |
 | `pause()` / `unpause()` | OZ Pausable |
 | `setSer9StakingContract(address)` | SER9 컨트랙트의 `setStakingContract` 위임 호출 (staking 권한 이양) |

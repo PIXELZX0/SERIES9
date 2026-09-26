@@ -316,13 +316,18 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         emit MonadRebalanceKeeperUpdated(keeper, allowed);
     }
 
-    function forceReleaseUndelegateTicket(uint256 ticketIndex) external onlyOwner {
+    /// @dev Tickets are swap-and-pop compacted by permissionless calls, so an index can point at a different
+    ///      ticket by the time a multisig tx executes. The expected (validatorId, withdrawId) pins the target.
+    function forceReleaseUndelegateTicket(uint256 ticketIndex, uint64 validatorId, uint8 withdrawId)
+        external
+        onlyOwner
+    {
         if (ticketIndex >= pendingUndelegateTickets.length) {
             revert InvalidUndelegateTicket();
         }
 
         PendingUndelegateTicket storage ticket = pendingUndelegateTickets[ticketIndex];
-        if (ticket.withdrawn) {
+        if (ticket.withdrawn || ticket.validatorId != validatorId || ticket.withdrawId != withdrawId) {
             revert InvalidUndelegateTicket();
         }
 
@@ -1055,8 +1060,13 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
 
         uint256 requestCount = _pendingMonadUnstakeRequests.length;
         uint256 cursor = monadCoverageRequestCursor;
+        // Bounded so a large uncovered backlog cannot push every caller past the block gas limit. Coverage left
+        // unassigned here is recomputed by _unassignedMonadCoverageAmount() on the next call.
+        uint256 end = requestCount - cursor > MONAD_COMPACTION_BATCH_LIMIT
+            ? cursor + MONAD_COMPACTION_BATCH_LIMIT
+            : requestCount;
 
-        while (cursor < requestCount && amount > 0) {
+        while (cursor < end && amount > 0) {
             MonadUnstakeRequestRef memory requestRef = _pendingMonadUnstakeRequests[cursor];
             MonadUnstakeRequest storage request = _monadUnstakeRequests[requestRef.user][requestRef.requestId];
 
@@ -1080,12 +1090,8 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             }
         }
 
+        // No `delete` of the processed prefix: clearing an arbitrarily long array in one tx is itself a gas DoS.
         monadCoverageRequestCursor = cursor;
-
-        if (cursor == requestCount) {
-            delete _pendingMonadUnstakeRequests;
-            monadCoverageRequestCursor = 0;
-        }
     }
 
     function _undelegateFromValidator(uint64 validatorId, uint256 requestedAmount, uint64 epoch)
@@ -1711,7 +1717,9 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
             revert Permit2AmountTooLow(amount, uint256(permitSingle.details.amount));
         }
 
-        permit2Contract.permit(msg.sender, permitSingle, permitSignature);
+        // A front-run permit (signature copied from the mempool) consumes the nonce but still sets the allowance;
+        // ignore the revert and let transferFrom be the real check.
+        try permit2Contract.permit(msg.sender, permitSingle, permitSignature) {} catch {}
         permit2Contract.transferFrom(msg.sender, address(this), SafeCast.toUint160(amount), token);
     }
 

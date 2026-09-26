@@ -64,7 +64,11 @@ contract Series9StakingHarness is Series9Staking {
 contract Permit2Mock is IPermit2 {
     mapping(address owner => mapping(address token => mapping(address spender => uint160 amount))) internal allowanceAmount;
 
+    mapping(address owner => mapping(uint48 nonce => bool used)) internal nonceUsed;
+
     function permit(address owner, PermitSingle calldata permitSingle, bytes calldata) external {
+        require(!nonceUsed[owner][permitSingle.details.nonce], "Permit2: invalid nonce");
+        nonceUsed[owner][permitSingle.details.nonce] = true;
         allowanceAmount[owner][permitSingle.details.token][permitSingle.spender] = permitSingle.details.amount;
     }
 
@@ -410,6 +414,80 @@ contract Series9StakingTest is Test {
 
 
 
+
+    function testStakeWithPermit2SurvivesFrontRunPermit() public {
+        vm.prank(alice);
+        ser9.approve(address(permit2), type(uint256).max);
+
+        IPermit2.PermitSingle memory permitSingle = IPermit2.PermitSingle({
+            details: IPermit2.PermitDetails({
+                token: address(ser9),
+                amount: uint160(100 ether),
+                expiration: uint48(block.timestamp + 1 days),
+                nonce: 0
+            }),
+            spender: address(staking),
+            sigDeadline: block.timestamp + 1 days
+        });
+
+        // Attacker replays alice's signature first, burning the nonce.
+        vm.prank(bob);
+        permit2.permit(alice, permitSingle, hex"01");
+
+        vm.prank(alice);
+        staking.stakeWithPermit2(100 ether, permitSingle, hex"01");
+        assertEq(staking.stakedBalance(alice), 100 ether);
+    }
+
+    function testForceReleaseRequiresMatchingTicketIdentity() public {
+        staking.initializeV2();
+        _configureValidatorsRange(1, 2);
+        vm.deal(address(staking), 2 ether);
+        assertTrue(staking.exposeDelegateMonadAmountToValidator(1, 1 ether));
+        assertTrue(staking.exposeDelegateMonadAmountToValidator(2, 1 ether));
+        staking.exposeQueueUnstakeFromDelegations(2 ether, 1, 2);
+        assertEq(staking.pendingUndelegateTicketsLength(), 2);
+
+        (uint64 validatorId, uint8 withdrawId,,,) = staking.pendingUndelegateTickets(0);
+        uint64 otherValidatorId = validatorId == 1 ? 2 : 1;
+
+        vm.expectRevert(Series9Staking.InvalidUndelegateTicket.selector);
+        staking.forceReleaseUndelegateTicket(0, otherValidatorId, withdrawId);
+
+        staking.forceReleaseUndelegateTicket(0, validatorId, withdrawId);
+        (,,,, bool withdrawn) = staking.pendingUndelegateTickets(0);
+        assertTrue(withdrawn);
+        assertEq(staking.totalPendingUndelegateMonad(), 1 ether);
+    }
+
+    function testMonadCoverageAllocationIsBatched() public {
+        uint256 requestCount = 60;
+        for (uint256 i = 0; i < requestCount; ++i) {
+            address user = address(uint160(0x10000 + i));
+            vm.deal(user, 1 ether);
+            vm.prank(user);
+            staking.stakeMonad{value: 1 ether}();
+        }
+
+        // No validators and no liquidity: every request stays uncovered.
+        vm.deal(address(staking), 0);
+        for (uint256 i = 0; i < requestCount; ++i) {
+            vm.prank(address(uint160(0x10000 + i)));
+            staking.requestUnstakeMonad(1 ether);
+        }
+        assertEq(staking.totalPendingMonadUnstakeUncovered(), requestCount * 1 ether);
+
+        vm.deal(address(staking), requestCount * 1 ether);
+        staking.processPendingMonadUnstakeCoverage(0);
+        assertEq(staking.totalPendingMonadUnstakeUncovered(), 10 ether);
+        (,, uint64 lastMinClaimEpoch,) = staking.monadUnstakeRequest(address(uint160(0x10000 + requestCount - 1)), 0);
+        assertEq(lastMinClaimEpoch, type(uint64).max);
+
+        staking.processPendingMonadUnstakeCoverage(0);
+        assertEq(staking.totalPendingMonadUnstakeUncovered(), 0);
+        (,, lastMinClaimEpoch,) = staking.monadUnstakeRequest(address(uint160(0x10000 + requestCount - 1)), 0);
+        assertLt(lastMinClaimEpoch, type(uint64).max);
+    }
 
     function testPermit2PathRevertsWhenPermit2NotConfigured() public {
         // Re-deploy staking without Permit2 setup to verify guard behavior.
