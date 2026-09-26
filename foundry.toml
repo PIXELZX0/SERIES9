@@ -15,6 +15,10 @@ optimizer_runs = 200
 via_ir = true
 fs_permissions = [{ access = "read-write", path = "./" }]
 
+# forge >=1.8 lint-on-build hangs on this repo (CI runners killed mid-build). Run `forge lint` explicitly.
+[lint]
+lint_on_build = false
+
 [rpc_endpoints]
 monad_testnet = "${MONAD_TESTNET_RPC_URL}"
 monad = "${MONAD_RPC_URL}"
