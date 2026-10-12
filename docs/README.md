@@ -20,6 +20,7 @@ Identity NFT / identity 지갑 문서는 [SERIES9Identity](https://github.com/PI
 - [`SER9Token.md`](./SER9Token.md) — SER9 ERC20 토큰
 - [`Series9Staking.md`](./Series9Staking.md) — 스테이킹 + Monad 위임 (핵심 컨트랙트)
 - [`Interfaces.md`](./Interfaces.md) — 외부 인터페이스
+- [`ROADMAP.md`](./ROADMAP.md) — 로드맵 (Wormhole NTT 브릿지 등)
 
 ## 구현 상태 한눈에 보기
 
