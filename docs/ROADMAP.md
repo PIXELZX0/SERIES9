@@ -27,7 +27,7 @@
 - [ ] rate limit 값 (일일 한도, 총공급 대비 %)
 
 ### 작업 — 1단계 Base
-- [ ] Base spoke 토큰 컨트랙트 + 테스트
+- [x] Base spoke 토큰 컨트랙트 + 테스트 (`src/SER9SpokeToken.sol`)
 - [ ] Executor capabilities에서 Monad ↔ Base ERN1 지원 확인
 - [ ] testnet 배포 (`ntt init` → `ntt add-chain Monad --mode locking` → `ntt add-chain Base --mode burning` → `ntt push`)
 - [ ] testnet 검증: 왕복 후 locked == Base supply, rate limit queue, pause 차단
