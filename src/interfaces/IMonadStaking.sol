@@ -43,5 +43,9 @@ interface IMonadStaking {
             uint64 nextDeltaEpoch
         );
 
+    function getWithdrawalRequest(uint64 validatorId, address delegator, uint8 withdrawId)
+        external
+        returns (uint256 withdrawalAmount, uint256 accRewardPerToken, uint64 withdrawEpoch);
+
     function getEpoch() external returns (uint64 epoch, bool inEpochDelayPeriod);
 }

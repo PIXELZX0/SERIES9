@@ -182,6 +182,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     error InvalidSweepRecipient();
     error InvalidUndelegateTicket();
     error InsufficientCreationFees(uint256 requested, uint256 available);
+    error InvalidOrphanWithdrawal(uint64 validatorId, uint8 withdrawId);
 
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
@@ -215,6 +216,7 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
     event MonadClaimRewardsFailed(uint64 indexed validatorId, bytes reason);
     event CreationFeesSwept(address indexed to, uint256 amount);
     event MonadUndelegateTicketForceReleased(uint64 indexed validatorId, uint8 indexed withdrawId, uint256 amount);
+    event MonadAccountingReconciled(uint256 totalDelegatedMonad, uint256 totalPendingUndelegateMonad, uint256 trackedCount);
     event MonadWithdrawShortfall(
         uint64 indexed validatorId, uint8 indexed withdrawId, uint256 expected, uint256 received, uint256 shortfall
     );
@@ -337,6 +339,117 @@ contract Series9Staking is Initializable, OwnableUpgradeable, PausableUpgradeabl
         _withdrawIdInUse[ticket.validatorId][ticket.withdrawId] = false;
 
         emit MonadUndelegateTicketForceReleased(ticket.validatorId, ticket.withdrawId, ticket.amount);
+    }
+
+    /// @notice Rebuilds per-validator Monad bookkeeping from the staking precompile. Repairs state written by earlier
+    ///         implementations: duplicate / missing `trackedValidators` entries, `validatorDelegatedAmount` that
+    ///         disagrees with on-chain stake, and precompile withdrawal requests that have no ticket.
+    /// @dev Candidates = trackedValidators ∪ targetValidatorIds ∪ live ticket validators ∪ `extraValidatorIds`. A stale
+    ///      `validatorDelegatedAmount` on an id outside that set is not touched — pass it in `extraValidatorIds`.
+    ///      ponytail: rebuilds the whole tracked set in one tx; fine while it stays at a handful of ids.
+    /// @param orphanValidatorIds / orphanWithdrawIds precompile withdrawal requests to adopt as undelegate tickets.
+    function reconcileMonadAccounting(
+        uint64[] calldata extraValidatorIds,
+        uint64[] calldata orphanValidatorIds,
+        uint8[] calldata orphanWithdrawIds
+    ) external whenInitialized nonReentrant onlyOwner {
+        if (orphanValidatorIds.length != orphanWithdrawIds.length) {
+            revert InvalidOrphanWithdrawal(0, 0);
+        }
+
+        uint256 ticketsLength = pendingUndelegateTickets.length;
+        for (uint256 i = 0; i < orphanValidatorIds.length; ++i) {
+            uint64 validatorId = orphanValidatorIds[i];
+            uint8 withdrawId = orphanWithdrawIds[i];
+            for (uint256 t = 0; t < ticketsLength; ++t) {
+                PendingUndelegateTicket storage existing = pendingUndelegateTickets[t];
+                if (!existing.withdrawn && existing.validatorId == validatorId && existing.withdrawId == withdrawId) {
+                    revert InvalidOrphanWithdrawal(validatorId, withdrawId);
+                }
+            }
+
+            (uint256 amount,, uint64 withdrawEpoch) =
+                _monadStaking().getWithdrawalRequest(validatorId, address(this), withdrawId);
+            if (validatorId == 0 || amount == 0) {
+                revert InvalidOrphanWithdrawal(validatorId, withdrawId);
+            }
+
+            _withdrawIdInUse[validatorId][withdrawId] = true;
+            pendingUndelegateTickets.push(
+                PendingUndelegateTicket({
+                    validatorId: validatorId,
+                    withdrawId: withdrawId,
+                    amount: amount,
+                    claimableEpoch: withdrawEpoch + _monadUnstakeDelayEpochs(),
+                    withdrawn: false
+                })
+            );
+            ticketsLength++;
+        }
+
+        uint256 trackedLength = trackedValidators.length;
+        uint64[] memory candidates =
+            new uint64[](trackedLength + MONAD_TARGET_COUNT + ticketsLength + extraValidatorIds.length);
+        uint256 count;
+        for (uint256 i = 0; i < trackedLength; ++i) {
+            candidates[count++] = trackedValidators[i];
+        }
+        for (uint256 i = 0; i < MONAD_TARGET_COUNT; ++i) {
+            candidates[count++] = targetValidatorIds[i];
+        }
+        for (uint256 i = 0; i < ticketsLength; ++i) {
+            candidates[count++] = pendingUndelegateTickets[i].validatorId;
+        }
+        for (uint256 i = 0; i < extraValidatorIds.length; ++i) {
+            candidates[count++] = extraValidatorIds[i];
+        }
+
+        for (uint256 i = 0; i < count; ++i) {
+            isTrackedValidator[candidates[i]] = false;
+            validatorPendingUndelegateAmount[candidates[i]] = 0;
+        }
+        delete trackedValidators;
+
+        uint256 pendingTotal;
+        for (uint256 i = 0; i < ticketsLength; ++i) {
+            PendingUndelegateTicket storage ticket = pendingUndelegateTickets[i];
+            if (ticket.withdrawn) {
+                continue;
+            }
+            if (ticket.validatorId == 0 || ticket.amount == 0) {
+                ticket.withdrawn = true; // garbage entry; compaction drops it
+                continue;
+            }
+            validatorPendingUndelegateAmount[ticket.validatorId] += ticket.amount;
+            pendingTotal += ticket.amount;
+        }
+
+        uint256 delegatedTotal;
+        for (uint256 i = 0; i < count; ++i) {
+            uint64 validatorId = candidates[i];
+            if (validatorId == 0 || isTrackedValidator[validatorId]) {
+                continue;
+            }
+
+            (uint256 stake_,,, uint256 deltaStake, uint256 nextDeltaStake,,) =
+                _monadStaking().getDelegator(validatorId, address(this));
+            uint256 delegatedAmount = stake_ + deltaStake + nextDeltaStake;
+            validatorDelegatedAmount[validatorId] = delegatedAmount;
+            delegatedTotal += delegatedAmount;
+
+            if (delegatedAmount != 0 || validatorPendingUndelegateAmount[validatorId] != 0) {
+                _trackValidator(validatorId);
+            }
+        }
+
+        totalDelegatedMonad = delegatedTotal;
+        totalPendingUndelegateMonad = pendingTotal;
+        monadHarvestValidatorCursor = 0;
+        monadUndelegateValidatorCursor = 0;
+        monadFallbackValidatorCursor = 0;
+        monadRebalanceValidatorCursor = 0;
+
+        emit MonadAccountingReconciled(delegatedTotal, pendingTotal, trackedValidators.length);
     }
 
     function setMonadUnstakeDelayEpochs(uint64 newDelayEpochs) external onlyOwner {

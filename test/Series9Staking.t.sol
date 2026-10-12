@@ -59,6 +59,25 @@ contract Series9StakingHarness is Series9Staking {
     function trackedValidatorsLength() external view returns (uint256) {
         return trackedValidators.length;
     }
+
+    /// @dev Reproduces the legacy-implementation desync seen on mainnet (issue #6).
+    function corruptMonadAccounting(uint64[] calldata tracked, uint64[] calldata ids, uint256[] calldata amounts)
+        external
+    {
+        for (uint256 i = 0; i < trackedValidators.length; ++i) {
+            isTrackedValidator[trackedValidators[i]] = false;
+        }
+        delete trackedValidators;
+        for (uint256 i = 0; i < tracked.length; ++i) {
+            trackedValidators.push(tracked[i]);
+            isTrackedValidator[tracked[i]] = true;
+        }
+        for (uint256 i = 0; i < ids.length; ++i) {
+            validatorDelegatedAmount[ids[i]] = amounts[i];
+        }
+        delete pendingUndelegateTickets;
+        pendingUndelegateTickets.push();
+    }
 }
 
 contract Permit2Mock is IPermit2 {
@@ -264,6 +283,15 @@ contract MonadStakingMock is IMonadStaking {
     {
         DelegatorInfo storage info = delegatorInfo[validatorId][delegator];
         return (info.stake, info.accRewardPerToken, info.unclaimedRewards, 0, 0, 0, 0);
+    }
+
+    function getWithdrawalRequest(uint64 validatorId, address delegator, uint8 withdrawId)
+        external
+        view
+        returns (uint256 withdrawalAmount, uint256 accRewardPerToken, uint64 withdrawEpoch)
+    {
+        WithdrawalRequestInfo storage info = withdrawalInfo[validatorId][delegator][withdrawId];
+        return (info.amount, 0, info.claimableEpoch);
     }
 
     function getEpoch() external view returns (uint64 epoch, bool inEpochDelayPeriod) {
@@ -1667,6 +1695,78 @@ contract Series9StakingTest is Test {
         assertEq(staking.validatorDelegatedAmount(3), 0);
         assertEq(staking.validatorDelegatedAmount(4), 1 ether);
         assertEq(staking.validatorDelegatedAmount(5), 1 ether);
+    }
+
+    function testReconcileMonadAccountingRepairsLegacyDesync() public {
+        staking.initializeV2();
+        _installMonadPrecompileMock();
+        _configureValidatorSet123456();
+
+        vm.deal(alice, 100 ether);
+        vm.prank(alice);
+        staking.stakeMonad{value: 50 ether}();
+
+        // Real delegations: 1→20, 2→10, 3→8, 4→6, 5→3 (1 also has a 3 MON withdrawal with no ticket).
+        uint256[5] memory real = [uint256(20 ether), 10 ether, 8 ether, 6 ether, 3 ether];
+        for (uint64 v = 1; v <= 5; ++v) {
+            assertTrue(staking.exposeDelegateMonadAmountToValidator(v, real[v - 1]));
+        }
+        vm.prank(address(staking));
+        monadStakingMock.undelegate(1, 3 ether, 0);
+
+        // Corrupt like mainnet: duplicate 1, untracked 4 & 5, per-validator amounts wrong.
+        uint64[] memory tracked = new uint64[](4);
+        (tracked[0], tracked[1], tracked[2], tracked[3]) = (1, 1, 2, 3);
+        uint64[] memory ids = new uint64[](5);
+        uint256[] memory amounts = new uint256[](5);
+        for (uint64 v = 1; v <= 5; ++v) {
+            ids[v - 1] = v;
+        }
+        (amounts[0], amounts[1], amounts[2]) = (5 ether, 5 ether, 1 ether);
+        staking.corruptMonadAccounting(tracked, ids, amounts);
+
+        uint64[] memory none64 = new uint64[](0);
+        uint64[] memory orphanVals = new uint64[](1);
+        uint8[] memory orphanWids = new uint8[](1);
+        orphanVals[0] = 1;
+        uint64[] memory extra = new uint64[](2);
+        (extra[0], extra[1]) = (4, 5);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        staking.reconcileMonadAccounting(extra, orphanVals, orphanWids);
+
+        staking.reconcileMonadAccounting(extra, orphanVals, orphanWids);
+
+        uint256 sum;
+        uint256 n = staking.trackedValidatorsLength();
+        assertEq(n, 5);
+        for (uint256 i = 0; i < n; ++i) {
+            uint64 v = staking.trackedValidators(i);
+            for (uint256 j = i + 1; j < n; ++j) {
+                assertTrue(staking.trackedValidators(j) != v, "duplicate tracked id");
+            }
+            assertTrue(staking.isTrackedValidator(v));
+            (uint256 chainStake,,,,,,) = monadStakingMock.getDelegator(v, address(staking));
+            assertEq(staking.validatorDelegatedAmount(v), chainStake);
+            sum += chainStake;
+        }
+        assertEq(sum, 44 ether);
+        assertEq(staking.totalDelegatedMonad(), sum);
+        assertEq(staking.totalPendingUndelegateMonad(), 3 ether);
+        assertEq(staking.validatorPendingUndelegateAmount(1), 3 ether);
+
+        // Adopted ticket is withdrawable through the normal path; garbage ticket gets compacted.
+        monadStakingMock.setEpoch(100, false);
+        uint256 balanceBefore = address(staking).balance;
+        assertEq(staking.processMaturedMonadUndelegations(0), 1);
+        assertEq(staking.totalPendingUndelegateMonad(), 0);
+        assertEq(staking.pendingUndelegateTicketsLength(), 0);
+        assertEq(address(staking).balance - balanceBefore, 3 ether);
+
+        // Adopting an id twice or a non-existent request reverts.
+        vm.expectRevert(abi.encodeWithSelector(Series9Staking.InvalidOrphanWithdrawal.selector, uint64(1), uint8(0)));
+        staking.reconcileMonadAccounting(none64, orphanVals, orphanWids);
     }
 
     function _installMonadPrecompileMock() internal {
