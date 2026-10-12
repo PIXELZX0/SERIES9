@@ -93,13 +93,27 @@ jobs:
             printf '0x%s' "${raw:26}"
           }
 
+          # Zero immutables (UUPS `__self` = deploy address, differs per deployment) and drop the
+          # trailing CBOR metadata before comparing; otherwise every release redeploys every impl.
           bytecode_matches() {
             local impl="$1"
             local artifact="$2"
-            local onchain local_bc
-            onchain="$(cast code "$impl" --rpc-url "$MONAD_RPC_URL")"
-            local_bc="$(jq -r '.deployedBytecode.object' "$artifact")"
-            [[ "$(normalize_bytecode "$onchain")" == "$(normalize_bytecode "$local_bc")" ]]
+            local onchain
+            onchain="$(normalize_bytecode "$(cast code "$impl" --rpc-url "$MONAD_RPC_URL")")"
+            python3 - "$artifact" "$onchain" <<'PY'
+          import json, sys
+          art = json.load(open(sys.argv[1]))["deployedBytecode"]
+          def norm(h):
+              b = bytearray.fromhex(h.removeprefix("0x"))
+              if len(b) < 2:
+                  return bytes(b)
+              for spans in art.get("immutableReferences", {}).values():
+                  for s in spans:
+                      b[s["start"]:s["start"] + s["length"]] = bytes(s["length"])
+              n = int.from_bytes(b[-2:], "big")
+              return bytes(b[: -(n + 2)]) if n + 2 <= len(b) else bytes(b)
+          sys.exit(0 if norm(sys.argv[2]) == norm(art["object"]) else 1)
+          PY
           }
 
           decide_deploy() {
